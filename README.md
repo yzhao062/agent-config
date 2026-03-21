@@ -29,12 +29,12 @@ After pasting the bootstrap block into the project's `AGENTS.md`, tell the agent
 
 ## Validation
 
-This repo includes zero-dependency validation tests for the bootstrap contract, skill layout, and Claude/Codex wrappers.
+This repo includes zero-dependency validation tests for the bootstrap contract, skill layout, Claude/Codex wrappers, and temp-project smoke tests for the bootstrap flow.
 
 Use any Python 3.12 interpreter to run them locally:
 
 ```bash
-python -m unittest discover -s tests -p "test_*.py" -v
+python -B -m unittest discover -s tests -p "test_*.py" -v
 ```
 
 GitHub Actions runs the same test suite on Ubuntu and Windows for every push and pull request.

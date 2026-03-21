@@ -29,7 +29,7 @@ git -C .agent-config/repo sparse-checkout set skills .claude/commands
 if (Test-Path .agent-config/repo/.claude/commands) {
   Copy-Item .agent-config/repo/.claude/commands/*.md .claude/commands/ -Force
 }
-if (-not (Test-Path .gitignore) -or -not (Select-String -Quiet -Pattern '^\\.agent-config/' .gitignore)) {
+if (-not (Test-Path .gitignore) -or -not (Select-String -Quiet -Pattern '^\.agent-config/' .gitignore)) {
   Add-Content -Path .gitignore -Value "`n.agent-config/"
 }
 ```
