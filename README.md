@@ -27,6 +27,18 @@ After pasting the bootstrap block into the project's `AGENTS.md`, tell the agent
 阅读 AGENTS.md 并执行其中的 bootstrap 脚本。
 ```
 
+## Validation
+
+This repo includes zero-dependency validation tests for the bootstrap contract, skill layout, and Claude/Codex wrappers.
+
+Use any Python 3.12 interpreter to run them locally:
+
+```bash
+python -m unittest discover -s tests -p "test_*.py" -v
+```
+
+GitHub Actions runs the same test suite on Ubuntu and Windows for every push and pull request.
+
 ## Override Rules
 
 - Project-local `AGENTS.md` rules override shared defaults.
