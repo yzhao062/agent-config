@@ -22,6 +22,9 @@ Recommended optional fields:
 - `pass_mode`
 - `builder_agent`
 - `checker_agent`
+- `skill_roles`
+- `workspace_contract`
+- `protected_regions`
 - `notes`
 - `workflow_artifacts`
 
@@ -35,12 +38,49 @@ pass_mode: ""
 builder_agent: ""
 checker_agent: ""
 task_root: "."
+
+# String for single-file output; list for multi-file coordinated output.
 primary_result: ""
+# primary_result:
+#   - file: "00-project-summary.tex"
+#     role: "summary"
+#   - file: "00-project-description.tex"
+#     role: "main-narrative"
+
 artifact_dir: ""
 sources_of_truth: []
 constraints: []
 acceptance_criteria: []
+
+# Flat list for simple tasks; ordered pipeline for staged preflight.
 verification: []
+# verification:
+#   - step: "integrity-check"
+#     artifact: "outputs/pdf-safety-check.md"
+#     blocking: true
+#   - step: "extraction-quality"
+#     artifact: "outputs/pdf-extraction-check.md"
+#     blocking: true
+
+# Optional: role-based multi-skill coordination.
+# skill_roles:
+#   primary: "nsf-proposal-composer"
+#   compliance: "nsf-proposal-guardrail"
+#   refinement: "nsf-thrust-refiner"
+#   citation: "nsf-bibref-filler"
+
+# Optional: paths that must exist before first-pass.
+# workspace_contract:
+#   required_paths:
+#     - "templates/paper-deck-base.tex"
+#     - "theme/beamerthemeuscmoloch.sty"
+#   check_before: "first-pass"
+
+# Optional: regions the second-pass must not rewrite.
+# protected_regions:
+#   marker_prefix: "refiner:body"
+#   policy: "audit-only"
+
 workflow_artifacts:
   build_note: ""
   handoff_note: ""
@@ -48,6 +88,102 @@ workflow_artifacts:
   reconcile_note: ""
 notes: ""
 ```
+
+## Field Details
+
+### `primary_result` — String Or List
+
+When a single file is the canonical output, use a string:
+
+```yaml
+primary_result: "outputs/review.md"
+```
+
+When the task produces a coordinated file set with no single dominant file, use a list:
+
+```yaml
+primary_result:
+  - file: "00-project-summary.tex"
+    role: "summary"
+  - file: "00-project-description.tex"
+    role: "main-narrative"
+  - file: "11-aim1.tex"
+    role: "unit"
+  - file: "20-evaluation.tex"
+    role: "evaluation"
+```
+
+When `primary_result` is a list, the second-pass agent audits all listed files. Reconciliation must update all files that the audit touched. The `role` field is optional but helps the auditor understand which file serves which function.
+
+### `verification` — Flat List Or Ordered Pipeline
+
+A flat list is the default and remains valid for simple tasks:
+
+```yaml
+verification:
+  - "run tests"
+  - "check formatting"
+```
+
+An ordered pipeline expresses multi-stage preflight where some steps must pass before drafting begins:
+
+```yaml
+verification:
+  - step: "integrity-check"
+    artifact: "outputs/pdf-safety-check.md"
+    blocking: true
+  - step: "extraction-quality"
+    artifact: "outputs/pdf-extraction-check.md"
+    blocking: true
+  - step: "packet-consistency"
+    artifact: "outputs/packet-consistency-check.md"
+    blocking: false
+```
+
+Steps marked `blocking: true` must pass before the first-pass draft begins. Steps marked `blocking: false` produce advisory artifacts. Run steps in the declared order.
+
+### `skill_roles` — Multi-Skill Coordination
+
+Use `skill_roles` instead of the flat `selected_skills` list when the task involves coordinated multi-skill work:
+
+```yaml
+skill_roles:
+  primary: "nsf-proposal-composer"
+  compliance: "nsf-proposal-guardrail"
+  refinement: "nsf-thrust-refiner"
+  citation: "nsf-bibref-filler"
+```
+
+The `primary` role is the main domain skill. Other roles are consulted by the primary skill at defined escalation points. The dual-pass workflow does not orchestrate inter-skill calls; it records which skill fills which role so the second-pass agent understands the coordination structure.
+
+`selected_skills` remains valid as the simple case.
+
+### `workspace_contract` — Environment Precondition
+
+Declare paths that must exist before work starts:
+
+```yaml
+workspace_contract:
+  required_paths:
+    - "README.md"
+    - "templates/paper-deck-base.tex"
+    - "theme/beamerthemeuscmoloch.sty"
+  check_before: "first-pass"
+```
+
+If any required path is missing at the step named in `check_before`, stop and ask instead of improvising.
+
+### `protected_regions` — Second-Pass Boundaries
+
+Declare file regions that the second-pass must not rewrite:
+
+```yaml
+protected_regions:
+  marker_prefix: "refiner:body"
+  policy: "audit-only"
+```
+
+When `policy` is `audit-only`, the second-pass agent may reference and comment on protected regions in the audit, but reconciliation must not modify content between matching markers. Use `read-write` only when the user explicitly unlocks protected regions.
 
 ## When `workflow.yaml` Is Optional
 
@@ -108,6 +244,7 @@ Examples:
 - Review packet: keep `outputs/review.md` as canonical, add workflow notes under `outputs/`.
 - Code task in a repo: keep the edited source files as canonical, add workflow notes under `.agent/<task-id>/` or an existing task-local artifact directory.
 - Writing task: keep the requested draft file as canonical, add workflow notes next to it or under an existing `outputs/` directory.
+- NSF proposal: keep the `.tex` file set as canonical, add workflow notes under `<proposal-dir>/` or an existing artifact directory.
 
 ## Builder Handoff Contract
 
@@ -127,6 +264,7 @@ Examples:
 - unsupported claims or assumptions
 - missed requirements
 - clarity or structure issues
+- citation integrity issues (key resolves but paper does not support the claim) — include when the task involves citations
 
 For high-stakes tasks, order findings by severity.
 
