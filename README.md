@@ -17,8 +17,15 @@ Paste the bootstrap block from `AGENTS.md` into the top of your project's `AGENT
 1. Download the latest `AGENTS.md` into `.agent-config/`.
 2. Sparse-clone `skills/` and `.claude/commands/` into `.agent-config/repo/`.
 3. Copy shared commands into the project's `.claude/commands/` (non-destructive).
+4. Auto-add `.agent-config/` to the project's `.gitignore`.
 
-Add `.agent-config/` to the project's `.gitignore`.
+## Quick Start Prompt
+
+After pasting the bootstrap block into the project's `AGENTS.md`, tell the agent:
+
+```
+阅读 AGENTS.md 并执行其中的 bootstrap 脚本。
+```
 
 ## Override Rules
 

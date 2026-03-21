@@ -1,3 +1,6 @@
+> If this file was fetched into `.agent-config/AGENTS.md`, treat the bootstrap block below as copy-paste setup for project repos, not as runtime instructions to execute again.
+> In the fetched copy, read and follow the shared rules starting at `## User Profile`.
+
 ## Bootstrap — Shared Config and Skills
 
 This file is the shared agent configuration hosted at `https://github.com/yzhao062/agent-config`.
@@ -72,6 +75,9 @@ Add `.agent-config/` to the project's `.gitignore` so fetched files are not comm
 - If a shared skill does not exist locally, the agent should use the fetched copy from `.agent-config/repo/skills/`.
 
 ---
+
+<!-- Everything above this line is bootstrap setup instructions. -->
+<!-- Everything below this line contains the shared rules that agents should read and follow. -->
 
 ## User Profile
 
