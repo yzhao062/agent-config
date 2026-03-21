@@ -1,0 +1,18 @@
+task_type: ""
+goal: ""
+selected_skills: []
+builder_agent: ""
+checker_agent: ""
+task_root: "."
+primary_result: ""
+artifact_dir: ""
+sources_of_truth: []
+constraints: []
+acceptance_criteria: []
+verification: []
+workflow_artifacts:
+  build_note: ""
+  handoff_note: ""
+  audit_note: ""
+  reconcile_note: ""
+notes: ""
