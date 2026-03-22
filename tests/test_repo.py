@@ -297,10 +297,38 @@ class RepoValidationTests(unittest.TestCase):
             self.assertTrue((skill_dir / "agents" / "openai.yaml").exists(), skill_name)
             self.assertTrue((POINTER_DIR / f"{skill_name}.md").exists(), skill_name)
 
+    def test_skill_core_files_are_tracked(self) -> None:
+        tracked = self.tracked_files()
+        for skill_dir in self.skills:
+            skill_name = skill_dir.name
+            self.assertIn(f"skills/{skill_name}/SKILL.md", tracked, skill_name)
+            self.assertIn(
+                f"skills/{skill_name}/agents/openai.yaml", tracked, skill_name
+            )
+            self.assertIn(f".claude/commands/{skill_name}.md", tracked, skill_name)
+
     def test_bibref_filler_has_working_bib_template(self) -> None:
         self.assertTrue(
             (SKILLS_DIR / "bibref-filler" / "assets" / "working.bib").exists()
         )
+
+    def test_figure_prompt_builder_has_bundled_reference_bank(self) -> None:
+        bundled_bank = (
+            SKILLS_DIR / "figure-prompt-builder" / "assets" / "reference-bank"
+        )
+        self.assertTrue(bundled_bank.exists())
+        self.assertTrue(any(bundled_bank.rglob("*.*")))
+
+    def test_figure_prompt_builder_reference_docs_are_portable(self) -> None:
+        archetypes = read_text(
+            SKILLS_DIR
+            / "figure-prompt-builder"
+            / "references"
+            / "figure-archetypes.md"
+        )
+        self.assertIn("reference-bank.md", archetypes)
+        self.assertIn("../assets/reference-bank/", archetypes)
+        self.assertNotIn("../../../figure-references/", archetypes)
 
     def test_pointer_files_match_skill_directories(self) -> None:
         skill_names = {path.name for path in self.skills}

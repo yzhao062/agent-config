@@ -55,6 +55,32 @@ GitHub Actions runs the same test suite on Ubuntu and Windows for every push and
 |-------|-------------|
 | `dual-pass-workflow` | Outer shell for two-pass tasks: first pass builds the artifact, optional second pass audits and reconciles. Works with any domain skill (paper review, bug fix, writing, frontend edit, etc.). |
 | `bibref-filler` | Add new external verified citations while keeping curated bibliography files stable, placing machine-added entries in a separate `working.bib`, and leaving visible unresolved notes instead of guessing. |
+| `figure-prompt-builder` | Build copy-ready prompts for explanatory figures such as overviews, workflows, mechanisms, timelines, and conceptual illustrations, using a small bundled reference bank when helpful. |
+
+## Skill Usage
+
+After bootstrap, mention the skill name directly in the prompt. In Claude Code, the matching pointer command under `.claude/commands/` provides the same entry point.
+
+Use `bibref-filler` by itself when the main job is to add new external citations safely:
+
+```text
+Use $bibref-filler on <target-files-or-task-root>. Add new external verified citations only, put every machine-added entry into a separate working.bib next to the active main bib files, and leave visible TODOs instead of guessing.
+```
+
+Use `dual-pass-workflow` with `bibref-filler` when you want a first pass to add citations and a second pass to audit citation integrity:
+
+```text
+Use $dual-pass-workflow and $bibref-filler on <target-files-or-task-root> in first-pass mode. Add new external verified citations only, keep curated main bib files unchanged, and place machine-added entries in working.bib.
+```
+
+```text
+Use $dual-pass-workflow and $bibref-filler on <target-files-or-task-root> in second-pass mode focusing on citation existence, exact metadata, and whether every machine-added entry is isolated in working.bib.
+```
+
+Typical split:
+
+1. `first-pass`: find real external papers, verify canonical metadata, add entries to `working.bib`, and patch citations into the target files.
+2. `second-pass`: independently check that no inserted citation points to a nonexistent paper, metadata is exact, and new entries were not mixed into the curated main bib files.
 
 ## Structure
 
@@ -73,6 +99,19 @@ skills/
       citation-rules.md            # Density, placement, and storage guidance
     scripts/
       check_cite_keys.py           # Local cite-key validation helper
+  figure-prompt-builder/
+    SKILL.md                       # Skill definition
+    agents/openai.yaml             # Codex wrapper
+    assets/
+      reference-bank/              # Portable donor figures bundled with the skill
+    references/
+      figure-archetypes.md         # Figure-type selection guide
+      reference-bank.md            # Curated donor bank index
+      prompt-design.md             # Cross-model prompting guidance
+      tool-selection.md            # Output-path and tool-choice guidance
+      external-handoff.md          # Outside-tool handoff and reprompt guidance
+    scripts/
+      init_figure_spec.py          # Figure brief scaffold helper
   dual-pass-workflow/
     SKILL.md                       # Skill definition (single source of truth)
     agents/openai.yaml             # Codex wrapper
@@ -84,5 +123,6 @@ skills/
       handoff.md, audit.md, reconcile.md  # Workflow note templates
 .claude/commands/
   bibref-filler.md                 # Claude Code pointer to SKILL.md
+  figure-prompt-builder.md         # Claude Code pointer to SKILL.md
   dual-pass-workflow.md            # Claude Code pointer to SKILL.md
 ```
