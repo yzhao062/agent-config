@@ -1,0 +1,13 @@
+{
+  "effortLevel": "high",
+  "permissions": {
+    "allow": [
+      "Bash(git -C /c/Users/yuezh/PycharmProjects/agent-config status)",
+      "Bash(git -C /c/Users/yuezh/PycharmProjects/agent-config diff)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(python -m pytest tests/ -v)"
+    ]
+  }
+}
+
