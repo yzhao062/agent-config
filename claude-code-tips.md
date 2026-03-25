@@ -2,6 +2,9 @@
 
 Compiled from official docs, blogs, and community sources. Tailored for a Claude Max subscriber using PyCharm terminal across Windows/macOS/Linux.
 
+> Source: https://code.claude.com/docs/en/interactive-mode
+> Full docs index: https://code.claude.com/docs/llms.txt
+
 ---
 
 ## 0. Platform Notes (Windows vs macOS vs Linux)
@@ -39,6 +42,7 @@ Most shortcuts use `Ctrl` and `Alt` on all platforms. Key differences:
 | `Shift+Tab` (twice) | Cycle permission modes (default → acceptEdits → plan → ...) |
 | `Ctrl+C` | Cancel current input or generation |
 | `Ctrl+D` | Exit Claude Code session |
+| `Up/Down arrows` | Navigate command history (recall previous inputs) |
 | `?` | Show available shortcuts for your environment |
 
 **Editing & Navigation:**
@@ -61,13 +65,27 @@ Most shortcuts use `Ctrl` and `Alt` on all platforms. Key differences:
 |----------|-------------|
 | `Alt+T` (macOS: `Option+T`) | Toggle extended thinking mode |
 | `Alt+P` (macOS: `Option+P`) | Switch model without clearing prompt |
-| `Ctrl+O` | Toggle verbose output (shows detailed tool usage) |
+| `Ctrl+O` | Toggle verbose output (shows detailed tool usage; also expands MCP read/search calls that collapse to a single line like "Queried slack" by default) |
 | `Ctrl+T` | Toggle task list display |
 | `Ctrl+L` | Clear terminal screen (keeps conversation) |
 | `Ctrl+R` | Reverse search through input history |
 | `Ctrl+B` | Background a running command (press twice in tmux) |
 | `Ctrl+F` | Kill all background agents (press twice within 3s to confirm) |
 | `Left/Right arrows` | Cycle through tabs in permission dialogs |
+
+**Theme/display (inside `/theme` picker only):**
+
+| Shortcut | What it does |
+|----------|-------------|
+| `Ctrl+T` | Toggle syntax highlighting for code blocks (only in `/theme` picker menu; only available in native build) |
+
+**Quick commands:**
+
+| Shortcut | What it does |
+|----------|-------------|
+| `/` at start | Open command/skill menu |
+| `!` at start | Bash mode — run commands directly, output goes into context |
+| `@` | Trigger file path autocomplete |
 
 **Custom keybindings:** edit `~/.claude/keybindings.json` or run `/keybindings`. Supports chord bindings (e.g., `ctrl+k ctrl+s`). Cannot rebind `Ctrl+C` and `Ctrl+D`.
 
@@ -249,8 +267,11 @@ Ask quick questions without polluting conversation history:
 - Has full visibility into current conversation context
 - Works while Claude is processing (non-blocking)
 - No tool access — answers only from existing context
+- Single response only — no follow-up turns
 - Appears in dismissible overlay, never stored in history
 - Dismiss with Space, Enter, or Escape
+- Low cost — reuses the parent conversation's prompt cache
+- `/btw` is the inverse of a subagent: it sees your full conversation but has no tools, while a subagent has full tools but starts with an empty context. Use `/btw` to ask about what Claude already knows; use a subagent to go find out something new.
 
 ## 16. Model Switching
 
@@ -324,6 +345,188 @@ Ask quick questions without polluting conversation history:
 | `/upgrade`           | Open upgrade page                                         |
 | `/help`              | Show help and available commands                          |
 
+## 18. Vim Editor Mode
+
+Enable vim-style editing with `/vim` command or configure permanently via `/config`.
+
+**Mode switching:**
+
+| Command | Action | From mode |
+|---------|--------|-----------|
+| `Esc` | Enter NORMAL mode | INSERT |
+| `i` | Insert before cursor | NORMAL |
+| `I` | Insert at beginning of line | NORMAL |
+| `a` | Insert after cursor | NORMAL |
+| `A` | Insert at end of line | NORMAL |
+| `o` | Open line below | NORMAL |
+| `O` | Open line above | NORMAL |
+
+**Navigation (NORMAL mode):**
+
+| Command | Action |
+|---------|--------|
+| `h`/`j`/`k`/`l` | Move left/down/up/right |
+| `w` | Next word |
+| `e` | End of word |
+| `b` | Previous word |
+| `0` | Beginning of line |
+| `$` | End of line |
+| `^` | First non-blank character |
+| `gg` | Beginning of input |
+| `G` | End of input |
+| `f{char}` | Jump to next occurrence of character |
+| `F{char}` | Jump to previous occurrence of character |
+| `t{char}` | Jump to just before next occurrence of character |
+| `T{char}` | Jump to just after previous occurrence of character |
+| `;` | Repeat last f/F/t/T motion |
+| `,` | Repeat last f/F/t/T motion in reverse |
+
+In vim normal mode, if the cursor is at the beginning or end of input and cannot move further, the arrow keys navigate command history instead.
+
+**Editing (NORMAL mode):**
+
+| Command | Action |
+|---------|--------|
+| `x` | Delete character |
+| `dd` | Delete line |
+| `D` | Delete to end of line |
+| `dw`/`de`/`db` | Delete word/to end/back |
+| `cc` | Change line |
+| `C` | Change to end of line |
+| `cw`/`ce`/`cb` | Change word/to end/back |
+| `yy`/`Y` | Yank (copy) line |
+| `yw`/`ye`/`yb` | Yank word/to end/back |
+| `p` | Paste after cursor |
+| `P` | Paste before cursor |
+| `>>` | Indent line |
+| `<<` | Dedent line |
+| `J` | Join lines |
+| `.` | Repeat last change |
+
+**Text objects (NORMAL mode):**
+
+Text objects work with operators like `d`, `c`, and `y`:
+
+| Command | Action |
+|---------|--------|
+| `iw`/`aw` | Inner/around word |
+| `iW`/`aW` | Inner/around WORD (whitespace-delimited) |
+| `i"`/`a"` | Inner/around double quotes |
+| `i'`/`a'` | Inner/around single quotes |
+| `i(`/`a(` | Inner/around parentheses |
+| `i[`/`a[` | Inner/around brackets |
+| `i{`/`a{` | Inner/around braces |
+
+## 19. Command History & Search
+
+Claude Code maintains command history for the current session:
+
+- Input history is stored per working directory
+- Input history resets when you run `/clear` to start a new session. The previous session's conversation is preserved and can be resumed.
+- Use Up/Down arrows to navigate
+- **Note**: history expansion (`!`) is disabled by default
+
+**Reverse search with Ctrl+R:**
+
+1. **Start search**: press `Ctrl+R` to activate reverse history search
+2. **Type query**: enter text to search for in previous commands. The search term is highlighted in matching results
+3. **Navigate matches**: press `Ctrl+R` again to cycle through older matches
+4. **Accept match**:
+   - Press `Tab` or `Esc` to accept the current match and continue editing
+   - Press `Enter` to accept and execute the command immediately
+5. **Cancel search**:
+   - Press `Ctrl+C` to cancel and restore your original input
+   - Press `Backspace` on empty search to cancel
+
+## 20. Background Tasks
+
+Claude Code supports running bash commands in the background, allowing you to continue working while long-running processes execute.
+
+**How backgrounding works:**
+
+When Claude Code runs a command in the background, it runs the command asynchronously and immediately returns a background task ID. Claude Code can respond to new prompts while the command continues executing.
+
+To run commands in the background, you can either:
+- Prompt Claude Code to run a command in the background
+- Press `Ctrl+B` to move a regular Bash tool invocation to the background. (Tmux users must press `Ctrl+B` twice due to tmux's prefix key.)
+
+**Key features:**
+- Output is buffered and Claude can retrieve it using the TaskOutput tool
+- Background tasks have unique IDs for tracking and output retrieval
+- Background tasks are automatically cleaned up when Claude Code exits
+- Background tasks are automatically terminated if output exceeds 5GB, with a note in stderr explaining why
+
+To disable all background task functionality, set `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`.
+
+**Common backgrounded commands:** build tools (webpack, vite, make), package managers (npm, yarn, pnpm), test runners (jest, pytest), development servers, long-running processes (docker, terraform).
+
+## 21. Bash Mode with `!` Prefix
+
+Run bash commands directly without going through Claude by prefixing your input with `!`:
+
+```
+! npm test
+! git status
+! ls -la
+```
+
+- Adds the command and its output to the conversation context
+- Shows real-time progress and output
+- Supports the same `Ctrl+B` backgrounding for long-running commands
+- Does not require Claude to interpret or approve the command
+- Supports history-based autocomplete: type a partial command and press **Tab** to complete from previous `!` commands in the current project
+- Exit with `Escape`, `Backspace`, or `Ctrl+U` on an empty prompt
+
+## 22. Prompt Suggestions
+
+When you first open a session, a grayed-out example command appears in the prompt input to help you get started. Claude Code picks this from your project's git history, so it reflects files you've been working on recently.
+
+After Claude responds, suggestions continue to appear based on your conversation history, such as a follow-up step from a multi-part request or a natural continuation of your workflow.
+
+- Press **Tab** to accept the suggestion, or press **Enter** to accept and submit
+- Start typing to dismiss it
+- The suggestion runs as a background request that reuses the parent conversation's prompt cache, so the additional cost is minimal. Claude Code skips suggestion generation when the cache is cold to avoid unnecessary cost.
+- Suggestions are automatically skipped after the first turn of a conversation, in non-interactive mode, and in plan mode.
+
+To disable prompt suggestions entirely, set the environment variable or toggle the setting in `/config`:
+
+```
+export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false
+```
+
+## 23. Task List
+
+When working on complex, multi-step work, Claude creates a task list to track progress. Tasks appear in the status area of your terminal with indicators showing what's pending, in progress, or complete.
+
+- Press `Ctrl+T` to toggle the task list view. The display shows up to 10 tasks at a time
+- To see all tasks or clear them, ask Claude directly: "show me all tasks" or "clear all tasks"
+- Tasks persist across context compactions, helping Claude stay organized on larger projects
+- To share a task list across sessions, set `CLAUDE_CODE_TASK_LIST_ID` to use a named directory in `~/.claude/tasks/`: `CLAUDE_CODE_TASK_LIST_ID=my-project claude`
+
+## 24. PR Review Status
+
+When working on a branch with an open pull request, Claude Code displays a clickable PR link in the footer (for example, "PR #446"). The link has a colored underline indicating the review state:
+
+- Green: approved
+- Yellow: pending review
+- Red: changes requested
+- Gray: draft
+- Purple: merged
+
+`Cmd+click` (Mac) or `Ctrl+click` (Windows/Linux) the link to open the pull request in your browser. The status updates automatically every 60 seconds.
+
+PR status requires the `gh` CLI to be installed and authenticated (`gh auth login`).
+
 ---
 
-**Sources:** [Official Best Practices](https://code.claude.com/docs/en/best-practices), [Builder.io](https://www.builder.io/blog/claude-code), [Eesel](https://www.eesel.ai/blog/claude-code-best-practices), [YK 32 Tips](https://agenticcoding.substack.com/p/32-claude-code-tips-from-basics-to), [Trigger.dev](https://trigger.dev/blog/10-claude-code-tips-you-did-not-know), [ykdojo/claude-code-tips](https://github.com/ykdojo/claude-code-tips), [Ran the Builder](https://ranthebuilder.cloud/blog/claude-code-best-practices-lessons-from-real-projects/), [Sshh Blog](https://blog.sshh.io/p/how-i-use-every-claude-code-feature), [Official Workflows](https://code.claude.com/docs/en/common-workflows), [F22 Labs](https://www.f22labs.com/blogs/10-claude-code-productivity-tips-for-every-developer/)
+## See Also
+
+- Skills: https://code.claude.com/docs/en/skills
+- Checkpointing: https://code.claude.com/docs/en/checkpointing
+- CLI reference: https://code.claude.com/docs/en/cli-reference
+- Settings: https://code.claude.com/docs/en/settings
+- Memory management: https://code.claude.com/docs/en/memory
+
+---
+
+**Sources:** [Official Interactive Mode](https://code.claude.com/docs/en/interactive-mode), [Official Best Practices](https://code.claude.com/docs/en/best-practices), [Builder.io](https://www.builder.io/blog/claude-code), [Eesel](https://www.eesel.ai/blog/claude-code-best-practices), [YK 32 Tips](https://agenticcoding.substack.com/p/32-claude-code-tips-from-basics-to), [Trigger.dev](https://trigger.dev/blog/10-claude-code-tips-you-did-not-know), [ykdojo/claude-code-tips](https://github.com/ykdojo/claude-code-tips), [Ran the Builder](https://ranthebuilder.cloud/blog/claude-code-best-practices-lessons-from-real-projects/), [Sshh Blog](https://blog.sshh.io/p/how-i-use-every-claude-code-feature), [Official Workflows](https://code.claude.com/docs/en/common-workflows), [F22 Labs](https://www.f22labs.com/blogs/10-claude-code-productivity-tips-for-every-developer/)
