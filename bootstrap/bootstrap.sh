@@ -1,3 +1,6 @@
+# Let .gitattributes handle line endings; silence CRLF warnings on Windows
+git config --global core.autocrlf false
+
 mkdir -p .agent-config .claude/commands
 curl -sfL https://raw.githubusercontent.com/yzhao062/agent-config/main/AGENTS.md -o .agent-config/AGENTS.md
 cp -f .agent-config/AGENTS.md AGENTS.md

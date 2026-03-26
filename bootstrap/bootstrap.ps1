@@ -1,3 +1,6 @@
+# Let .gitattributes handle line endings; silence CRLF warnings on Windows
+git config --global core.autocrlf false
+
 New-Item -ItemType Directory -Force -Path .agent-config, .claude, .claude/commands | Out-Null
 Invoke-WebRequest -UseBasicParsing -Uri https://raw.githubusercontent.com/yzhao062/agent-config/main/AGENTS.md -OutFile .agent-config/AGENTS.md
 Copy-Item .agent-config/AGENTS.md AGENTS.md -Force
