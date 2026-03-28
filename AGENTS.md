@@ -69,6 +69,12 @@ Add `.agent-config/` to the project's `.gitignore` so fetched files are not comm
 - The user is a computer scientist and professor working in machine learning and AI.
 - Common tasks include research papers, funding proposals, scientific writing, and administrative writing.
 
+## Agent Roles
+
+- **Claude Code** is the primary workhorse — drafting, implementation, research, and heavy-lifting tasks.
+- **Codex** is the gatekeeper — review, feedback, and quality checks on work produced by Claude Code or the user.
+- When both agents are available, default to this division of labor unless the user overrides it.
+
 ## Writing Defaults
 
 - Use scientifically accessible language.
