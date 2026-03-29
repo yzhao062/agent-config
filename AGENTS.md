@@ -113,6 +113,11 @@ Add `.agent-config/` to the project's `.gitignore` so fetched files are not comm
 - On macOS or Linux, a common Miniforge pattern is `$HOME/miniforge3/envs/py312/bin/python`.
 - If interpreter selection is still unclear, inspect Miniforge environments and local IDE settings before reporting that Python is missing.
 - GitHub CLI (`gh`) is used for PR and issue workflows. If `gh` is not found, remind the user to install it (`winget install GitHub.cli` on Windows, `brew install gh` on macOS) and authenticate with `gh auth login`.
+- **Claude Code installation**: Always use the **native installer** so that auto-update works. npm and winget installs require manual updates and should be migrated.
+  - macOS: `curl -fsSL https://claude.ai/install.sh | sh`
+  - Windows (PowerShell, no admin): `irm https://claude.ai/install.ps1 | iex` (requires Git for Windows)
+  - To migrate from npm: `npm uninstall -g @anthropic-ai/claude-code` first. From winget: `winget uninstall Anthropic.ClaudeCode` first.
+  - Update channel can be set via `/config` inside Claude Code (`stable` or `latest`).
 
 ## Submodule Workflow
 
