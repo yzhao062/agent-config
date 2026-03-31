@@ -51,6 +51,16 @@ GitHub Actions runs the same test suite on Ubuntu and Windows for every push and
 - Project-local `AGENTS.md` rules override shared defaults.
 - Project-local `skills/<name>/SKILL.md` overrides the shared copy of the same skill.
 
+## Codex MCP Integration
+
+Codex can be used from within Claude Code as an MCP server. Register once at the user level:
+
+```bash
+claude mcp add codex -s user -- codex mcp-server
+```
+
+This makes the `codex` and `codex-reply` MCP tools available in all Claude Code sessions (any directory, any terminal). A session restart is required after registration for the tools to appear. Requires Node.js, the Codex CLI (`npm install -g @openai/codex`), and `OPENAI_API_KEY`. See the full setup notes in `AGENTS.md` under "Codex MCP Integration".
+
 ## Shared Skills
 
 | Skill | Description |

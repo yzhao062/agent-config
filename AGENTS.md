@@ -75,6 +75,22 @@ Add `.agent-config/` to the project's `.gitignore` so fetched files are not comm
 - **Codex** is the gatekeeper: review, feedback, and quality checks on work produced by Claude Code or the user.
 - When both agents are available, default to this division of labor unless the user overrides it.
 
+## Codex MCP Integration
+
+- Codex is available to Claude Code as an MCP server. Register it once at the user level so it applies to all projects and terminals (including PyCharm):
+  ```
+  claude mcp add codex -s user -- codex mcp-server
+  ```
+- This writes to `~/.claude.json` top-level `mcpServers`. A session restart is required after registration for `/mcp` to pick it up.
+- **Gotcha:** Do not register under a project scope (e.g., from a specific working directory without `-s user`). That creates a project-scoped entry under `projects["<path>"].mcpServers` in `~/.claude.json`, which does not propagate to other directories.
+- Prerequisites: Node.js installed, Codex CLI installed (`npm install -g @openai/codex`), and `OPENAI_API_KEY` set.
+- MCP tools available after registration: `codex` (new prompt) and `codex-reply` (continue an existing session).
+- On Windows, if `PATH` does not include the npm global bin, register with the full path:
+  ```
+  claude mcp add codex -s user -- $env:APPDATA\npm\codex.cmd mcp-server
+  ```
+- The official `codex-plugin-cc` plugin has sandbox issues on Windows; the MCP approach is more stable.
+
 ## Writing Defaults
 
 - Use scientifically accessible language.
