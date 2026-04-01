@@ -84,6 +84,13 @@ Add `.agent-config/` to the project's `.gitignore` so fetched files are not comm
 - This writes to `~/.claude.json` top-level `mcpServers`. A session restart is required after registration for `/mcp` to pick it up.
 - **Gotcha:** Do not register under a project scope (e.g., from a specific working directory without `-s user`). That creates a project-scoped entry under `projects["<path>"].mcpServers` in `~/.claude.json`, which does not propagate to other directories.
 - Prerequisites: Node.js installed, Codex CLI installed (`npm install -g @openai/codex`), and `OPENAI_API_KEY` set.
+- **Recommended Codex defaults (as of April 2026):** Add or update these keys in `~/.codex/config.toml` on macOS/Linux or `%USERPROFILE%\.codex\config.toml` on Windows (create the file if it does not exist) so that both interactive sessions and the MCP server use the recommended default model with fast inference:
+  ```toml
+  model = "gpt-5.4"
+  model_reasoning_effort = "xhigh"
+  service_tier = "fast"
+  ```
+  `service_tier = "fast"` enables 1.5x faster inference at 2x credit usage without reducing model quality. Omit it if you prefer lower cost over latency. The MCP server reads the same `config.toml`, so these settings apply everywhere.
 - MCP tools available after registration: `codex` (new prompt) and `codex-reply` (continue an existing session).
 - **Windows note:** Claude Code launches MCP servers through bash, not cmd or PowerShell. This means `.cmd` wrappers and PowerShell variables like `$env:APPDATA` do not work. If `codex` is not on `PATH`, use the full path with forward slashes and **no `.cmd` extension** (npm installs a bash-compatible script alongside the `.cmd`):
   ```
