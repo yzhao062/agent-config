@@ -1,0 +1,4 @@
+interface:
+  display_name: "Deck Assembler"
+  short_description: "Merge intro modules and existing paper decks into one coherent talk"
+  default_prompt: "Use $deck-assembler to merge the reusable Yue Zhao intro slides and one or more existing paper decks into a single coherent USC Beamer talk. Default to a long-form merged talk, keep each paper's main/supporting content, add a quick talk-overview slide after the intro, and use light bridge slides plus one unified throughline."

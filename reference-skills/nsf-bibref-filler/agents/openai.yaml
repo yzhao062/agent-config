@@ -1,0 +1,4 @@
+interface:
+  display_name: "NSF Bibref Filler"
+  short_description: "Add verified citations without hallucinated bibrefs"
+  default_prompt: "Use $nsf-bibref-filler to add verified bibrefs to the target proposal section. For intro, overview, or motivation paragraphs, use external literature as the main anchors; use our own work mainly for prior capability or direct technical foundations. Prefer exact local cite keys when they fit, and leave visible TODOs instead of guessing."

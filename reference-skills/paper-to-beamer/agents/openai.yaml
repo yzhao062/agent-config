@@ -1,0 +1,4 @@
+interface:
+  display_name: "Paper to Beamer"
+  short_description: "Turn paper LaTeX into a broad-CS Beamer talk and presenter map"
+  default_prompt: "Use $paper-to-beamer to turn a paper's LaTeX source, figures, and bibliography, even from a nonuniform Overleaf-style layout, into a fuller 20-25 minute USC Beamer deck with a presenter map."

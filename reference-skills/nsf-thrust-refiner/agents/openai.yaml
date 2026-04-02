@@ -1,0 +1,4 @@
+interface:
+  display_name: "NSF Thrust Refiner"
+  short_description: "Deepen one proposal thrust or aim at a time"
+  default_prompt: "Use $nsf-thrust-refiner to refine one or two current thrust/aim files with stronger technical detail, local citations, evaluation hooks, figure ideas, and an optional running example or artifact sketch while keeping the overall proposal consistent."

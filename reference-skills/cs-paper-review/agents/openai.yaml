@@ -1,0 +1,4 @@
+interface:
+  display_name: "CS Paper Review"
+  short_description: "Draft grounded CS/ML paper reviews"
+  default_prompt: "Use $cs-paper-review to draft a grounded CS/ML review from the paper PDF, my notes, and any venue form fields."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "NSF Proposal Guardrail"
+  short_description: "NSF proposal rules, QA, and preflight"
+  default_prompt: "Use $nsf-proposal-guardrail to ingest this solicitation, answer requirement questions, or run a pre-submission NSF proposal gap check."

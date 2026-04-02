@@ -1,0 +1,4 @@
+interface:
+  display_name: "NSF Proposal Composer"
+  short_description: "Turn proposal ideas into aligned NSF aim-file drafts"
+  default_prompt: "Use $nsf-proposal-composer to turn my current proposal intro into aligned aim files, refresh the intro so it matches my current aims, and decide whether a single running example would help reviewers follow the proposal."

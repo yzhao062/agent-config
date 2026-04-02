@@ -1,0 +1,7 @@
+interface:
+  display_name: "USC Reimbursement"
+  short_description: "Organize and precheck USC reimbursements"
+  default_prompt: "Use $usc-reimbursement to intake a USC reimbursement case and prepare a submission-ready checklist."
+
+policy:
+  allow_implicit_invocation: true

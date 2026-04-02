@@ -1,0 +1,4 @@
+interface:
+  display_name: "CS Meta Review"
+  short_description: "Draft grounded CS/ML meta reviews"
+  default_prompt: "Use $cs-meta-review to draft a grounded meta review from the paper, reviewer comments, rebuttal, and venue decision scale."
