@@ -62,7 +62,11 @@ Prepare a review request with:
 
 ### 1c. Send to Codex
 
-**MCP path**: Call the `codex` MCP tool with the review request.
+All review prompts sent to Codex (regardless of channel) must include a save instruction **at the very top of the prompt, before the summary or diff**, so Codex sees it first. This lets Claude Code read the feedback directly from the file, and lets the user read or forward it without copy-pasting from chat. The save instruction is:
+
+> IMPORTANT: Save your complete review to `CodexReview.md` in the repository root. Overwrite any existing content. Use plain Markdown. Start the file with a `<!-- Round N -->` comment (matching the round number below) so the reader can verify freshness. Then include the file/diff scope, review lens, findings in priority order, and concrete recommended changes. Do not skip this step.
+
+**MCP path**: Call the `codex` MCP tool with the review request (including the `CodexReview.md` instruction above).
 
 - If the call succeeds and returns a non-empty response, proceed to Phase 2.
 - If the call fails (error, timeout, empty response, or the user denies the tool call), do **not** silently continue. Instead:
@@ -73,6 +77,8 @@ Prepare a review request with:
 **Terminal path**: Present a copy-pasteable review prompt as a fenced text block. Include all context inline so the user can paste it directly into the Codex terminal window without modification:
 
 ````
+IMPORTANT: Save your complete review to CodexReview.md in the repository root. Overwrite any existing content. Use plain Markdown. Start the file with a <!-- Round N --> comment (matching the round number below). Then include the file/diff scope, review lens, findings in priority order, and concrete recommended changes. Do not skip this step.
+
 Review the staged changes in <repo path>. Round <N>.
 
 Summary: <one to three sentences>
@@ -86,22 +92,43 @@ Review lens (<content type>):
 <numbered criteria from review-lenses.md>
 ````
 
-Then wait for the user to relay Codex's feedback.
+Then wait for the user to relay Codex's feedback or confirm that Codex has finished (see Phase 2 for how Claude Code picks up the review).
 
 **Plugin path**: Tell the user the changes are ready for review and suggest what to tell Codex in the plugin, e.g.:
-> "Review the staged changes. Focus on [detected lens]."
+> "Review the staged changes (round N). Focus on [detected lens]. Save your complete review to `CodexReview.md` in the repo root. Start the file with `<!-- Round N -->`. Include the diff scope, review lens, findings in priority order, and concrete recommended changes."
 
-Then wait for the user to relay Codex's feedback.
+Then wait for the user to relay Codex's feedback or confirm that Codex has finished.
 
 ## Phase 2: Intake Feedback
 
-- When feedback arrives (from MCP response or relayed by the user), acknowledge each point.
+Codex is instructed to write its review to `CodexReview.md` in the repository root. When the user says Codex is done (or after an MCP call returns), read `CodexReview.md` to pick up the full feedback. Before trusting the file, verify that its `<!-- Round N -->` comment matches the current round number.
+
+If the file is missing, empty, or carries a stale round marker:
+1. **MCP path**: send a `codex-reply` follow-up: "You did not write CodexReview.md. Please save your review now to CodexReview.md in the repo root, starting with `<!-- Round N -->`."
+2. **Terminal / plugin path**: present a short follow-up prompt the user can paste into Codex: `Save your review to CodexReview.md in the repo root. Start with <!-- Round N -->. Overwrite any existing content.`
+3. If the file is still missing, empty, or stale after the follow-up, fall back to the MCP tool result or ask the user to paste the feedback directly.
+
+- When feedback arrives (from `CodexReview.md`, MCP response, or relayed by the user), acknowledge each point.
 - Categorize each point as:
   - **Will fix** -- clear, actionable, and correct.
   - **Needs discussion** -- ambiguous or potentially wrong; ask the user before acting.
   - **Disagree** -- explain why and let the user decide.
 - Present the categorized list and confirm with the user before making changes.
 - If using MCP, use `codex-reply` for follow-up questions within the same review round.
+
+## Root Review Sink
+
+When a review produces substantial written feedback, save the latest review to `CodexReview.md` in the repository root in addition to replying in chat. Treat this file as a reusable scratch file for the current review round, not as a permanent archive. By default, overwrite the file completely on each new saved review rather than creating per-directory review files or appending multiple rounds, unless the user explicitly asks to preserve history.
+
+The purpose of `CodexReview.md` is to let the user read, reuse, and forward the latest review without copy-pasting from chat. Keep the file in plain Markdown and make it directly useful on its own. Include:
+
+- a `<!-- Round N -->` HTML comment on the first line (used by Phase 2 to verify freshness)
+- the file or diff scope reviewed
+- the review lens or context
+- the main findings in priority order
+- concrete recommended changes, with exact values when relevant
+
+Do not stage, commit, or move `CodexReview.md` unless the user explicitly asks. Before the first review round, check whether `CodexReview.md` is excluded from git. Look in `.gitignore` and `.git/info/exclude`. If it is not excluded anywhere, append `CodexReview.md` to `.git/info/exclude` (a local, untracked ignore file) so that `git add -A` during the revision flow does not accidentally stage the scratch file. Do not edit `.gitignore` for this purpose, as that would introduce a tracked side-effect inside the review loop.
 
 ## Phase 3: Revise
 
