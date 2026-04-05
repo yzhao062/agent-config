@@ -1,0 +1,56 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(*)"
+    ],
+    "ask": [
+      "Bash(git commit *)",
+      "Bash(git push *)",
+      "Bash(git push)",
+      "Bash(git reset --hard *)",
+      "Bash(git checkout -- *)",
+      "Bash(git clean *)",
+      "Bash(git branch -D *)",
+      "Bash(git branch -d *)",
+      "Bash(git stash drop *)",
+      "Bash(git stash clear *)",
+      "Bash(git tag -d *)",
+      "Bash(gh pr create *)",
+      "Bash(gh pr merge *)",
+      "Bash(gh pr close *)",
+      "Bash(gh repo delete *)",
+      "Bash(rm -rf *)",
+      "Bash(rm -fr *)",
+      "Bash(rm -r -f *)",
+      "Bash(git merge *)",
+      "Bash(git rebase *)",
+      "Bash(git branch --delete *)"
+    ],
+    "additionalDirectories": [
+      "C:\\Users\\yuezh\\PycharmProjects",
+      "C:\\Users\\yzhao062\\PycharmProjects",
+      "C:\\Users\\csadmin\\PycharmProjects",
+      "/Users/yuezh/PycharmProjects",
+      "/Users/yzhao062/PycharmProjects",
+      "/Users/csadmin/PycharmProjects",
+      "/home/yuezh/PycharmProjects",
+      "/home/yzhao062/PycharmProjects",
+      "/home/csadmin/PycharmProjects"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$HOME/.claude/hooks/guard.py\" 2>/dev/null || python \"$HOME/.claude/hooks/guard.py\"",
+            "statusMessage": "Checking for compound cd and destructive commands..."
+          }
+        ]
+      }
+    ]
+  },
+  "effortLevel": "high"
+}

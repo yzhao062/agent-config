@@ -1,6 +1,27 @@
 # Let .gitattributes handle line endings; silence CRLF warnings on Windows
 git config --global core.autocrlf false
 
+function Merge-Json($base, $over) {
+  foreach ($p in $over.PSObject.Properties) {
+    $b = $base.PSObject.Properties[$p.Name]
+    if ($b -and $b.Value -is [PSCustomObject] -and $p.Value -is [PSCustomObject]) {
+      Merge-Json $b.Value $p.Value
+    } elseif ($b -and $b.Value -is [Array] -and $p.Value -is [Array]) {
+      # Arrays of objects (e.g., hooks): replace. Arrays of strings: dedup.
+      $hasObj = $false; foreach ($el in $p.Value) { if ($el -is [PSCustomObject]) { $hasObj = $true; break } }
+      if ($hasObj) {
+        $base | Add-Member -NotePropertyName $p.Name -NotePropertyValue $p.Value -Force
+      } else {
+        $s = [System.Collections.Generic.HashSet[string]]::new()
+        $m = @(); foreach ($i in $b.Value) { if ($s.Add($i)) { $m += $i } }
+        foreach ($i in $p.Value) { if ($s.Add($i)) { $m += $i } }
+        $base | Add-Member -NotePropertyName $p.Name -NotePropertyValue $m -Force
+      }
+    } else {
+      $base | Add-Member -NotePropertyName $p.Name -NotePropertyValue $p.Value -Force
+    }
+  }
+}
 New-Item -ItemType Directory -Force -Path .agent-config, .claude, .claude/commands | Out-Null
 Invoke-WebRequest -UseBasicParsing -Uri https://raw.githubusercontent.com/yzhao062/agent-config/main/AGENTS.md -OutFile .agent-config/AGENTS.md
 Copy-Item .agent-config/AGENTS.md AGENTS.md -Force
@@ -9,33 +30,40 @@ if (Test-Path .agent-config/repo/.git) {
 } else {
   git clone --depth 1 --filter=blob:none --sparse https://github.com/yzhao062/agent-config.git .agent-config/repo
 }
-git -C .agent-config/repo sparse-checkout set skills .claude
+git -C .agent-config/repo sparse-checkout set skills .claude scripts user
 if (Test-Path .agent-config/repo/.claude/commands) {
   Copy-Item .agent-config/repo/.claude/commands/*.md .claude/commands/ -Force
 }
 if (Test-Path .agent-config/repo/.claude/settings.json) {
   if (Test-Path .claude/settings.json) {
-    function Merge-Json($base, $over) {
-      foreach ($p in $over.PSObject.Properties) {
-        $b = $base.PSObject.Properties[$p.Name]
-        if ($b -and $b.Value -is [PSCustomObject] -and $p.Value -is [PSCustomObject]) {
-          Merge-Json $b.Value $p.Value
-        } elseif ($b -and $b.Value -is [Array] -and $p.Value -is [Array]) {
-          $s = [System.Collections.Generic.HashSet[string]]::new()
-          $m = @(); foreach ($i in $b.Value) { if ($s.Add($i)) { $m += $i } }
-          foreach ($i in $p.Value) { if ($s.Add($i)) { $m += $i } }
-          $base | Add-Member -NotePropertyName $p.Name -NotePropertyValue $m -Force
-        } else {
-          $base | Add-Member -NotePropertyName $p.Name -NotePropertyValue $p.Value -Force
-        }
-      }
-    }
     $shared = Get-Content .agent-config/repo/.claude/settings.json -Raw | ConvertFrom-Json
     $project = Get-Content .claude/settings.json -Raw | ConvertFrom-Json
     Merge-Json $project $shared
     $project | ConvertTo-Json -Depth 10 | Set-Content .claude/settings.json
   } else {
     Copy-Item .agent-config/repo/.claude/settings.json .claude/settings.json -Force
+  }
+}
+# --- User-level setup: hooks and settings ---
+# This section modifies ~/.claude/ (user-level, not project-level).
+# It deploys a PreToolUse hook guard and merges shared permission settings.
+# Remove this section if you do not want bootstrap to modify user-level config.
+$userClaude = Join-Path $env:USERPROFILE '.claude'
+if (Test-Path .agent-config/repo/scripts/guard.py) {
+  $hooksDir = Join-Path $userClaude 'hooks'
+  New-Item -ItemType Directory -Force -Path $hooksDir | Out-Null
+  Copy-Item .agent-config/repo/scripts/guard.py (Join-Path $hooksDir 'guard.py') -Force
+}
+if (Test-Path .agent-config/repo/user/settings.json) {
+  New-Item -ItemType Directory -Force -Path $userClaude | Out-Null
+  $userSettings = Join-Path $userClaude 'settings.json'
+  if (Test-Path $userSettings) {
+    $shared = Get-Content .agent-config/repo/user/settings.json -Raw | ConvertFrom-Json
+    $existing = Get-Content $userSettings -Raw | ConvertFrom-Json
+    Merge-Json $existing $shared
+    $existing | ConvertTo-Json -Depth 10 | Set-Content $userSettings
+  } else {
+    Copy-Item .agent-config/repo/user/settings.json $userSettings -Force
   }
 }
 if (-not (Test-Path .gitignore) -or -not (Select-String -Quiet -Pattern '^\.agent-config/' .gitignore)) {
