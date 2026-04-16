@@ -1,0 +1,106 @@
+# agent-config and anywhere-agents: how the two repos relate
+
+This document explains how the **private daily-driver (`yzhao062/agent-config`)** and the **public release (`yzhao062/anywhere-agents`)** fit together. If you are reading this inside `agent-config`, it is the canonical source. If you are looking for the release plan itself, see [`docs/specs/open-source-framework.md`](./specs/open-source-framework.md).
+
+## The two-repo split
+
+| Repo | Role | Visibility | What lives here |
+|------|------|------------|-----------------|
+| `yzhao062/agent-config` | **Canonical source + personal daily driver** | Private | Full working config: USC-specific content, `reference-skills/` (NSF proposal composer, USC reimbursement, CS paper review, etc.), `figure-references/`, in-progress specs, `docs/superpowers/`, and every skill the author uses across research projects. |
+| `yzhao062/anywhere-agents` | **Sanitized public release** | Public | Only what a stranger can fork and use: clean `AGENTS.md`, two shared skills (`implement-review`, `my-router`), bootstrap scripts, guard hook, settings, tests, CI. No personal content, no research-specific skills. |
+
+The two repos are **not linked as submodules or forks**. Keeping them independent is the primary defense against accidental personal leaks into the public release.
+
+## Why two repos instead of one
+
+Earlier drafts considered a single repo with public and private directories, or a single public repo with a sanitization script. Both were rejected:
+
+- **Single repo with public/private subdirs** — one accidental `git add -A` and private content is public. The blast radius of a mistake is too high.
+- **Single public repo + sanitization script** — the sanitization script would have to run reliably on every push. One false negative and USC/collaborator identifiers leak.
+
+A separate public repo provides **physical isolation**. Private content cannot leak into public without an explicit copy step.
+
+## Canonical source rule
+
+`agent-config` is the canonical source for shared components (bootstrap scripts, the two shared skills, guard hook, tests). When a shared component is improved:
+
+1. **Change lands in `agent-config` first.** Standard dev flow: edit, commit, push.
+2. **On the next public release cut**, the change is backported to `anywhere-agents`. This is a manual copy step, not an automated sync.
+3. **If a change originates in `anywhere-agents` via an external PR**, it is merged there, then backported to `agent-config` before the next public release cut. The two never diverge on shared components.
+
+"Backport" here means a human-supervised copy — no git remote push between the repos.
+
+## What gets copied to the public repo, what does not
+
+| In `agent-config` | Copied to `anywhere-agents`? | Notes |
+|-------------------|------------------------------|-------|
+| `AGENTS.md` | Yes, after sanitization | Strip USC-specific content, Overleaf rules, PyCharm-specific paths, NSF-DEI stance, submodule workflow, etc. Keep the curated defaults (writing style, Git safety, shell style). Replace specific paths with placeholders. Generalize User Profile. |
+| `bootstrap/bootstrap.sh`, `bootstrap/bootstrap.ps1` | Yes, with URL change | Point at `yzhao062/anywhere-agents` instead of `yzhao062/agent-config`. No other changes. |
+| `scripts/guard.py` | Yes, as-is | Already generic. |
+| `skills/implement-review/` | Yes, as-is | The signature skill. |
+| `skills/my-router/` | Yes, with content changes | The public version is a template: concrete routing rule only for `implement-review`, with clear "extend this in your fork" guidance. Strip references to `nsf-*`, `usc-reimbursement`, `cs-paper-review`, etc. |
+| `skills/dual-pass-workflow/` | No | Not in v1.0 scope. Author uses it, but it is research-flavored. |
+| `skills/bibref-filler/` | No | Research-specific. |
+| `skills/figure-prompt-builder/` | No | Research-specific. |
+| `skills/ci-mockup-figure/` | No | Research-specific (LaTeX-heavy). |
+| `reference-skills/` | No | Entirely domain-specific (NSF, NIH, USC). |
+| `figure-references/` | No | Personal asset gallery. |
+| `docs/` (internal: specs, superpowers, CodexReview) | No | Internal specs stay private. |
+| `docs/hero.html`, `docs/hero.png`, `docs/avatar.jpg` | Only in public | These are public README assets authored in `anywhere-agents` directly. They do not exist in `agent-config`. |
+| `CodexReview.md` | No | Scratch file for review rounds. |
+| `.claude/commands/` | Only for shipped skills | `implement-review.md` and `my-router.md` only. |
+| `.claude/settings.json` | Yes, sanitized | Already generic in `agent-config`. |
+| `user/settings.json` | Yes, sanitized | Strip `additionalDirectories` (contains user-specific paths). Keep permissions, hook wiring, `CLAUDE_CODE_EFFORT_LEVEL=max`. |
+| `tests/` | Yes, with edits | Remove tests for unshipped skills. Update `test_repo.py` to assert the 2-skill set and correct URLs. |
+| `.github/workflows/` | Yes | Same CI, same actions. |
+
+## Package and documentation assets
+
+Beyond the shared bootstrap and skills, two sets of artifacts live only in `anywhere-agents`:
+
+- **CLI packages** (PyPI `anywhere-agents`, npm `anywhere-agents`). Source lives inside the public repo at `anywhere-agents/packages/pypi/` and `anywhere-agents/packages/npm/` so that checking out a repo tag fully reproduces the published packages. The packages are thin shims that download and run the shell bootstrap — they do not contain bootstrap logic themselves. Version stream: **one version for the repo and both packages**; bump all three in the same commit, tag that commit, then publish.
+- **README assets** (`docs/hero.html`, `docs/hero.png`, `docs/avatar.jpg`, and any future derivatives). These are authored directly in the public repo. The vendored avatar (`docs/avatar.jpg`) is a one-time local copy of the personal-site headshot; if the source website changes, the avatar here does not.
+
+## Release workflow
+
+When cutting a new `anywhere-agents` release:
+
+1. **Audit `agent-config` changes** since the last public release. Look at commits touching shared components: bootstrap, the two shared skills, guard, settings, `AGENTS.md` common sections.
+2. **Apply relevant changes to `anywhere-agents`**. Manual copy + sanitization, following the "what gets copied" table.
+3. **Run the leak sweep** in the `anywhere-agents` checkout:
+   ```bash
+   grep -rEi "yuezh|yzhao010|USC|miniforge3|py312|Overleaf" \
+     --include="*.md" --include="*.py" --include="*.json" --include="*.yml" \
+     --include="*.yaml" --include="*.sh" --include="*.ps1" \
+     C:/Users/yuezh/PycharmProjects/anywhere-agents
+   ```
+   Classify each hit as (a) intentional public claim (e.g., "USC" in the maintainer credential), (b) hyphenation example (`co-PI`), (c) leak — must fix. Fix all (c).
+4. **Run tests locally** on the `anywhere-agents` checkout (`python -B -m unittest discover -s tests`) and verify the bootstrap smoke tests pass.
+5. **Regenerate the hero image** if any claim or panel content changed: edit `docs/hero.html`, run
+   ```bash
+   "C:/Program Files/Google/Chrome/Application/chrome.exe" --headless=new --disable-gpu \
+     --hide-scrollbars --window-size=1480,960 --force-device-scale-factor=2 \
+     --screenshot="C:/Users/yuezh/PycharmProjects/anywhere-agents/docs/hero.png" \
+     "file:///C:/Users/yuezh/PycharmProjects/anywhere-agents/docs/hero.html"
+   ```
+6. **Update CHANGELOG** _before_ the release commit so it ships with the version it describes. Update `[Unreleased]` → new version header with today's date. Update compare-link references.
+7. **Review via `implement-review`** — run a Codex review on the staged cross-repo diff before committing. Treat this as a hard release gate.
+8. **Bump and test package versions** if the release includes CLI changes or the user-facing install flow changed:
+   - Bump `anywhere-agents/packages/pypi/pyproject.toml` AND `packages/pypi/anywhere_agents/__init__.py` (the CLI reads `__version__` from `__init__.py` at runtime — no other version string to touch).
+   - Bump `anywhere-agents/packages/npm/package.json` (the Node CLI reads `version` from `package.json` at runtime — no other version string to touch).
+   - Test both locally: `python -m build packages/pypi/ --outdir /tmp/pypi-dist && pip install /tmp/pypi-dist/*.whl` then `anywhere-agents --version` and `--dry-run`; `node packages/npm/bin/anywhere-agents.js --version` and `--dry-run`.
+9. **Commit and push** `anywhere-agents` (and any paired change to `agent-config`).
+10. **Tag** the release commit (`git tag -a v<X.Y.Z> -m "..."; git push origin v<X.Y.Z>`). The tag must point at the same commit that contains the package source bumps, so checking out the tag reproduces exactly what is on PyPI/npm.
+11. **Publish packages** from the tagged checkout in order: PyPI first (`cd packages/pypi && python -m build && twine upload dist/*`), then npm (`cd packages/npm && npm publish --access public`). Verify each is live and the CLI runs end-to-end from a fresh install.
+
+## What this document is not
+
+- It is not the release plan. The release plan lives at [`docs/specs/open-source-framework.md`](./specs/open-source-framework.md).
+- It is not user-facing documentation. `anywhere-agents/README.md` and `anywhere-agents/CONTRIBUTING.md` cover user-facing content.
+- It is not a substitute for the leak sweep. Read it before every release; the sweep is still mandatory.
+
+## When this document should be updated
+
+- Add a new shared component (skill, hook, workflow) → update the "what gets copied" table.
+- Change the release workflow steps → update the workflow section.
+- Decide to converge into one repo, or split further → rewrite this doc first; the change is architectural.
