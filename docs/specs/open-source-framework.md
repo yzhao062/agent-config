@@ -34,7 +34,7 @@ If you follow a practitioner whose AI agent workflow you admire, there is no goo
 **What it is:**
 - A curated, actively maintained agent config repo
 - With a bootstrap mechanism that lets other repos consume it directly or via a fork
-- Shipping battle-tested skills (implement-review, dual-pass-workflow, bibref-filler, figure-prompt-builder, ci-mockup-figure)
+- Shipping two battle-tested skills: `implement-review` (the signature skill — structured dual-agent review loop) and `my-router` (a template — context-aware skill dispatcher that users extend with their own skills)
 - Shipping a battle-tested safety hook (`guard.py`) that has actually caught real destructive commands in daily use. Deliberately memorable warning messages ("STOP! HAMMER TIME! A wild git push appeared!") make the friction impossible to auto-dismiss — the kind of UX decision you do not know you need until after a near-miss.
 - Written by a researcher, opinionated for research + development work
 - Genuinely useful as daily-driver infrastructure, not just a demo
@@ -129,7 +129,7 @@ Both packages should be minimal. A single README that says: "This is a name rese
 Start a fresh clone of the private `agent-config`, then prune aggressively:
 
 - [ ] **Copy:** `bootstrap/`, `scripts/guard.py`, `scripts/merge_settings.py`, `user/settings.json` (sanitized), `.claude/commands/`, `.claude/settings.json` (sanitized), `tests/`, `.github/workflows/`
-- [ ] **Copy shared skills:** implement-review, dual-pass-workflow, bibref-filler, figure-prompt-builder, ci-mockup-figure. Do not ship `my-router` in v1.0 — routing is a private/power-user pattern and not part of the public release.
+- [ ] **Copy shared skills:** `implement-review` and `my-router` only. Keep v1.0 tight. `implement-review` is the signature dual-agent review loop; `my-router` ships as a sanitized template where `implement-review` is the only concrete routing entry — the `routing-table.md` includes an extension template so users can register their own skills in a fork. Do **not** ship `dual-pass-workflow`, `bibref-filler`, `figure-prompt-builder`, or `ci-mockup-figure` in v1.0 — these are research-flavored and best added by users who need them, rather than shipped as defaults that may not match a general-purpose audience.
 - [ ] **Do not copy:** `reference-skills/` (nsf-proposal-*, usc-reimbursement, etc.), `figure-references/`, `docs/superpowers/`, `CodexReview.md`, anything with personal details
 - [ ] **Rewrite AGENTS.md from scratch** for the public audience. Keep the opinionated sections (Writing Defaults, Git Safety, Shell Command Style) as the product, but strip USC-specific content, Overleaf rules, and PyCharm-specific paths. Replace specific paths (`C:\Users\yuezh\...`) with platform-generic placeholders.
 - [ ] **Sanitize `user/settings.json`:** remove hardcoded user paths; keep permission patterns and hook wiring.
