@@ -510,8 +510,8 @@ class RepoValidationTests(unittest.TestCase):
             "pull_request:",
             "ubuntu-latest",
             "windows-latest",
-            "actions/checkout@v4",
-            "actions/setup-python@v5",
+            "actions/checkout@v6",
+            "actions/setup-python@v6",
             "python -B -m unittest discover -s tests -p \"test_*.py\" -v",
         ]
         for fragment in required_fragments:
