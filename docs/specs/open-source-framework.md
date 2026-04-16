@@ -1,127 +1,58 @@
-# agent-config: Open-Source Validation Spec
+# anywhere-agents: Public Release Plan
+
+## What This Is
+
+A plan for publishing **`anywhere-agents`** as a new, separate open-source repo at `github.com/yzhao062/anywhere-agents` (or a dedicated org), distinct from the private `yzhao062/agent-config` daily driver. The public release is **opinionated dotfiles for AI coding agents**: a researcher's battle-tested agent configuration, curated for general audiences, with a clean way for others to consume or fork it.
+
+Other projects in this space exist (`dotagents`, `agentrc`, `agentfiles`, `agents-anywhere`), but stars are not traction — many are abandoned or scoped differently. This release competes on quality, curation, and ongoing daily use by the author — not on being a first mover.
+
+## Two-Repo Split
+
+| Repo | Purpose | Visibility |
+|------|---------|------------|
+| `yzhao062/agent-config` | Personal daily driver. Contains USC-specific content, reference-skills (NSF, reimbursement), figure-references from the author's own projects, and anything else not suited for public consumption. Evolves freely. | Private (stays as-is) |
+| `yzhao062/anywhere-agents` | Public release. Clean AGENTS.md, shared skills only, generic profile placeholders, LICENSE, CONTRIBUTING.md. This is what others fork or consume. | Public |
+
+**Canonical source:** the private `agent-config` is the canonical source for shared skills and bootstrap scripts. The public `anywhere-agents` is a sanitized downstream release, not an independent fork.
+
+**Release discipline:** when a shared skill or bootstrap script is improved in `agent-config`, the change lands in `anywhere-agents` as part of the next public release cut (batched, not same-day). If a fix originates in `anywhere-agents` via an external PR, it is backported to `agent-config` before the next public release, so the two never diverge on shared components. Same-day sync is an aspiration, not a guarantee; the release checklist enforces the invariant.
+
+The two repos are not linked as submodules or forks — keeping them independent avoids accidental personal leaks.
 
 ## Problem
 
-AI coding agents now have first-party configuration mechanisms: Claude Code has scoped `CLAUDE.md`, `@path` imports, `.claude/rules/`, skills, hooks, agents, plugins, and auto memory; Codex and other tools increasingly use `AGENTS.md`; Cursor has user and project rules. The remaining gap is narrower but still real: power users and small teams who work across many repositories need a low-friction way to keep their agent instructions, skills, settings, and review workflows consistent without manually copying files or maintaining divergent forks.
+If you follow a practitioner whose AI agent workflow you admire, how do you adopt their setup? Today the answer is: read their blog, copy-paste fragments, never get updates, and drift silently. The target audience is developers and researchers who want to use someone else's curated agent config as a starting point (like they use curated `.vimrc` or `.zshrc`), then diverge where they disagree.
 
-The target user is a developer or small team with at least 5 active repositories, repeated agent setup work, and a small set of shared workflows that must stay synchronized.
+This is the dotfiles distribution model: a practitioner publishes their setup, others fork or consume directly, everyone stays current via Git.
 
-### Distribution advantage
+## Positioning
 
-This project follows the **dotfiles model**: a practitioner with social credibility shares a battle-tested, daily-use setup, and others fork and customize. The value is not just the sync infrastructure; it is the curated defaults, opinionated skill protocols, and refined workflows that come from months of real use across 10+ repos. When a recognized researcher or developer publishes "here is exactly how I configure my AI agents," the community adopts it the way they adopt prominent dotfiles, LaTeX templates, or training configs. This social distribution channel means initial adoption is less speculative than a cold-start framework launch.
+**One line:** "My AI agent config. Fork it, use it, or point your repos at it to stay in sync."
 
-## Market Reality / Alternatives
+**What it is:**
+- A curated, actively maintained agent config repo
+- With a bootstrap mechanism that lets other repos consume it directly or via a fork
+- Shipping battle-tested skills (implement-review, dual-pass-workflow, bibref-filler, figure-prompt-builder, ci-mockup-figure)
+- Written by a researcher, opinionated for research + development work
+- Genuinely useful as daily-driver infrastructure, not just a demo
 
-Before building, acknowledge what already exists and where this project fits:
+**What it is not:**
+- Not a framework or CLI tool — no install step, no YAML manifest
+- Not a universal sync tool covering every agent (Claude Code + Codex is enough; others can be added via fork)
+- Not a marketplace or registry
 
-| Alternative | What it covers | Gap this project fills |
-|-------------|---------------|----------------------|
-| **Claude Code scoped CLAUDE.md + imports + plugins** | Per-project and per-user config, plugin marketplaces, skill auto-discovery | No cross-repo sync from a single source of truth. Plugins are distribution, not personalized config sync. |
-| **claude-code-templates** (100+ agents/commands) | Broad catalog of starter templates | Static templates, no ongoing sync. Once copied, they drift. |
-| **AGENTS.md / Agent Rules spec** | Cross-agent instruction file convention | Convention only. No sync mechanism, no override layers, no skill distribution. |
-| **Agent Skills / agentskills.io** | Standardized SKILL.md format, marketplaces, installers | Skill format and discovery, not config sync. No bootstrap into consuming repos. |
-| **Cursor user/project rules** | Cursor-specific rule files | Single-agent, no cross-repo sync. |
-| **destructive_command_guard (dcg)** | Safety hooks for destructive commands (821 stars) | Well-covered. Not a differentiator for this project. |
+## Distribution Model
 
-**The wedge in one sentence:** Fork this repo, get a battle-tested agent setup that stays up to date; override anything you disagree with, and your overrides are never touched by sync.
+### Path A: Consume directly
 
-This is not a marketplace or a universal skill standard. It fills the gap between "I have my config" and "all my repos use it consistently, and I can still diverge per project."
-
-## Product Vision
-
-**agent-config** is an opinionated sync layer for agent configuration. It starts as a template and bootstrap flow that distributes AGENTS/CLAUDE instructions, selected skills, command pointers, and settings into consuming repositories. A YAML manifest, generated AGENTS.md, configurable hooks, and broader orchestration are deferred until external users show that the simpler sync layer is not enough.
-
-Positioning: not an "awesome prompts" collection, not another skill format, and not a replacement for Claude Code plugins or AGENTS.md. The wedge is a battle-tested, opinionated agent setup from a practitioner who uses it daily, packaged so others can fork, customize, and keep their repos in sync with minimal ceremony. The sync infrastructure is the mechanism; the curated defaults and skill protocols are the draw.
-
-## Design Principles
-
-1. **Fork and edit.** Users fork the template repo and directly edit AGENTS.md and skills. No config.yaml parser, no template engine, no code generation. The files in the repo are the files that get synced.
-2. **Additive override layers.** Consumer repos get the synced AGENTS.md but can override anything via `AGENTS.local.md`. Project-local `skills/<name>/SKILL.md` overrides same-name bootstrapped skills. Layers are clear and predictable.
-3. **No new runtime dependency.** Bootstrap is pure shell (bash + PowerShell). Settings merge uses Python only if available; otherwise existing files are left untouched. No pip install, no npm install, no CLI.
-4. **Skill-format compatible.** Skills use the SKILL.md convention (compatible with agentskills.io). The project does not invent a new format.
-5. **Agent-neutral where possible.** Core infrastructure works for any agent that reads markdown instruction files. Agent-specific wiring (Claude Code pointer commands, Codex openai.yaml wrappers) is a thin layer on top.
-
-## Architecture
-
-### Repo types
-
-```
-┌─────────────────────────────┐
-│  agent-config (template)    │  ← open-source template repo
-│  - AGENTS.md (hand-edited)  │
-│  - skills/ (built-in)       │
-│  - bootstrap/ (sync engine) │
-│  - scripts/ (merge, guard)  │
-└──────────┬──────────────────┘
-           │ user forks
-           ▼
-┌─────────────────────────────┐
-│  user's config repo         │  ← user's fork (private or public)
-│  - AGENTS.md (customized)   │
-│  - skills/ (built-in + own) │
-│  - bootstrap/ (unchanged)   │
-└──────────┬──────────────────┘
-           │ bootstrap syncs into
-           ▼
-┌─────────────────────────────┐
-│  consuming project repo     │  ← any project that uses the config
-│  - AGENTS.md (synced copy)  │
-│  - .agent-config/ (cached)  │
-│  - AGENTS.local.md (local)  │
-│  - skills/ (project-local)  │
-└─────────────────────────────┘
-```
-
-### Override hierarchy (lowest to highest priority)
-
-```
-Template defaults (built-in skills, default AGENTS.md)
-  < User's fork (customized AGENTS.md, added/removed skills)
-    < Project AGENTS.local.md (consuming project)
-      < Project-local skills/ (consuming project)
-```
-
-## Bootstrap Engine
-
-### Flow
-
-Bootstrap is the same proven mechanism already running in this repo. No config.yaml parsing, no template rendering. Just fetch and copy.
-
-```
-Consumer repo runs bootstrap.sh / bootstrap.ps1
-  │
-  ├─ 1. Download bootstrap script from user's config repo
-  ├─ 2. Sparse-clone user's config repo into .agent-config/
-  ├─ 3. Copy AGENTS.md to consumer repo root (overwrite)
-  ├─ 4. Copy .claude/commands/ pointer files (non-destructive)
-  ├─ 5. Deep-merge .claude/settings.json (project level, Python if available)
-  ├─ 6. Deep-merge ~/.claude/settings.json (user level, Python if available)
-  ├─ 7. Deploy guard.py to ~/.claude/hooks/ (if present in config repo)
-  ├─ 8. Add .agent-config/ to .gitignore
-  └─ 9. Report: "bootstrap: synced AGENTS.md, N skills, settings"
-```
-
-### Idempotency
-
-Bootstrap runs every session. It must be safe to run repeatedly:
-- AGENTS.md is overwritten (local overrides go in AGENTS.local.md)
-- Settings merge preserves project-only keys
-- Pointer file copy is non-destructive (does not delete project-local commands)
-- .gitignore append is idempotent (checks before adding)
-
-### Bootstrap block for consumer repos
-
-Consumer repos embed this in their AGENTS.md (same pattern as today):
-
-````
-## Shared Agent Config (auto-fetched)
+Users add the platform-specific bootstrap block to their project `AGENTS.md`.
 
 PowerShell (Windows):
 
 ```powershell
 New-Item -ItemType Directory -Force -Path .agent-config | Out-Null
 Invoke-WebRequest -UseBasicParsing `
-  -Uri https://raw.githubusercontent.com/<user>/<config-repo>/main/bootstrap/bootstrap.ps1 `
+  -Uri https://raw.githubusercontent.com/yzhao062/anywhere-agents/main/bootstrap/bootstrap.ps1 `
   -OutFile .agent-config/bootstrap.ps1
 & .\.agent-config\bootstrap.ps1
 ```
@@ -130,188 +61,147 @@ Bash (macOS/Linux):
 
 ```bash
 mkdir -p .agent-config
-curl -sfL https://raw.githubusercontent.com/<user>/<config-repo>/main/bootstrap/bootstrap.sh \
+curl -sfL https://raw.githubusercontent.com/yzhao062/anywhere-agents/main/bootstrap/bootstrap.sh \
   -o .agent-config/bootstrap.sh
 bash .agent-config/bootstrap.sh
 ```
-````
 
-The URL points to the user's config repo fork, not the template repo. This way users control what their projects get.
+Every session, bootstrap refreshes `AGENTS.md`, skills, pointer commands, and settings from upstream. Customization goes in `AGENTS.local.md` (never overwritten). This is the simplest path for users who trust the upstream and want automatic updates without maintaining a fork.
 
-## Skill System
+**Trust tradeoff:** direct consume fetches and applies the author's current config on every session, including bootstrap script changes. Use this path only if you are comfortable receiving upstream changes automatically. If you want to review changes before they land, use the fork path below.
 
-### Skill layout
+### Path B: Fork and track
 
-Each skill follows this structure (compatible with agentskills.io):
+Users who want to diverge meaningfully:
+1. Fork `yzhao062/anywhere-agents` to their own GitHub account
+2. Customize (edit `AGENTS.md`, add/remove skills)
+3. Point their project repos at their fork
+4. Pull upstream updates when desired: `git pull upstream main` and merge
 
-```
-skills/<skill-name>/
-├── SKILL.md              # primary definition (required)
-├── agents/
-│   └── openai.yaml       # Codex/OpenAI thin wrapper (optional)
-├── references/            # supporting docs read by the skill
-├── scripts/               # automation scripts
-└── assets/                # templates, examples, reference banks
-```
+This is the standard dotfiles workflow. No special tooling.
 
-### Skill types
+### Why this works without a framework
 
-| Type | Source | Override behavior |
-|------|--------|-------------------|
-| **Built-in** | Template repo `skills/` | Comes with the fork; user can delete or modify |
-| **User-added** | User adds to their fork `skills/` | Synced to consumer repos via bootstrap |
-| **Project-local** | Consumer repo `skills/` | Highest priority; overrides any same-name skill |
+Git already solves subscription and selective updates:
+- Want all my updates? `git pull upstream main`
+- Want one specific change? `git cherry-pick <sha>`
+- Want to skip my changes? Do nothing
+- Want to see what changed? `git log upstream/main --oneline`
 
-### Skill discovery order
+No custom subscription engine needed. No `.agent-config/state.json`. No selective-update prompts. Git is the subscription model.
 
-When the user or agent invokes a skill:
-1. `skills/<name>/SKILL.md` (project-local) -- highest priority
-2. `.agent-config/repo/skills/<name>/SKILL.md` (bootstrapped from config repo)
-3. If not found, report that the skill is not available.
+## What Ships in v1.0
 
-### Pointer commands
+The goal is a **new, clean repo** (`yzhao062/anywhere-agents`) that a stranger can fork or consume directly. Do not publish the private `agent-config` repo. Roughly a weekend of work.
 
-For Claude Code, each skill gets a pointer file in `.claude/commands/<skill-name>.md`:
+### Phase A: Reserve the name (do first, ~30 min)
 
-```markdown
-Read and follow the skill definition. Look for it at `skills/<skill-name>/SKILL.md` first,
-then `.agent-config/repo/skills/<skill-name>/SKILL.md`.
-```
+Before writing any code:
+- [ ] Create empty GitHub repo `yzhao062/anywhere-agents` with a placeholder README pointing to future release
+- [ ] Publish placeholder `anywhere-agents` 0.0.1 on npm (prevents name squatting)
+- [ ] Publish placeholder `anywhere-agents` 0.0.1 on PyPI (same reason)
+- [ ] Optional: grab `anywhere-agents.io` or `anywhere-agents.dev` domain (~$15/year)
 
-Bootstrap copies these from the config repo. Non-destructive: does not delete project-local commands.
+These placeholder packages can be minimal: just a README that redirects to the GitHub repo. They exist to prevent someone else from claiming the name during the weeks leading to v1.0.
 
-### Adding a custom skill (user workflow)
+### Phase B: Copy and sanitize (Day 1 morning)
 
-```bash
-# In your config repo fork:
-mkdir -p skills/my-custom-skill
-$EDITOR skills/my-custom-skill/SKILL.md
+Start a fresh clone of the private `agent-config`, then prune aggressively:
 
-# Create a pointer command
-cat > .claude/commands/my-custom-skill.md << 'EOF'
-Read and follow the skill definition at `skills/my-custom-skill/SKILL.md`.
-EOF
+- [ ] **Copy:** `bootstrap/`, `scripts/guard.py`, `scripts/merge_settings.py`, `user/settings.json` (sanitized), `.claude/commands/`, `.claude/settings.json` (sanitized), `tests/`, `.github/workflows/`
+- [ ] **Copy shared skills:** implement-review, dual-pass-workflow, bibref-filler, figure-prompt-builder, ci-mockup-figure. Do not ship `my-router` in v1.0 — routing is a private/power-user pattern and not part of the public dotfiles release.
+- [ ] **Do not copy:** `reference-skills/` (nsf-proposal-*, usc-reimbursement, etc.), `figure-references/`, `docs/superpowers/`, `CodexReview.md`, anything with personal details
+- [ ] **Rewrite AGENTS.md from scratch** for the public audience. Keep the opinionated sections (Writing Defaults, Git Safety, Shell Command Style) as the product, but strip USC-specific content, Overleaf rules, and PyCharm-specific paths. Replace specific paths (`C:\Users\yuezh\...`) with platform-generic placeholders.
+- [ ] **Sanitize `user/settings.json`:** remove hardcoded user paths; keep permission patterns and hook wiring.
 
-# Commit and push. Consumer repos pick it up on next bootstrap.
-```
+### Phase C: Write public-facing docs (Day 1 afternoon)
 
-## Built-in Skills
+- [ ] **README** with sections:
+  - What this is (one researcher's agent config, forkable, dotfiles-style)
+  - Who this is for (researchers, devs who want a battle-tested starting point)
+  - Two paths: consume directly vs fork and track
+  - 10-minute quickstart for each path
+  - What is opinionated and why (link to specific AGENTS.md sections)
+  - What is not in scope (not a framework; related-projects link)
+  - Honest limitations
+- [ ] **LICENSE** (MIT or Apache 2.0)
+- [ ] **CONTRIBUTING.md.** How to propose a skill improvement, how to report bugs. Explicit: customizations go in your fork, not upstream PRs.
 
-The template ships with a small set of high-quality, domain-neutral skills. Users can delete any they do not want.
+### Phase D: Verify and launch (Day 2)
 
-### implement-review
+- [ ] **Fresh-machine test.** On a disposable VM or a clean Codespace, clone `anywhere-agents` from scratch, run bootstrap in a throwaway project, verify AGENTS.md + skills + settings land correctly.
+- [ ] **Sweep for leaks.** Grep the published repo for `yuezh`, `USC`, `yzhao010`, `miniforge3/envs/py312`, any collaborator names. Second pair of eyes if possible.
+- [ ] **Tag v1.0 and announce.** Short post on the author's usual channels. Point people to the README, not to feature lists.
 
-Structured dual-agent review loop (Claude Code implements, Codex reviews).
-- Phases: prerequisites, pre-review checks, prepare review, intake feedback, revise, conclude
-- Content-type detection: code, paper, proposal, general
-- Review lenses: code (Google/Microsoft), paper (NeurIPS/ICLR), proposal (NSF/NIH), general
-- Focused sub-lenses: code/security, paper/formatting, proposal/compliance, etc.
-- Round history tracking: prevents re-litigation of resolved findings
-- Terminal relay (default) and plugin path
+### Don't do in v1.0
 
-This is the project's most differentiated skill. No equivalent exists as a packaged, reusable protocol.
+- [ ] No YAML manifest / `config.yaml`. Files are the config.
+- [ ] No CLI beyond the shell bootstrap. The placeholder pip/npm packages exist only for name reservation.
+- [ ] No selective-update tooling. Git handles it.
+- [ ] No environment auto-install. README documents what tools you need; users install them.
+- [ ] No multi-agent expansion. Ship Claude Code + Codex (what already works). Users forking for Cursor/Aider can add those themselves.
+- [ ] No profiles system. There is one config. Forks are how other "profiles" exist.
+- [ ] No marketplace, no registry, no web UI.
 
-### dual-pass-workflow
+## Naming
 
-Generic two-pass pattern (build then audit).
-- Pass 1: implement / draft
-- Pass 2: verify / refine using a second agent or self-review
-- Configurable verification contracts per content type
+**`anywhere-agents`** is the chosen name. Availability confirmed (as of April 2026):
 
-### bibref-filler
+- GitHub `yzhao062/anywhere-agents` — clean
+- npm `anywhere-agents` — clean
+- PyPI `anywhere-agents` — clean
+- Domains `anywhere-agents.io`, `anywhere-agents.dev` — available
 
-Safe citation filling with verification.
-- Never fabricate references
-- Machine-added entries go to separate working.bib
-- Leave visible TODOs for uncertain claims
+The private `yzhao062/agent-config` daily-driver repo keeps its existing name.
 
-## Settings Merge
+## Related Projects
 
-### Strategy
+A brief section in the README that acknowledges the space without being deferential:
 
-Deep merge with these rules:
-- Objects merge recursively (nested keys from both sides preserved)
-- Arrays deduplicate by value (set union)
-- Scalars: config repo value wins over consumer project value for shared keys
-- Project-level `.claude/settings.local.json` wins over merged result
+> Other projects in this space take a framework or CLI approach — for example, [iannuttall/dotagents](https://github.com/iannuttall/dotagents), [microsoft/agentrc](https://github.com/microsoft/agentrc), and the `agentfiles` PyPI package. If you want a general-purpose multi-agent sync tool, those may fit better. This repo takes a different approach: it is a published, maintained, opinionated configuration — not a tool that manages configurations. Fork it if you like my setup; use one of the tools above if you want a universal manager.
 
-### Merge targets
+One paragraph. Not a long comparison table. Users who care about alternatives will click through.
 
-| Target | Source | Trigger |
-|--------|--------|---------|
-| `.claude/settings.json` (project) | Config repo `.claude/settings.json` | Every bootstrap |
-| `~/.claude/settings.json` (user) | Config repo `user/settings.json` | Every bootstrap |
+## Success Criteria
 
-### Implementation
+Not adoption numbers. Not GitHub stars. Success is:
 
-Python script (`scripts/merge_settings.py`). If Python is unavailable, existing settings files are left untouched and bootstrap prints a warning. No pip dependencies required (stdlib json module only).
+1. **The private `agent-config` remains useful to the author.** Continues to work as daily infrastructure across 10+ personal repos. This is non-negotiable; the public release must never compromise the private workflow.
+2. **A stranger can fork `anywhere-agents` and get value within 30 minutes.** README is clear enough, defaults are sane enough, bootstrap works on Linux + Windows without hand-holding.
+3. **When others fork, they can track upstream without pain.** Merge conflicts on their customized sections should be rare. Section boundaries in `AGENTS.md` should be clean so `git merge` rarely conflicts on non-edited sections.
+4. **No personal content leaks into the public repo.** Zero hits for USC-specific terms, collaborator names, or personal paths in the v1.0 release.
 
-## What Stays Out
+If all four hold, the release is successful regardless of star count.
 
-| Component | Reason |
-|-----------|--------|
-| **config.yaml / YAML manifest** | Deferred. Users edit files directly. Manifest-driven generation is a framework feature for post-validation. |
-| **Generated AGENTS.md / Jinja2** | Deferred. AGENTS.md is hand-edited in the fork. |
-| **Router / auto-dispatch** | Personal productivity tool for users with many skills. Not part of the open-source scope. Users who want routing can create their own router skill. |
-| **reference-skills/** (nsf-proposal-*, usc-reimbursement, etc.) | Too domain-specific. Document as examples of what user-added skills look like. |
-| **figure-references/** | Personal asset gallery. Document as example of how to build one. |
-| **guard.py** | Ship as optional (included in template but clearly marked). Users can delete it or use dcg instead. |
-| **Codex MCP integration details** | Platform-specific, changes frequently. Document in a guide, not in the template AGENTS.md. |
-| **Overleaf merge conflict rules** | Niche workflow. Belongs in user's fork or AGENTS.local.md. |
+## Maintenance Promise
 
-## Validation MVP
+Be explicit in the README about what is and is not maintained:
 
-### Ship first
+- **Maintained:** the author's daily-use workflow. Changes land when the author needs them.
+- **Not maintained:** feature requests that do not match the author's work. Users should fork.
+- **Best-effort:** bug reports, PRs for clear improvements, documentation fixes.
 
-- [ ] Publish a clean template config repo with a hand-edited AGENTS.md. Keep the opinionated sections (Writing Defaults, Git Safety, Shell Command Style) as curated defaults that users can modify, not as blank placeholders. The opinionated setup is the product. Replace only truly personal content (specific paths, institutional details) with clear placeholders.
-- [ ] Keep bootstrap scripts close to the current implementation: fetch the config repo, refresh AGENTS.md, sync skills in `.agent-config/`, generate Claude command pointers, merge settings where Python is available, add `.agent-config/` to `.gitignore`
-- [ ] Ship built-in skills: implement-review, dual-pass-workflow, bibref-filler. Include documentation that users can delete any they do not want.
-- [ ] Ship settings merge script (stdlib Python only, no pip dependencies)
-- [ ] Ship guard.py as optional (clearly marked, easy to remove)
-- [ ] Tests: bootstrap contract on Windows and Linux, idempotent .gitignore, non-destructive command copy, settings merge preservation
-- [ ] README: concrete "who this is for" section, 10-minute quickstart, architecture diagram, known alternatives with honest comparison, limitations section
-- [ ] LICENSE (Apache 2.0)
-- [ ] CONTRIBUTING.md: how to add a skill, how to customize AGENTS.md, how to report issues
+This prevents the "framework maintainer burnout" failure mode: no promises beyond what is sustainable for a single maintainer.
 
-### Adoption gates (before building framework features)
+## Risks
 
-These gates must pass before investing in config.yaml, generated AGENTS.md, registry, or other framework features:
+| Risk | Mitigation |
+|------|------------|
+| Users expect ongoing support / feature requests | Maintenance Promise section sets expectations. |
+| Personal details leak in v1.0 | Two-repo split isolates private content. Pre-release grep sweep for `yuezh`, `USC`, `yzhao010`, personal paths. Second pair of eyes. |
+| Drift between private `agent-config` and public `anywhere-agents` | Private is the canonical source; public is a sanitized downstream release. Every public release cut backports any external PRs from public to private, so the two never diverge on shared components. Release checklist enforces this invariant. |
+| Bootstrap has bugs on fresh systems | CI already tests on Ubuntu + Windows. Add a fresh-machine simulation test before v1.0. |
+| Consumer accidentally commits `.agent-config/` to their repo | Bootstrap already appends to `.gitignore` automatically. Keep that. |
+| AGENTS.md structure changes break existing forks' rebase workflow | Keep section boundaries stable across versions. When renaming or restructuring sections, call it out in release notes so fork maintainers can plan. |
+| Name squatted before v1.0 release | Phase A reserves name on GitHub, npm, PyPI within 30 minutes. |
 
-- [ ] At least **5 external users or teams** using it in real repos (not stars, actual bootstrap usage)
-- [ ] At least **3 concrete requests** for manifest-driven customization ("I want config.yaml because editing AGENTS.md directly is ...")
-- [ ] At least **2 reports** that manual template editing is the blocker preventing adoption
+## Timeline
 
-### Defer until gates pass
+A weekend is realistic for v1.0:
 
-- [ ] `config.yaml` schema and parser
-- [ ] Generated AGENTS.md from template engine
-- [ ] `agent-config init` CLI
-- [ ] Community skill registry (install skills by URL/name)
-- [ ] Gemini CLI support (GEMINI.md generation)
-- [ ] Configurable guard hook deployment
-- [ ] CI workflow template for consuming repos
+- **Day 1 morning:** audit and strip personal identifiers; prune reference-skills
+- **Day 1 afternoon:** write README, LICENSE, CONTRIBUTING.md
+- **Day 2 morning:** test fork-and-consume workflow on a fresh throwaway repo; fix anything broken
+- **Day 2 afternoon:** release v1.0, tag, write a brief announcement post
 
-### Out of scope (future, if ever)
-
-- [ ] Web UI for config editing
-- [ ] Skill marketplace
-- [ ] Team/org config inheritance (org < team < personal)
-- [ ] Auto-detection of config repo changes and re-bootstrap
-
-## Open Questions
-
-1. **Naming**: "agent-config" is descriptive but generic. Check for name conflicts on GitHub/npm/PyPI. Alternatives: "agent-sync", "agentstrap" (bootstrap + agent), "configpilot."
-2. **License**: Apache 2.0 (permissive, patent grant) or MIT (simpler)? Apache 2.0 is more common for infrastructure projects.
-3. **Template vs org**: Publish as a GitHub template repo (users fork via `gh repo create --template`) or as a GitHub org with the template? Org allows future repos (docs, community skills) without cluttering the main repo.
-4. **AGENTS.md sections to keep**: The dotfiles model says keep the opinionated sections (Writing Defaults, Formatting Defaults, Git Safety, Shell Command Style) as the curated product. Strip only personal identifiers (paths, institutional details). The README should frame these as "the author's daily-use defaults, refined over months" rather than "generic framework defaults." Users fork and edit to taste.
-5. **Codex dependency**: implement-review assumes a Codex terminal or plugin for the reviewer role. Should the skill also support self-review (Claude Code reviews its own work) for users who do not have Codex? This would broaden the audience but weaken the dual-agent value proposition.
-
-## Risk Assessment
-
-| Risk | Likelihood | Impact | Mitigation |
-|------|-----------|--------|------------|
-| Only the author uses it | Medium | High | Author has social credibility and active followers. Dotfiles-model distribution lowers cold-start risk. Validation gates still apply before framework investment. If gates do not pass in 6 months, archive and move on. |
-| Claude Code plugins/marketplace subsume the sync use case | Medium | High | Monitor Claude Code plugin evolution. If org-wide CLAUDE.md lands natively, this project becomes unnecessary for Claude-only users. Cross-agent sync remains the wedge. |
-| Maintenance burden exceeds value | Medium | Medium | Keep scope minimal. No generated files, no CLI, no registry until gates pass. |
-| Users want more customization than "fork and edit" | Medium | Low | This is the signal to build config.yaml. It is a feature request, not a risk. |
-| Bootstrap breaks on a new OS/shell version | Low | Medium | CI tests on Ubuntu + Windows. Bootstrap scripts are simple (curl/sparse-clone/copy). |
+Nothing beyond this is required to launch. Everything else is polish.
