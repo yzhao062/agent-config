@@ -82,6 +82,7 @@ After bootstrap, run **all** of the following checks and report results in a sho
    - `[features] fast_mode` should be `true`
    
    If the file does not exist and Codex is expected, note that too.
+4. **GitHub Actions versions** -- If `.github/workflows/` exists, scan workflow YAML files for action version pins that are below the minimums in the GitHub Actions Standards section. Report any outdated actions with the file name and suggested version so the user can batch-update them. If all actions meet the minimums, skip this item silently.
 
 ## User Profile
 
@@ -182,6 +183,20 @@ After bootstrap, run **all** of the following checks and report results in a sho
 - Examples of invocations that always require explicit approval: `git commit`, `git push`, `git reset`, `git checkout`, `git rebase`, `git merge`, `git branch -d`, `git remote add/remove`, `git tag <name>` (creating/deleting), `git stash drop`.
 - Filesystem commands like `cp` and `mv` are fine for scratch and temporary files. Moves or renames that affect git-tracked files should be reviewed before executing.
 - **Avoid inline Python with `#` comments in quoted arguments.** Claude Code flags "newline followed by `#` inside a quoted argument" as a path-hiding risk and prompts for approval. Instead, write the code to a `.py` file and run `python <script>.py`.
+
+## GitHub Actions Standards
+
+GitHub is deprecating Node.js 20 actions. Runners begin using Node.js 24 by default on June 2, 2026, and GitHub's public changelog currently says Node.js 20 removal will happen later in fall 2026. Keep workflow action pins at or above the first Node.js 24 major for the GitHub-maintained actions below:
+
+| Action | Minimum version (Node.js 24) | Replaces |
+|--------|------------------------------|----------|
+| `actions/checkout` | **v5** | v3, v4 |
+| `actions/setup-python` | **v6** | v5 |
+| `actions/setup-node` | **v5** | v4 |
+| `actions/upload-artifact` | **v6** | v4, v5 |
+| `actions/download-artifact` | **v7** | v4, v5, v6 |
+
+When the session start check (item 4) detects older versions, list the affected files and suggest the minimum Node.js 24 version from this table. If a repository intentionally wants the latest major instead of the minimum compatible major, flag that as a separate manual upgrade because later majors can include behavior changes. If a workflow pins a SHA instead of a tag (e.g., `actions/checkout@abc123`), flag it for manual review rather than auto-suggesting a tag. For self-hosted runners, also remind the user that these Node.js 24 actions require an Actions Runner version that supports Node.js 24.
 
 ## Environment Notes
 
