@@ -12,7 +12,7 @@ Read before touching either repo:
 
 - [`docs/anywhere-agents.md`](docs/anywhere-agents.md) — canonical source rule, "what gets copied" table, 11-step release workflow, package/asset ownership.
 - [`docs/specs/open-source-framework.md`](docs/specs/open-source-framework.md) — the historical release plan plus the dated post-v1.0 update (npm/PyPI CLI policy).
-- `yzhao062/anywhere-agents/RELEASING.md` — the public-facing release steps (tag → build → publish to PyPI + npm → verify). Use this after the backport is staged.
+- [`yzhao062/anywhere-agents/RELEASING.md`](https://github.com/yzhao062/anywhere-agents/blob/main/RELEASING.md) — the public-facing release steps (tag → build → publish to PyPI + npm → verify). Use this after the backport is staged.
 
 **Every release of `anywhere-agents` is paired with a doc update here.** If you change the two-repo policy (what gets copied, canonical-source rule, release workflow), update `docs/anywhere-agents.md` in the same commit.
 
@@ -80,6 +80,7 @@ Codex can be used from within Claude Code as an MCP server. See [AGENTS.md — C
 | `implement-review` | Review loop for staged changes. Detects content type, sends to Codex (terminal or plugin) for review using established frameworks (Google/Microsoft for code, NeurIPS/ACL for papers, NSF/NIH for proposals), categorizes feedback, revises, and iterates. |
 | `ci-mockup-figure` | Build interactive HTML mockups of systems, methodological flowcharts, dashboards, and timelines, then capture as space-efficient figures for papers and proposals. |
 | `my-router` | Context-aware dispatcher that detects work type (papers, proposals, code, figures, citations, admin) and routes to the right domain skill. Works as the inner decision loop within superpowers' execution phase. |
+| `readme-polish` | Audit and rewrite a GitHub README using modern 2025-2026 patterns — centered header, badges, hero image, GitHub alert callouts, emoji feature bullets, collapsibles, Mermaid diagrams, tables over dense prose. Produces a README that survives a 10-second skim and a deep dive. |
 
 ## Skill Usage
 
@@ -121,6 +122,11 @@ skills/                            # Shared skills (bootstrapped to all projects
     SKILL.md                       # Context-aware dispatcher for academic tasks
     agents/openai.yaml             # Codex wrapper
     references/routing-table.md    # Quick-reference routing table and lens selection
+  readme-polish/
+    SKILL.md                       # Audit + rewrite a GitHub README with modern patterns
+    agents/openai.yaml             # Codex wrapper
+    references/patterns.md         # Copyable snippets for every modern pattern
+    references/checklist.md        # Pre-publish audit grid
 reference-skills/                  # Domain skills (copied manually into project repos)
   condense-cv/                     # CV preparation
   cs-meta-review/                  # Area chair meta-review
@@ -156,6 +162,7 @@ docs/
   figure-prompt-builder.md
   implement-review.md
   my-router.md
+  readme-polish.md
 .claude/settings.json              # Shared Claude project defaults (permissions, attribution, etc.)
 user/settings.json                 # Shared user-level defaults (permissions, hooks, CLAUDE_CODE_EFFORT_LEVEL=max env entry)
 ```

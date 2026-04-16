@@ -44,6 +44,7 @@ The user's prompt often contains the clearest signal. Match keywords to skills:
 | "mockup", "HTML figure", "HTML mockup", "interactive figure", "dashboard mockup", "Gantt", "screenshotable figure", "capture mode", "skia-canvas", "TikZ figure", "arrow routing" | `ci-mockup-figure` | `skills/` (shared) |
 | "review staged", "review changes", "review the diff" | `implement-review` | `skills/` (shared) |
 | "two-pass", "first pass", "second pass", "audit" | `dual-pass-workflow` | `skills/` (shared) |
+| "polish README", "modernize README", "README audit", "README rewrite", "README badges", "README hero", "GitHub README patterns" | `readme-polish` | `skills/` (shared) |
 | "proposal", "nsf", "nih", "grant", "solicitation", "aim", "thrust" | Proposal skills (check for local `nsf-*`, `nih-*` skills first) | `reference-skills/` (project-local) |
 | "review paper", "peer review", "reviewer comments" | `cs-paper-review` | `reference-skills/` (project-local) |
 | "meta-review", "area chair", "AC decision" | `cs-meta-review` | `reference-skills/` (project-local) |
