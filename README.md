@@ -2,6 +2,20 @@
 
 Personal shared configuration for Codex and Claude Code. Not intended for general use.
 
+## Relationship with `anywhere-agents` (long-term co-maintenance)
+
+This repo is the **private canonical source** of shared agent configuration. Its **sanitized public downstream** lives at [`yzhao062/anywhere-agents`](https://github.com/yzhao062/anywhere-agents) and ships the subset safe for general audiences — no USC content, no `reference-skills/`, no personal identifiers.
+
+> The two repos co-evolve. Most meaningful changes to shared components (bootstrap, `implement-review`, `my-router`, guard hook, writing defaults, Git safety rules, session checks) should land here first, then be **backported** into `anywhere-agents` on the next public release cut. Skipping the backport lets the public release drift — users stop getting improvements that the author is already using daily.
+
+Read before touching either repo:
+
+- [`docs/anywhere-agents.md`](docs/anywhere-agents.md) — canonical source rule, "what gets copied" table, 11-step release workflow, package/asset ownership.
+- [`docs/specs/open-source-framework.md`](docs/specs/open-source-framework.md) — the historical release plan plus the dated post-v1.0 update (npm/PyPI CLI policy).
+- `yzhao062/anywhere-agents/RELEASING.md` — the public-facing release steps (tag → build → publish to PyPI + npm → verify). Use this after the backport is staged.
+
+**Every release of `anywhere-agents` is paired with a doc update here.** If you change the two-repo policy (what gets copied, canonical-source rule, release workflow), update `docs/anywhere-agents.md` in the same commit.
+
 ## What This Repo Does
 
 Other project repos bootstrap from this repo to get shared agent defaults and skills. The bootstrap script (defined in `AGENTS.md`) fetches:
