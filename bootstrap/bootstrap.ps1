@@ -30,7 +30,7 @@ if (Test-Path .agent-config/repo/.git) {
 } else {
   git clone --depth 1 --filter=blob:none --sparse https://github.com/yzhao062/agent-config.git .agent-config/repo
 }
-git -C .agent-config/repo sparse-checkout set skills .claude scripts user
+git -C .agent-config/repo sparse-checkout set skills .claude scripts user bootstrap
 # Generate per-agent config files (CLAUDE.md, agents/codex.md) from AGENTS.md.
 # Generator preserves hand-authored files (no GENERATED header) and warns loudly.
 if (Test-Path .agent-config/repo/scripts/generate_agent_configs.py) {
@@ -88,5 +88,9 @@ if (-not (Test-Path .gitignore) -or -not (Select-String -Quiet -Pattern '^\/?\.a
 # stays on that version forever; future bootstrap improvements added upstream
 # (e.g. the 2026-04-16 generator step) would never reach them automatically.
 if (Test-Path .agent-config/repo/bootstrap/bootstrap.ps1) {
-  Copy-Item .agent-config/repo/bootstrap/bootstrap.ps1 .agent-config/bootstrap.ps1 -Force
+  try {
+    Copy-Item .agent-config/repo/bootstrap/bootstrap.ps1 .agent-config/bootstrap.ps1 -Force -ErrorAction Stop
+  } catch {
+    Write-Warning "Could not self-update .agent-config/bootstrap.ps1: $($_.Exception.Message)"
+  }
 }

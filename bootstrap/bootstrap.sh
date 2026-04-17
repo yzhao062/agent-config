@@ -9,7 +9,7 @@ if [ -d .agent-config/repo/.git ]; then
 else
   git clone --depth 1 --filter=blob:none --sparse https://github.com/yzhao062/agent-config.git .agent-config/repo
 fi
-git -C .agent-config/repo sparse-checkout set skills .claude scripts user
+git -C .agent-config/repo sparse-checkout set skills .claude scripts user bootstrap
 # Generate per-agent config files (CLAUDE.md, agents/codex.md) from AGENTS.md.
 # Generator preserves hand-authored files (no GENERATED header) and warns loudly.
 if [ -f .agent-config/repo/scripts/generate_agent_configs.py ]; then
@@ -84,5 +84,6 @@ fi
 # stays on that version forever; future bootstrap improvements added upstream
 # would never reach them automatically.
 if [ -f .agent-config/repo/bootstrap/bootstrap.sh ]; then
-  cp -f .agent-config/repo/bootstrap/bootstrap.sh .agent-config/bootstrap.sh
+  cp -f .agent-config/repo/bootstrap/bootstrap.sh .agent-config/bootstrap.sh || \
+    printf '%s\n' 'warning: could not self-update .agent-config/bootstrap.sh' >&2
 fi
