@@ -1,4 +1,6 @@
 """Tests for guard.py hook. Discovers guard.py relative to the repo root."""
+from __future__ import annotations
+
 import json
 import subprocess
 import sys
