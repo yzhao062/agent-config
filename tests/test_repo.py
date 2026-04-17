@@ -22,6 +22,10 @@ BOOTSTRAP_DIR = ROOT / "bootstrap"
 SCRIPTS_DIR = ROOT / "scripts"
 USER_DIR = ROOT / "user"
 REFSKILLS_DIR = ROOT / "reference-skills"
+CLAUDE_MD = ROOT / "CLAUDE.md"
+CODEX_MD = ROOT / "agents" / "codex.md"
+GENERATOR_SCRIPT = SCRIPTS_DIR / "generate_agent_configs.py"
+SESSION_HOOK_SCRIPT = SCRIPTS_DIR / "session_bootstrap.py"
 
 
 def read_text(path: Path) -> str:
@@ -503,6 +507,46 @@ class RepoValidationTests(unittest.TestCase):
                 "display_name:", wrapper_text,
                 f"reference-skills/{skill_dir.name}",
             )
+
+    def test_generator_and_session_hook_scripts_tracked(self) -> None:
+        tracked = self.tracked_files()
+        self.assertIn("scripts/generate_agent_configs.py", tracked)
+        self.assertIn("scripts/session_bootstrap.py", tracked)
+        self.assertTrue(GENERATOR_SCRIPT.exists())
+        self.assertTrue(SESSION_HOOK_SCRIPT.exists())
+
+    def test_generated_per_agent_files_tracked_with_marker(self) -> None:
+        tracked = self.tracked_files()
+        self.assertIn("CLAUDE.md", tracked)
+        self.assertIn("agents/codex.md", tracked)
+        self.assertIn("GENERATED FILE", read_text(CLAUDE_MD))
+        self.assertIn("GENERATED FILE", read_text(CODEX_MD))
+
+    def test_agents_md_has_configuration_precedence_section(self) -> None:
+        self.assertIn("Configuration Precedence", self.agents_text)
+
+    def test_agents_md_has_agent_scope_tags(self) -> None:
+        self.assertIn("<!-- agent:claude -->", self.agents_text)
+        self.assertIn("<!-- /agent:claude -->", self.agents_text)
+        self.assertIn("<!-- agent:codex -->", self.agents_text)
+        self.assertIn("<!-- /agent:codex -->", self.agents_text)
+
+    def test_bootstrap_scripts_run_generator_and_deploy_session_hook(self) -> None:
+        both = self.bootstrap_bash_text + "\n" + self.bootstrap_powershell_text
+        self.assertIn("generate_agent_configs.py", both,
+                      "bootstrap scripts must invoke the generator")
+        self.assertIn("session_bootstrap.py", both,
+                      "bootstrap scripts must deploy session_bootstrap.py")
+
+    def test_user_settings_wires_session_start_hook(self) -> None:
+        user_settings = json.loads(read_text(ROOT / "user" / "settings.json"))
+        session_hooks = (
+            user_settings.get("hooks", {}).get("SessionStart", [])
+        )
+        self.assertTrue(session_hooks, "user/settings.json must declare a SessionStart hook entry")
+        flattened = json.dumps(session_hooks)
+        self.assertIn("session_bootstrap.py", flattened,
+                      "SessionStart entry must invoke ~/.claude/hooks/session_bootstrap.py")
 
     def test_github_actions_runs_validation_on_windows_and_ubuntu(self) -> None:
         required_fragments = [

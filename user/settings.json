@@ -50,6 +50,17 @@
           }
         ]
       }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$HOME/.claude/hooks/session_bootstrap.py\" 2>/dev/null || python \"$HOME/.claude/hooks/session_bootstrap.py\"",
+            "statusMessage": "Running anywhere-agents bootstrap if present..."
+          }
+        ]
+      }
     ]
   },
   "env": {

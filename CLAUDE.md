@@ -1,3 +1,21 @@
+<!--
+GENERATED FILE -- do not edit by hand.
+
+This file is regenerated from AGENTS.md by scripts/generate_agent_configs.py.
+Bootstrap re-runs the generator on every session, so edits here are lost.
+
+Precedence for agent rule files (most specific wins):
+  1. CLAUDE.local.md      your per-agent, per-project overrides
+  2. AGENTS.local.md   your cross-agent, per-project overrides
+  3. CLAUDE.md       generated from AGENTS.md (this file)
+  4. AGENTS.md         upstream baseline
+
+To customize just for Claude Code in this project, create CLAUDE.local.md
+(the generator never touches it). To customize for every agent in this
+project, edit AGENTS.local.md. To change upstream rules for everyone,
+edit AGENTS.md in your fork.
+-->
+
 <!-- Quick start: In Claude Code, read @AGENTS.md to run bootstrap, session checks, and task routing -->
 
 > **Claude Code / Codex / other agents -- determine your context before proceeding:**
@@ -124,48 +142,6 @@ After bootstrap, run **all** of the following checks and report results in a sho
 - If the `superpowers` plugin is active, the router operates during the execution phase. Superpowers handles the outer workflow (brainstorm, plan, execute, verify); the router handles inner dispatch to the right domain skill.
 - If routing is ambiguous (multiple skills could apply), state the detected context and proposed skill, then ask the user to confirm.
 
-<!-- agent:codex -->
-## Codex MCP Integration
-
-- Codex is available to Claude Code as an MCP server. Register it once at the user level so it applies to all projects and terminals (including PyCharm):
-  ```
-  claude mcp add codex -s user -- codex mcp-server -c approval_policy=on-failure
-  ```
-- This writes to `~/.claude.json` top-level `mcpServers`. A session restart is required after registration for `/mcp` to pick it up.
-- **Migrating an existing registration:** If Codex was registered without `-c approval_policy=on-failure`, remove and re-add:
-  ```
-  claude mcp remove codex -s user
-  claude mcp add codex -s user -- codex mcp-server -c approval_policy=on-failure
-  ```
-  On Windows, adjust the path as shown below.
-- **Gotcha:** Do not register under a project scope (e.g., from a specific working directory without `-s user`). That creates a project-scoped entry under `projects["<path>"].mcpServers` in `~/.claude.json`, which does not propagate to other directories.
-- Prerequisites: Node.js installed, Codex CLI installed (`npm install -g @openai/codex`), and `OPENAI_API_KEY` set.
-- **Recommended Codex defaults (as of April 2026):** Add or update these keys in `~/.codex/config.toml` on macOS/Linux or `%USERPROFILE%\.codex\config.toml` on Windows (create the file if it does not exist) so that both interactive sessions and the MCP server use the recommended default model with fast inference:
-  ```toml
-  model = "gpt-5.4"
-  model_reasoning_effort = "xhigh"
-  service_tier = "fast"
-
-  [features]
-  fast_mode = true
-  ```
-  `service_tier = "fast"` selects the fast inference tier (1.5x speed, no quality reduction). For ChatGPT-authenticated users this costs 2x credits; API-key users pay standard API pricing. The `[features].fast_mode` flag gates the feature and defaults to `true`; set it explicitly alongside `service_tier` to persist the default in `config.toml`. Omit both if you prefer lower cost over latency. The MCP server reads the same `config.toml`, so these settings apply to both interactive sessions and MCP. These settings work identically on macOS, Linux, and Windows.
-- MCP tools available after registration: `codex` (new prompt) and `codex-reply` (continue an existing session).
-- **Windows note:** Claude Code launches MCP servers through bash, not cmd or PowerShell. This means `.cmd` wrappers and PowerShell variables like `$env:APPDATA` do not work. If `codex` is not on `PATH`, use the full path with forward slashes and **no `.cmd` extension** (npm installs a bash-compatible script alongside the `.cmd`):
-  ```
-  claude mcp add codex -s user -- C:/Users/<you>/AppData/Roaming/npm/codex mcp-server -c approval_policy=on-failure
-  ```
-  Run `where codex` (cmd) or `Get-Command codex` (PowerShell) to find the actual path.
-- **MCP approval policy:** By default the Codex MCP server prompts for approval on every shell command, which surfaces as "MCP server requests your input" dialogs in Claude Code. Pass `-c approval_policy=on-failure` in the registration command (shown above) so commands auto-approve and only prompt on failures. The same key can be set in `config.toml` (`approval_policy = "on-failure"`) for interactive sessions.
-- **Bitdefender false positives (Windows):** Bitdefender Advanced Threat Defense may flag Codex and Claude Code shell commands as "Malicious command lines detected." To suppress this, add exceptions in Bitdefender → Protection → Manage Exceptions. For each exception, enable the **Advanced Threat Defense** toggle (not just Antivirus). Recommended exceptions:
-  - `C:\Program Files\nodejs\node.exe` (process)
-  - `C:\Users\<you>\.local\bin\claude.exe` (process)
-  - `C:\Users\<you>\AppData\Roaming\npm\codex` (process)
-  - `C:\Users\<you>\AppData\Roaming\npm\codex.cmd` (process)
-  - `C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe` (process, if Codex invokes PowerShell)
-- **Windows recommendation: use the terminal path.** On Windows (11 Build 26200+), the MCP path still has rough edges — residual approval prompts and Bitdefender false positives add friction even after the mitigations above. The terminal path (relay reviews via the Codex interactive terminal window) avoids both issues. Prefer the terminal path on Windows; use MCP on macOS/Linux where it works smoothly.
-<!-- /agent:codex -->
-
 ## Writing Defaults
 
 - Use scientifically accessible language.
@@ -231,7 +207,6 @@ When the session start check (item 4) detects older versions, list the affected 
 - If interpreter selection is still unclear, inspect Miniforge environments and local IDE settings before reporting that Python is missing.
 - **PyCharm default interpreter:** The `py312` conda environment is configured as the default interpreter for new projects via **File > New Projects Setup > Settings for New Projects > Python Interpreter**. Existing cloned repos should also point to this environment unless they require a project-specific venv.
 - GitHub CLI (`gh`) is used for PR and issue workflows. If `gh` is not found, remind the user to install it (`winget install GitHub.cli` on Windows, `brew install gh` on macOS) and authenticate with `gh auth login`.
-<!-- agent:claude -->
 - **Claude Code installation**: Prefer the **native installer**. Migrate off npm and winget when possible.
   - macOS: `curl -fsSL https://claude.ai/install.sh | sh`
   - Windows (PowerShell, no admin): `irm https://claude.ai/install.ps1 | iex` (requires Git for Windows)
@@ -239,7 +214,6 @@ When the session start check (item 4) detects older versions, list the affected 
   - Native installs auto-update in the background by default. Use `/config` inside Claude Code to set the release channel (`latest` or `stable`). Run `claude doctor` to inspect updater status, and `claude update` to force an immediate update check.
   - To disable auto-updates, set `DISABLE_AUTOUPDATER=1` in the environment or add `"env": {"DISABLE_AUTOUPDATER": "1"}` to `~/.claude/settings.json`. Note: a legacy top-level `autoUpdates` key in `~/.claude.json` is ignored on native installs because `autoUpdatesProtectedForNative` neutralizes it.
 - **Claude Code effort level**: As of Claude Code v2.1.111, the `/effort` slider exposes five levels: `low`, `medium`, `high`, `xhigh`, `max`. The persisted `effortLevel` key in `settings.json` accepts `low`, `medium`, `high`, and `xhigh` (v2.1.111 added `xhigh` as a valid persisted value). `max` remains session-only: selecting `max` via `/effort` silently does not persist. To get `max` as a persistent default across every project and session, set the env var `CLAUDE_CODE_EFFORT_LEVEL=max` in `~/.claude/settings.json` under `"env"`. The shared `user/settings.json` in this repo sets the env var, and bootstrap merges it into `~/.claude/settings.json`, so running bootstrap once on any consuming project lands the user-level default. Runtime precedence: managed policy > `CLAUDE_CODE_EFFORT_LEVEL` env var > persisted `effortLevel` (local > project > user) > Claude Code's built-in default. When the env var is set, it outranks `--effort` at launch and `/effort` inside a session; the slash command prints a warning that the env var is overriding the live effort. When the env var is unset, `--effort <level>` at launch is a session-only override, `/effort low|medium|high|xhigh` updates the persisted user setting, and `/effort max` is session-only.
-<!-- /agent:claude -->
 
 ## Submodule Workflow
 

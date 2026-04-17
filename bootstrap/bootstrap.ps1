@@ -31,6 +31,15 @@ if (Test-Path .agent-config/repo/.git) {
   git clone --depth 1 --filter=blob:none --sparse https://github.com/yzhao062/agent-config.git .agent-config/repo
 }
 git -C .agent-config/repo sparse-checkout set skills .claude scripts user
+# Generate per-agent config files (CLAUDE.md, agents/codex.md) from AGENTS.md.
+# Generator preserves hand-authored files (no GENERATED header) and warns loudly.
+if (Test-Path .agent-config/repo/scripts/generate_agent_configs.py) {
+  $genPy = Get-Command python -ErrorAction SilentlyContinue
+  if (-not $genPy) { $genPy = Get-Command python3 -ErrorAction SilentlyContinue }
+  if ($genPy) {
+    & $genPy.Path .agent-config/repo/scripts/generate_agent_configs.py --root . --quiet
+  }
+}
 if (Test-Path .agent-config/repo/.claude/commands) {
   Copy-Item .agent-config/repo/.claude/commands/*.md .claude/commands/ -Force
 }
@@ -53,6 +62,11 @@ if (Test-Path .agent-config/repo/scripts/guard.py) {
   $hooksDir = Join-Path $userClaude 'hooks'
   New-Item -ItemType Directory -Force -Path $hooksDir | Out-Null
   Copy-Item .agent-config/repo/scripts/guard.py (Join-Path $hooksDir 'guard.py') -Force
+}
+if (Test-Path .agent-config/repo/scripts/session_bootstrap.py) {
+  $hooksDir = Join-Path $userClaude 'hooks'
+  New-Item -ItemType Directory -Force -Path $hooksDir | Out-Null
+  Copy-Item .agent-config/repo/scripts/session_bootstrap.py (Join-Path $hooksDir 'session_bootstrap.py') -Force
 }
 if (Test-Path .agent-config/repo/user/settings.json) {
   New-Item -ItemType Directory -Force -Path $userClaude | Out-Null

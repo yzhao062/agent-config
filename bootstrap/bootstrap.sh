@@ -10,6 +10,14 @@ else
   git clone --depth 1 --filter=blob:none --sparse https://github.com/yzhao062/agent-config.git .agent-config/repo
 fi
 git -C .agent-config/repo sparse-checkout set skills .claude scripts user
+# Generate per-agent config files (CLAUDE.md, agents/codex.md) from AGENTS.md.
+# Generator preserves hand-authored files (no GENERATED header) and warns loudly.
+if [ -f .agent-config/repo/scripts/generate_agent_configs.py ]; then
+  _py=$(command -v python3 || command -v python)
+  if [ -n "$_py" ]; then
+    "$_py" .agent-config/repo/scripts/generate_agent_configs.py --root . --quiet || true
+  fi
+fi
 if [ -d .agent-config/repo/.claude/commands ]; then
   cp -f .agent-config/repo/.claude/commands/*.md .claude/commands/
 fi
@@ -41,6 +49,10 @@ fi
 if [ -f .agent-config/repo/scripts/guard.py ]; then
   mkdir -p "$HOME/.claude/hooks"
   cp -f .agent-config/repo/scripts/guard.py "$HOME/.claude/hooks/guard.py"
+fi
+if [ -f .agent-config/repo/scripts/session_bootstrap.py ]; then
+  mkdir -p "$HOME/.claude/hooks"
+  cp -f .agent-config/repo/scripts/session_bootstrap.py "$HOME/.claude/hooks/session_bootstrap.py"
 fi
 if [ -f .agent-config/repo/user/settings.json ]; then
   mkdir -p "$HOME/.claude"
