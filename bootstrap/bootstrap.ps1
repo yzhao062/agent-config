@@ -83,3 +83,10 @@ if (Test-Path .agent-config/repo/user/settings.json) {
 if (-not (Test-Path .gitignore) -or -not (Select-String -Quiet -Pattern '^\/?\.agent-config/' .gitignore)) {
   Add-Content -Path .gitignore -Value "`n.agent-config/"
 }
+# Self-update: copy the latest bootstrap script from the sparse clone over this
+# one. Without this, a consumer that initially fetched an older bootstrap.ps1
+# stays on that version forever; future bootstrap improvements added upstream
+# (e.g. the 2026-04-16 generator step) would never reach them automatically.
+if (Test-Path .agent-config/repo/bootstrap/bootstrap.ps1) {
+  Copy-Item .agent-config/repo/bootstrap/bootstrap.ps1 .agent-config/bootstrap.ps1 -Force
+}

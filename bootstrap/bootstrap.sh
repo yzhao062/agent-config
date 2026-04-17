@@ -79,3 +79,10 @@ fi
 if [ ! -f .gitignore ] || ! grep -qE '^\/?\.agent-config/' .gitignore; then
   echo '.agent-config/' >> .gitignore
 fi
+# Self-update: copy the latest bootstrap script from the sparse clone over this
+# one. Without this, a consumer that initially fetched an older bootstrap.sh
+# stays on that version forever; future bootstrap improvements added upstream
+# would never reach them automatically.
+if [ -f .agent-config/repo/bootstrap/bootstrap.sh ]; then
+  cp -f .agent-config/repo/bootstrap/bootstrap.sh .agent-config/bootstrap.sh
+fi
