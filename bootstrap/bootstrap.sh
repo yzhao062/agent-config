@@ -95,6 +95,41 @@ P.Path(P.Path.home()/'.claude'/'settings.json').write_text(json.dumps(u,indent=2
     cp -f .agent-config/repo/user/settings.json "$HOME/.claude/settings.json"
   fi
 fi
+# Heal legacy autoUpdates: false in ~/.claude.json. See bootstrap.ps1 comment
+# for the why. To genuinely disable auto-updates, set DISABLE_AUTOUPDATER=1
+# via the env block in ~/.claude/settings.json.
+if [ -f "$HOME/.claude.json" ]; then
+  _py=$(command -v python3 || command -v python)
+  if [ -n "$_py" ]; then
+    "$_py" -c "
+import json, os, pathlib as P, tempfile
+p = P.Path.home() / '.claude.json'
+try:
+    d = json.loads(p.read_text())
+    if d.get('autoUpdates') is False:
+        d['autoUpdates'] = True
+        # Best-effort heal. Atomic replace (tempfile.mkstemp + os.replace)
+        # prevents a truncated config on interrupt but is NOT a cross-process
+        # lock: a concurrent Claude Code write landing between our read and
+        # replace will be clobbered by our older snapshot. Healed flag
+        # reappears on the next session if that happens.
+        fd, tmp = tempfile.mkstemp(dir=str(p.parent), prefix='.claude.json.', suffix='.tmp')
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                f.write(json.dumps(d, indent=2) + '\n')
+            os.replace(tmp, str(p))
+        except Exception:
+            try:
+                os.remove(tmp)
+            except Exception:
+                pass
+            raise
+except Exception:
+    pass
+"
+  fi
+fi
+
 if [ ! -f .gitignore ] || ! grep -qE '^\/?\.agent-config/' .gitignore; then
   echo '.agent-config/' >> .gitignore
 fi

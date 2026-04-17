@@ -97,6 +97,35 @@ if (Test-Path .agent-config/repo/user/settings.json) {
     Copy-Item .agent-config/repo/user/settings.json $userSettings -Force
   }
 }
+# Heal legacy autoUpdates: false in ~/.claude.json. When the flag was already
+# false at Claude Code native-install launch, the updater daemon never spawns
+# (autoUpdatesProtectedForNative does not actually neutralize it in that path).
+# To genuinely disable auto-updates, use DISABLE_AUTOUPDATER=1 via the env
+# block in ~/.claude/settings.json; that takes precedence regardless.
+$claudeJson = Join-Path $env:USERPROFILE '.claude.json'
+if (Test-Path $claudeJson) {
+  try {
+    $claudeState = Get-Content $claudeJson -Raw | ConvertFrom-Json
+    if ($claudeState.PSObject.Properties['autoUpdates'] -and $claudeState.autoUpdates -eq $false) {
+      $claudeState.autoUpdates = $true
+      # Best-effort heal. Atomic replace (staged temp + Move-Item -Force) prevents
+      # a truncated config if this process is interrupted mid-write. It is NOT a
+      # cross-process lock: a concurrent Claude Code write that lands between our
+      # read and replace will still be clobbered by our older snapshot. The
+      # healed flag persists on the next session if Claude Code re-wrote with
+      # the stale value. Key ordering may change during the round trip; Claude
+      # Code reads by key so this is acceptable. Unique GUID suffix avoids
+      # concurrent-bootstrap temp-path collisions.
+      $tmp = Join-Path (Split-Path $claudeJson) (".claude.json.{0}.tmp" -f [guid]::NewGuid().ToString("N"))
+      $claudeState | ConvertTo-Json -Depth 20 | Set-Content $tmp
+      Move-Item -Force $tmp $claudeJson
+    }
+  } catch {
+    # ~/.claude.json is runtime-managed by Claude Code; skip on any read/parse error.
+    if ($tmp -and (Test-Path $tmp)) { Remove-Item -Force $tmp }
+  }
+}
+
 if (-not (Test-Path .gitignore) -or -not (Select-String -Quiet -Pattern '^\/?\.agent-config/' .gitignore)) {
   Add-Content -Path .gitignore -Value "`n.agent-config/"
 }
