@@ -7,7 +7,7 @@ This document explains how the **private daily-driver (`yzhao062/agent-config`)*
 | Repo | Role | Visibility | What lives here |
 |------|------|------------|-----------------|
 | `yzhao062/agent-config` | **Canonical source + personal daily driver** | Private | Full working config: USC-specific content, `reference-skills/` (NSF proposal composer, USC reimbursement, CS paper review, etc.), `figure-references/`, in-progress specs, `docs/superpowers/`, and every skill the author uses across research projects. |
-| `yzhao062/anywhere-agents` | **Sanitized public release** | Public | Only what a stranger can fork and use: clean `AGENTS.md`, two shared skills (`implement-review`, `my-router`), bootstrap scripts, guard hook, settings, tests, CI. No personal content, no research-specific skills. |
+| `yzhao062/anywhere-agents` | **Sanitized public release** | Public | Only what a stranger can fork and use: clean `AGENTS.md`, four shared skills (`implement-review`, `my-router`, `ci-mockup-figure`, `readme-polish`), bootstrap scripts, guard hook, settings, tests, CI. No personal content, no research-specific reference skills. |
 
 The two repos are **not linked as submodules or forks**. Keeping them independent is the primary defense against accidental personal leaks into the public release.
 
@@ -22,7 +22,7 @@ A separate public repo provides **physical isolation**. Private content cannot l
 
 ## Canonical source rule
 
-`agent-config` is the canonical source for shared components (bootstrap scripts, the two shared skills, guard hook, tests). When a shared component is improved:
+`agent-config` is the canonical source for shared components (bootstrap scripts, the shared skills, guard hook, tests). When a shared component is improved:
 
 1. **Change lands in `agent-config` first.** Standard dev flow: edit, commit, push.
 2. **On the next public release cut**, the change is backported to `anywhere-agents`. This is a manual copy step, not an automated sync.
@@ -38,20 +38,22 @@ A separate public repo provides **physical isolation**. Private content cannot l
 | `bootstrap/bootstrap.sh`, `bootstrap/bootstrap.ps1` | Yes, with URL change | Point at `yzhao062/anywhere-agents` instead of `yzhao062/agent-config`. No other changes. |
 | `scripts/guard.py` | Yes, as-is | Already generic. |
 | `skills/implement-review/` | Yes, as-is | The signature skill. |
-| `skills/my-router/` | Yes, with content changes | The public version is a template: concrete routing rule only for `implement-review`, with clear "extend this in your fork" guidance. Strip references to `nsf-*`, `usc-reimbursement`, `cs-paper-review`, etc. |
-| `skills/dual-pass-workflow/` | No | Not in v1.0 scope. Author uses it, but it is research-flavored. |
-| `skills/bibref-filler/` | No | Research-specific. |
-| `skills/figure-prompt-builder/` | No | Research-specific. |
-| `skills/ci-mockup-figure/` | No | Research-specific (LaTeX-heavy). |
+| `skills/my-router/` | Yes, with content changes | The public version has concrete routing rules for the four shipped skills (`implement-review`, `ci-mockup-figure`, `readme-polish`, plus `my-router` itself) with clear "extend this in your fork" guidance. Strip references to `nsf-*`, `usc-reimbursement`, `cs-paper-review`, etc. |
+| `skills/dual-pass-workflow/` | No | Author uses it, but it is research-flavored. |
+| `skills/bibref-filler/` | No | Research-specific (BibTeX / LaTeX citation workflow). |
+| `skills/figure-prompt-builder/` | No | Research-specific (figure prompts for papers). |
+| `skills/ci-mockup-figure/` | Yes, as-is | Generally useful (HTML mockups → PNG via headless Chrome, TikZ/skia for abstract diagrams). Skill text mentions NSF/NIH/DOE as example domains, which is generic enough to keep. |
+| `skills/readme-polish/` | Yes, as-is | Generally useful (modern GitHub README patterns). No personal or institutional content. |
 | `reference-skills/` | No | Entirely domain-specific (NSF, NIH, USC). |
 | `figure-references/` | No | Personal asset gallery. |
 | `docs/` (internal: specs, superpowers, CodexReview) | No | Internal specs stay private. |
 | `docs/hero.html`, `docs/hero.png`, `docs/avatar.jpg` | Only in public | These are public README assets authored in `anywhere-agents` directly. They do not exist in `agent-config`. |
+| `.readthedocs.yaml`, `mkdocs.yml`, `docs/requirements.txt`, `docs/*.md`, `docs/stylesheets/` | Only in public | Read the Docs + MkDocs Material site source, authored directly in `anywhere-agents`. Skill pages use `mkdocs-include-markdown-plugin` to pull from `skills/<name>/SKILL.md` so the skill source-of-truth stays in one place. |
 | `CodexReview.md` | No | Scratch file for review rounds. |
-| `.claude/commands/` | Only for shipped skills | `implement-review.md` and `my-router.md` only. |
+| `.claude/commands/` | Only for shipped skills | `implement-review.md`, `my-router.md`, `ci-mockup-figure.md`, `readme-polish.md`. |
 | `.claude/settings.json` | Yes, sanitized | Already generic in `agent-config`. |
 | `user/settings.json` | Yes, sanitized | Strip `additionalDirectories` (contains user-specific paths). Keep permissions, hook wiring, `CLAUDE_CODE_EFFORT_LEVEL=max`. |
-| `tests/` | Yes, with edits | Remove tests for unshipped skills. Update `test_repo.py` to assert the 2-skill set and correct URLs. |
+| `tests/` | Yes, with edits | Remove tests for unshipped skills. Update `test_repo.py` to assert the four-skill shipped set and correct URLs. |
 | `.github/workflows/` | Yes | Same CI, same actions. |
 
 ## Package and documentation assets
@@ -60,12 +62,13 @@ Beyond the shared bootstrap and skills, two sets of artifacts live only in `anyw
 
 - **CLI packages** (PyPI `anywhere-agents`, npm `anywhere-agents`). Source lives inside the public repo at `anywhere-agents/packages/pypi/` and `anywhere-agents/packages/npm/` so that checking out a repo tag fully reproduces the published packages. The packages are thin shims that download and run the shell bootstrap — they do not contain bootstrap logic themselves. Version stream: **one version for the repo and both packages**; bump all three in the same commit, tag that commit, then publish.
 - **README assets** (`docs/hero.html`, `docs/hero.png`, `docs/avatar.jpg`, and any future derivatives). These are authored directly in the public repo. The vendored avatar (`docs/avatar.jpg`) is a one-time local copy of the personal-site headshot; if the source website changes, the avatar here does not.
+- **Read the Docs site source** (`.readthedocs.yaml`, `mkdocs.yml`, `docs/requirements.txt`, `docs/index.md`, `docs/install.md`, `docs/skills/`, `docs/agents-md.md`, `docs/faq.md`, `docs/changelog.md`, `docs/stylesheets/extra.css`). MkDocs + Material with a custom USC cardinal palette, published at [anywhere-agents.readthedocs.io](https://anywhere-agents.readthedocs.io/). Authored directly in the public repo; per-skill pages use `mkdocs-include-markdown-plugin` to pull from `skills/<name>/SKILL.md` so the skill source-of-truth stays in one place.
 
 ## Release workflow
 
 When cutting a new `anywhere-agents` release:
 
-1. **Audit `agent-config` changes** since the last public release. Look at commits touching shared components: bootstrap, the two shared skills, guard, settings, `AGENTS.md` common sections.
+1. **Audit `agent-config` changes** since the last public release. Look at commits touching shared components: bootstrap, the shared skills, guard, settings, `AGENTS.md` common sections.
 2. **Apply relevant changes to `anywhere-agents`**. Manual copy + sanitization, following the "what gets copied" table.
 3. **Run the leak sweep** in the `anywhere-agents` checkout:
    ```bash
@@ -75,7 +78,7 @@ When cutting a new `anywhere-agents` release:
      C:/Users/yuezh/PycharmProjects/anywhere-agents
    ```
    Classify each hit as (a) intentional public claim (e.g., "USC" in the maintainer credential), (b) hyphenation example (`co-PI`), (c) leak — must fix. Fix all (c).
-4. **Run tests locally** on the `anywhere-agents` checkout (`python -B -m unittest discover -s tests`) and verify the bootstrap smoke tests pass.
+4. **Run tests locally** on the `anywhere-agents` checkout (`python -B -m unittest discover -s tests`) and verify the bootstrap smoke tests pass. Also run `python -m mkdocs build --strict --clean` to verify the Read the Docs site builds with no broken links (this catches include-link regressions before they reach RTD).
 5. **Regenerate the hero image** if any claim or panel content changed: edit `docs/hero.html`, run
    ```bash
    "C:/Program Files/Google/Chrome/Application/chrome.exe" --headless=new --disable-gpu \
