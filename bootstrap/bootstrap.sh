@@ -1,13 +1,32 @@
 # Let .gitattributes handle line endings; silence CRLF warnings on Windows
+
+# Upstream cascade: argv > env var > persisted file > hardcoded default.
+# Forkers can persist a different default in their fork; consumers can pass
+# upstream via `bash .agent-config/bootstrap.sh <user>/<repo>` or the
+# $AGENT_CONFIG_UPSTREAM environment variable.
+UPSTREAM=""
+if [ -n "${1:-}" ]; then
+  UPSTREAM="$1"
+elif [ -n "${AGENT_CONFIG_UPSTREAM:-}" ]; then
+  UPSTREAM="$AGENT_CONFIG_UPSTREAM"
+elif [ -f .agent-config/upstream ]; then
+  UPSTREAM="$(tr -d '\r\n' < .agent-config/upstream)"
+fi
+UPSTREAM="${UPSTREAM:-yzhao062/agent-config}"
+mkdir -p .agent-config
+printf '%s' "$UPSTREAM" > .agent-config/upstream
+
 git config --global core.autocrlf false
 
 mkdir -p .agent-config .claude/commands
-curl -sfL https://raw.githubusercontent.com/yzhao062/agent-config/main/AGENTS.md -o .agent-config/AGENTS.md
+curl -sfL "https://raw.githubusercontent.com/$UPSTREAM/main/AGENTS.md" -o .agent-config/AGENTS.md
 cp -f .agent-config/AGENTS.md AGENTS.md
+REPO_URL="https://github.com/$UPSTREAM.git"
 if [ -d .agent-config/repo/.git ]; then
+  git -C .agent-config/repo remote set-url origin "$REPO_URL"
   git -C .agent-config/repo pull --ff-only
 else
-  git clone --depth 1 --filter=blob:none --sparse https://github.com/yzhao062/agent-config.git .agent-config/repo
+  git clone --depth 1 --filter=blob:none --sparse "$REPO_URL" .agent-config/repo
 fi
 git -C .agent-config/repo sparse-checkout set skills .claude scripts user bootstrap
 # Generate per-agent config files (CLAUDE.md, agents/codex.md) from AGENTS.md.

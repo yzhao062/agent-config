@@ -127,24 +127,26 @@ class RepoValidationTests(unittest.TestCase):
 
         powershell_script = remote_dir / "bootstrap" / "bootstrap.ps1"
         powershell_text = read_text(powershell_script).replace(
-            "Invoke-WebRequest -UseBasicParsing -Uri https://raw.githubusercontent.com/yzhao062/agent-config/main/AGENTS.md -OutFile .agent-config/AGENTS.md",
+            'Invoke-WebRequest -UseBasicParsing -Uri "https://raw.githubusercontent.com/$Upstream/main/AGENTS.md" -OutFile .agent-config/AGENTS.md',
             f"Copy-Item -LiteralPath '{agents_copy}' -Destination .agent-config/AGENTS.md",
         )
         powershell_script.write_text(
             powershell_text.replace(
-                "https://github.com/yzhao062/agent-config.git", remote_uri
+                '$RepoUrl = "https://github.com/$Upstream.git"',
+                f"$RepoUrl = '{remote_uri}'",
             ),
             encoding="utf-8",
         )
 
         bash_script = remote_dir / "bootstrap" / "bootstrap.sh"
         bash_text = read_text(bash_script).replace(
-            "curl -sfL https://raw.githubusercontent.com/yzhao062/agent-config/main/AGENTS.md -o .agent-config/AGENTS.md",
+            'curl -sfL "https://raw.githubusercontent.com/$UPSTREAM/main/AGENTS.md" -o .agent-config/AGENTS.md',
             f"cp {shlex.quote((remote_dir / 'AGENTS.md').as_posix())} .agent-config/AGENTS.md",
         )
         bash_script.write_text(
             bash_text.replace(
-                "https://github.com/yzhao062/agent-config.git", remote_uri
+                'REPO_URL="https://github.com/$UPSTREAM.git"',
+                f"REPO_URL='{remote_uri}'",
             ),
             encoding="utf-8",
         )
@@ -298,16 +300,16 @@ class RepoValidationTests(unittest.TestCase):
 
     def test_bootstrap_scripts_cover_sync_steps(self) -> None:
         required_fragments = [
-            "Invoke-WebRequest -UseBasicParsing -Uri https://raw.githubusercontent.com/yzhao062/agent-config/main/AGENTS.md -OutFile .agent-config/AGENTS.md",
+            "Invoke-WebRequest -UseBasicParsing -Uri \"https://raw.githubusercontent.com/$Upstream/main/AGENTS.md\" -OutFile .agent-config/AGENTS.md",
             "Copy-Item .agent-config/AGENTS.md AGENTS.md -Force",
-            "git clone --depth 1 --filter=blob:none --sparse https://github.com/yzhao062/agent-config.git .agent-config/repo",
+            "git clone --depth 1 --filter=blob:none --sparse $RepoUrl .agent-config/repo",
             "git -C .agent-config/repo sparse-checkout set skills .claude scripts user",
             "Copy-Item .agent-config/repo/.claude/commands/*.md .claude/commands/ -Force",
             "Copy-Item .agent-config/repo/.claude/settings.json .claude/settings.json -Force",
             "ConvertFrom-Json",
             "Add-Member",
             "Add-Content -Path .gitignore -Value \"`n.agent-config/\"",
-            "curl -sfL https://raw.githubusercontent.com/yzhao062/agent-config/main/AGENTS.md -o .agent-config/AGENTS.md",
+            "curl -sfL \"https://raw.githubusercontent.com/$UPSTREAM/main/AGENTS.md\" -o .agent-config/AGENTS.md",
             "cp -f .agent-config/AGENTS.md AGENTS.md",
             "cp -f .agent-config/repo/.claude/commands/*.md .claude/commands/",
             "cp -f .agent-config/repo/.claude/settings.json .claude/settings.json",

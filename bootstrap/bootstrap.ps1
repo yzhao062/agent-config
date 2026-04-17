@@ -1,4 +1,19 @@
 # Let .gitattributes handle line endings; silence CRLF warnings on Windows
+
+param([string]$Upstream)
+
+# Upstream cascade: argv > env var > persisted file > hardcoded default.
+# Forkers can persist a different default in their fork; consumers can pass
+# upstream via `.\.agent-config\bootstrap.ps1 <user>/<repo>` or the
+# $env:AGENT_CONFIG_UPSTREAM environment variable.
+if (-not $Upstream) { $Upstream = $env:AGENT_CONFIG_UPSTREAM }
+if (-not $Upstream -and (Test-Path .agent-config/upstream)) {
+  $Upstream = (Get-Content .agent-config/upstream -Raw).Trim()
+}
+if (-not $Upstream) { $Upstream = 'yzhao062/agent-config' }
+New-Item -ItemType Directory -Force -Path .agent-config | Out-Null
+Set-Content -Path .agent-config/upstream -Value $Upstream -NoNewline
+
 git config --global core.autocrlf false
 
 function Merge-Json($base, $over) {
@@ -23,12 +38,14 @@ function Merge-Json($base, $over) {
   }
 }
 New-Item -ItemType Directory -Force -Path .agent-config, .claude, .claude/commands | Out-Null
-Invoke-WebRequest -UseBasicParsing -Uri https://raw.githubusercontent.com/yzhao062/agent-config/main/AGENTS.md -OutFile .agent-config/AGENTS.md
+Invoke-WebRequest -UseBasicParsing -Uri "https://raw.githubusercontent.com/$Upstream/main/AGENTS.md" -OutFile .agent-config/AGENTS.md
 Copy-Item .agent-config/AGENTS.md AGENTS.md -Force
+$RepoUrl = "https://github.com/$Upstream.git"
 if (Test-Path .agent-config/repo/.git) {
+  git -C .agent-config/repo remote set-url origin $RepoUrl
   git -C .agent-config/repo pull --ff-only
 } else {
-  git clone --depth 1 --filter=blob:none --sparse https://github.com/yzhao062/agent-config.git .agent-config/repo
+  git clone --depth 1 --filter=blob:none --sparse $RepoUrl .agent-config/repo
 }
 git -C .agent-config/repo sparse-checkout set skills .claude scripts user bootstrap
 # Generate per-agent config files (CLAUDE.md, agents/codex.md) from AGENTS.md.
