@@ -515,6 +515,46 @@ class RepoValidationTests(unittest.TestCase):
         self.assertTrue(GENERATOR_SCRIPT.exists())
         self.assertTrue(SESSION_HOOK_SCRIPT.exists())
 
+    def test_pre_push_hook_tracked_and_wired(self) -> None:
+        tracked = self.tracked_files()
+        self.assertIn(".githooks/pre-push", tracked)
+        hook_path = ROOT / ".githooks" / "pre-push"
+        self.assertTrue(hook_path.exists())
+        body = read_text(hook_path)
+        self.assertIn("scripts/pre-push-smoke.sh", body,
+                      "pre-push hook must invoke pre-push-smoke.sh (current checkout), not remote-smoke.sh (published package)")
+        self.assertIn("AGENTS.md", body,
+                      "pre-push hook must gate on AGENTS.md changes")
+        self.assertIn("--no-verify", body,
+                      "pre-push hook must document the bypass path")
+
+    def test_remote_smoke_script_tracked(self) -> None:
+        tracked = self.tracked_files()
+        self.assertIn("scripts/remote-smoke.sh", tracked)
+        script = ROOT / "scripts" / "remote-smoke.sh"
+        self.assertTrue(script.exists())
+        body = read_text(script)
+        self.assertIn("EXPECTED_SKILLS", body)
+        self.assertIn("claude -p", body,
+                      "remote-smoke must exercise claude -p (single-turn)")
+        self.assertIn("codex exec", body,
+                      "remote-smoke must exercise codex exec (single-turn)")
+
+    def test_pre_push_smoke_script_tracked(self) -> None:
+        tracked = self.tracked_files()
+        self.assertIn("scripts/pre-push-smoke.sh", tracked)
+        script = ROOT / "scripts" / "pre-push-smoke.sh"
+        self.assertTrue(script.exists())
+        body = read_text(script)
+        self.assertIn("git rev-parse --show-toplevel", body,
+                      "pre-push-smoke must locate the repo root of the CURRENT checkout")
+        self.assertIn("generate_agent_configs.py", body,
+                      "pre-push-smoke must run the generator for determinism check")
+        self.assertIn("claude -p", body,
+                      "pre-push-smoke must exercise claude -p (current checkout)")
+        self.assertIn("codex exec", body,
+                      "pre-push-smoke must exercise codex exec (current checkout)")
+
     def test_generated_per_agent_files_tracked_with_marker(self) -> None:
         tracked = self.tracked_files()
         self.assertIn("CLAUDE.md", tracked)

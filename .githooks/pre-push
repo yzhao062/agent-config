@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# Pre-push hook: runs scripts/pre-push-smoke.sh when the push includes
+# changes to agent-critical files (AGENTS.md, bootstrap/, scripts/,
+# skills/). pre-push-smoke.sh validates the CURRENT checkout (generator
+# determinism + `claude -p` + `codex exec` against committed rule files).
+# Pure doc / test / workflow changes skip the smoke and push fast.
+#
+# Enable once per clone:
+#   git config core.hooksPath .githooks
+#
+# Bypass for emergencies:
+#   git push --no-verify
+#
+# Git passes <remote-name> <remote-url> as arg1/arg2 and pipes ref
+# update lines on stdin:
+#   <local-ref> <local-sha> <remote-ref> <remote-sha>
+
+set -uo pipefail
+
+remote="${1:-origin}"
+ZERO="0000000000000000000000000000000000000000"
+
+# Collect changed files across all refs being pushed.
+CHANGED_FILES=""
+
+while IFS=' ' read -r local_ref local_sha remote_ref remote_sha; do
+  [ -z "${local_sha:-}" ] && continue
+  [ "$local_sha" = "$ZERO" ] && continue  # branch deletion
+
+  if [ "$remote_sha" = "$ZERO" ]; then
+    # New branch — diff against tracked main.
+    base=$(git merge-base "$local_sha" "refs/remotes/$remote/main" 2>/dev/null || echo "")
+    [ -z "$base" ] && base=$(git merge-base "$local_sha" main 2>/dev/null || echo "")
+    [ -z "$base" ] && base="${local_sha}^"
+  else
+    base="$remote_sha"
+  fi
+
+  files=$(git diff --name-only "$base" "$local_sha" 2>/dev/null || true)
+  CHANGED_FILES="$CHANGED_FILES"$'\n'"$files"
+done
+
+# Match agent-critical paths.
+CRITICAL=$(printf '%s\n' "$CHANGED_FILES" | grep -E '^(AGENTS\.md|bootstrap/|scripts/|skills/)' || true)
+
+if [ -z "$CRITICAL" ]; then
+  echo "[pre-push] No agent-critical changes; skipping pre-push-smoke."
+  exit 0
+fi
+
+echo "[pre-push] Agent-critical changes detected:"
+printf '%s\n' "$CRITICAL" | sort -u | sed 's/^/  /'
+echo ""
+
+if [ ! -f scripts/pre-push-smoke.sh ]; then
+  echo "[pre-push] scripts/pre-push-smoke.sh not found. Cannot validate. Push aborted."
+  echo "[pre-push] Bypass with: git push --no-verify"
+  exit 1
+fi
+
+echo "[pre-push] Running bash scripts/pre-push-smoke.sh against the CURRENT checkout."
+echo "[pre-push] This validates the commit being pushed (not the published package)."
+echo "[pre-push] Takes ~15-60 seconds depending on agent response latency."
+echo "[pre-push] Bypass with: git push --no-verify"
+echo ""
+
+if bash scripts/pre-push-smoke.sh; then
+  echo ""
+  echo "[pre-push] pre-push-smoke passed."
+  exit 0
+else
+  rc=$?
+  echo ""
+  echo "[pre-push] pre-push-smoke FAILED (exit $rc). Push aborted."
+  echo "[pre-push] Fix the issue or use: git push --no-verify"
+  exit $rc
+fi

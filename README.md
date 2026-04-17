@@ -59,7 +59,19 @@ Use any Python 3.12 interpreter to run them locally:
 python -B -m unittest discover -s tests -p "test_*.py" -v
 ```
 
-GitHub Actions runs the same test suite on Ubuntu and Windows for every push and pull request.
+GitHub Actions runs the same test suite on Ubuntu, Windows, and macOS across Python 3.9-3.13 for every push and pull request.
+
+### Pre-push hook (recommended)
+
+A pre-push hook in `.githooks/pre-push` runs `scripts/pre-push-smoke.sh` when a push includes changes to agent-critical files (`AGENTS.md`, `bootstrap/`, `scripts/`, `skills/`). `pre-push-smoke.sh` validates the **current checkout**: regenerates the per-agent files and diffs against committed versions, then runs `claude -p` / `codex exec` in the repo root and asserts each response lists every skill under `skills/`. This catches regressions in how agents actually load the config — something mechanical tests cannot verify.
+
+Enable it once per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+Pure doc / test / CI-workflow changes skip the smoke automatically. Use `git push --no-verify` to bypass when needed. Agent calls (`claude -p`, `codex exec`) are skipped gracefully if the corresponding CLI is not installed locally. (The separate `scripts/remote-smoke.sh` tests the published install path — different purpose, used for post-publish verification.)
 
 ## Override Rules
 

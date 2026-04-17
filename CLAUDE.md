@@ -110,18 +110,30 @@ The generated `CLAUDE.md` and `agents/codex.md` carry a `GENERATED FILE` header.
 
 ## Session Start Check
 
-After bootstrap, run **all** of the following checks and report results in a short summary. No shell commands are needed — all information is available from session environment and config files. Only flag items that need attention — if everything is correct, a one-line confirmation is sufficient.
+At the start of every new session, after bootstrap, emit a **session start banner** as the first content of your first response. The banner confirms the agent environment is loaded, lists what is active, and surfaces anything that needs attention. Do not skip it; do not repeat it on later turns of the same session.
 
-1. **OS** -- Read the platform from the session environment (e.g., `win32`, `darwin`, `linux`). Note it for platform-specific behavior (e.g., terminal review path on Windows, MCP on macOS/Linux).
-2. **Claude Code model and effort** (Claude Code sessions only) -- If the live session environment exposes model name and effort level, check them. The user prefers the highest available model (currently Opus) at max effort. If the session is on a different model or effort, mention it once — this is a preference, not a misconfiguration.
-3. **Codex config** -- Read `~/.codex/config.toml` (or `%USERPROFILE%\.codex\config.toml` on Windows). If the file exists, check these keys and report any that are missing or wrong:
-   - `model` should be `"gpt-5.4"` (or the latest available)
-   - `model_reasoning_effort` should be `"xhigh"`
-   - `service_tier` should be `"fast"`
-   - `[features] fast_mode` should be `true`
+### Format
 
-   If the file does not exist and Codex is expected, note that too.
-4. **GitHub Actions versions** -- If `.github/workflows/` exists, scan workflow YAML files for action version pins that are below the minimums in the GitHub Actions Standards section. Report any outdated actions with the file name and suggested version so the user can batch-update them. If all actions meet the minimums, skip this item silently.
+```
+📦 anywhere-agents active
+   ├── OS: <platform>
+   ├── Agent: <agent name> · <model> · effort=<level>
+   ├── Codex: <config summary> (or "not configured")
+   ├── Skills: <count> shipped (<comma-separated names>)
+   ├── Hooks: PreToolUse <guard.py>, SessionStart <session_bootstrap.py>
+   └── Session check: all clear
+```
+
+If anything is off, replace `all clear` with a semicolon-separated list of concrete issues, each actionable in one short clause (e.g., `⚠ actions/checkout@v4 in .github/workflows/validate.yml:17 — bump to v5; Codex config.toml missing model key`). Keep the whole banner to six lines plus the check line.
+
+### How to populate each field
+
+1. **OS** — read from the session environment (`win32`, `darwin`, `linux`). Use this elsewhere to pick platform-specific behavior (terminal review path on Windows, MCP on macOS/Linux, `.ps1` vs `.sh`).
+2. **Agent** — the tool you are running as (Claude Code, Codex, etc.), the model name if exposed, and effort level. User prefers the highest available model at max effort; flag any drift once in the banner, not every turn.
+3. **Codex** — read `~/.codex/config.toml` (or `%USERPROFILE%\.codex\config.toml` on Windows). If present, summarize `model` · `model_reasoning_effort` · `service_tier` · `[features].fast_mode` on one line. Expected values: `model = "gpt-5.4"` (or latest), `model_reasoning_effort = "xhigh"`, `service_tier = "fast"`, `[features] fast_mode = true`. If the file is missing and Codex is expected, say `not configured`.
+4. **Skills** — count and list shipped skill directories. Check `skills/` (project-local) first, then `.agent-config/repo/skills/` (bootstrapped). Use the directory names.
+5. **Hooks** — check `~/.claude/hooks/` for `guard.py` (PreToolUse) and `session_bootstrap.py` (SessionStart). If one is missing, include it in the Session check line as an issue.
+6. **Session check** — scan `.github/workflows/*.yml` for action version pins below the minimums in the GitHub Actions Standards section. Combine with any Codex-config or hook drift detected above. Emit `all clear` only when nothing needs attention.
 
 ## User Profile
 

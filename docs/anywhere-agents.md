@@ -83,22 +83,23 @@ When cutting a new `anywhere-agents` release:
    Classify each hit as (a) intentional public claim (e.g., "USC" in the maintainer credential), (b) hyphenation example (`co-PI`), (c) leak — must fix. Fix all (c).
 4. **Run the generator locally** before committing the sanitized `AGENTS.md`: `python scripts/generate_agent_configs.py --root .`. This refreshes `CLAUDE.md` and `agents/codex.md` so the committed artifacts match the committed `AGENTS.md`. Tests fail if they drift.
 5. **Run tests locally** on the `anywhere-agents` checkout (`python -B -m unittest discover -s tests`) and verify the bootstrap smoke tests pass. Also run `python -m mkdocs build --strict --clean` to verify the Read the Docs site builds with no broken links (this catches include-link regressions before they reach RTD).
-6. **Regenerate the hero image** if any claim or panel content changed: edit `docs/hero.html`, run
+6. **Run the pre-tag real-agent smoke** on the release-candidate checkout: `bash scripts/pre-push-smoke.sh`. This script validates the commit you are about to tag — regenerates `CLAUDE.md` / `agents/codex.md` and diffs against committed versions, then runs `claude -p` and `codex exec` in the repo root and asserts each response lists every skill under `skills/`. Unlike `scripts/remote-smoke.sh` (which validates the published package), `pre-push-smoke.sh` gates the candidate. CLIs are optional — missing agents are skipped gracefully. The pre-push git hook already runs this automatically on affected pushes (enable with `git config core.hooksPath .githooks`); this explicit pre-tag run catches the case where hook was bypassed. On the DGX release-gate box via SSH: `ssh spark 'bash -s' < scripts/pre-push-smoke.sh` (see [`docs/dgx-spark-setup.md`](./dgx-spark-setup.md) sections 8 and 17 for the canonical SSH alias setup). CI runs `.github/workflows/real-agent-smoke.yml` on release publish and manual dispatch as a complementary check.
+7. **Regenerate the hero image** if any claim or panel content changed: edit `docs/hero.html`, run
    ```bash
    "C:/Program Files/Google/Chrome/Application/chrome.exe" --headless=new --disable-gpu \
      --hide-scrollbars --window-size=1480,960 --force-device-scale-factor=2 \
      --screenshot="C:/Users/yuezh/PycharmProjects/anywhere-agents/docs/hero.png" \
      "file:///C:/Users/yuezh/PycharmProjects/anywhere-agents/docs/hero.html"
    ```
-7. **Update CHANGELOG** _before_ the release commit so it ships with the version it describes. Update `[Unreleased]` → new version header with today's date. Update compare-link references.
-8. **Review via `implement-review`** — run a Codex review on the staged cross-repo diff before committing. Treat this as a hard release gate.
-9. **Bump and test package versions** if the release includes CLI changes or the user-facing install flow changed:
-   - Bump `anywhere-agents/packages/pypi/pyproject.toml` AND `packages/pypi/anywhere_agents/__init__.py` (the CLI reads `__version__` from `__init__.py` at runtime — no other version string to touch).
-   - Bump `anywhere-agents/packages/npm/package.json` (the Node CLI reads `version` from `package.json` at runtime — no other version string to touch).
-   - Test both locally: `python -m build packages/pypi/ --outdir /tmp/pypi-dist && pip install /tmp/pypi-dist/*.whl` then `anywhere-agents --version` and `--dry-run`; `node packages/npm/bin/anywhere-agents.js --version` and `--dry-run`.
-10. **Commit and push** `anywhere-agents` (and any paired change to `agent-config`).
-11. **Tag** the release commit (`git tag -a v<X.Y.Z> -m "..."; git push origin v<X.Y.Z>`). The tag must point at the same commit that contains the package source bumps, so checking out the tag reproduces exactly what is on PyPI/npm.
-12. **Publish packages** from the tagged checkout in order: PyPI first (`cd packages/pypi && python -m build && twine upload dist/*`), then npm (`cd packages/npm && npm publish --access public`). Verify each is live and the CLI runs end-to-end from a fresh install.
+8. **Update CHANGELOG** _before_ the release commit so it ships with the version it describes. Update `[Unreleased]` → new version header with today's date. Update compare-link references.
+9. **Review via `implement-review`** — run a Codex review on the staged cross-repo diff before committing. Treat this as a hard release gate.
+10. **Bump and test package versions** if the release includes CLI changes or the user-facing install flow changed:
+    - Bump `anywhere-agents/packages/pypi/pyproject.toml` AND `packages/pypi/anywhere_agents/__init__.py` (the CLI reads `__version__` from `__init__.py` at runtime — no other version string to touch).
+    - Bump `anywhere-agents/packages/npm/package.json` (the Node CLI reads `version` from `package.json` at runtime — no other version string to touch).
+    - Test both locally: `python -m build packages/pypi/ --outdir /tmp/pypi-dist && pip install /tmp/pypi-dist/*.whl` then `anywhere-agents --version` and `--dry-run`; `node packages/npm/bin/anywhere-agents.js --version` and `--dry-run`.
+11. **Commit and push** `anywhere-agents` (and any paired change to `agent-config`).
+12. **Tag** the release commit (`git tag -a v<X.Y.Z> -m "..."; git push origin v<X.Y.Z>`). The tag must point at the same commit that contains the package source bumps, so checking out the tag reproduces exactly what is on PyPI/npm.
+13. **Publish packages** from the tagged checkout in order: PyPI first (`cd packages/pypi && python -m build && twine upload dist/*`), then npm (`cd packages/npm && npm publish --access public`). Verify each is live and the CLI runs end-to-end from a fresh install.
 
 ## What this document is not
 
