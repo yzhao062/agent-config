@@ -1,0 +1,122 @@
+name: Real-Agent Smoke
+
+# Invokes Claude Code and Codex non-interactively against the repo's shipped
+# CLAUDE.md / AGENTS.md to verify each agent actually loads the config and
+# sees the skill roster. GitHub Actions runners do not ship the agents;
+# this workflow installs them, uses API key secrets, and spends ~$0.04
+# per run (two short API calls: one claude -p, one codex exec).
+#
+# Triggers are intentionally narrow to keep API cost low. This is a setup
+# and behavior verification — it does not need to run on every push:
+#
+#   - release.published  — validates each release after it is tagged
+#   - workflow_dispatch  — manual run against any branch from the Actions UI
+#
+# Mechanical drift is caught by validate.yml on every push; this workflow
+# is only for the agents-actually-see-the-config check.
+#
+# Required repository secrets:
+#   ANTHROPIC_API_KEY — https://console.anthropic.com/settings/keys
+#   OPENAI_API_KEY    — https://platform.openai.com/api-keys
+#
+# The expected skill list is auto-detected from skills/*/SKILL.md so this
+# workflow is reusable across the public (4 shipped skills) and private
+# (7 shipped skills) repos without per-repo edits.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  claude-smoke:
+    name: Claude Code sees CLAUDE.md
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '20'
+
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Verify Claude sees the shipped skill roster
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          set -euo pipefail
+          EXPECTED_SKILLS=()
+          for d in skills/*/; do
+            [ -f "$d/SKILL.md" ] || continue
+            EXPECTED_SKILLS+=("$(basename "$d")")
+          done
+          if [ "${#EXPECTED_SKILLS[@]}" -eq 0 ]; then
+            echo "::error::no shipped skills found under skills/"
+            exit 1
+          fi
+          PROMPT='List the shipped skills from CLAUDE.md by directory name, comma-separated, no other text.'
+          RESP=$(claude -p "$PROMPT")
+          echo "::group::claude response"
+          echo "$RESP"
+          echo "::endgroup::"
+          MISSING=()
+          for skill in "${EXPECTED_SKILLS[@]}"; do
+            if ! grep -q "$skill" <<<"$RESP"; then
+              MISSING+=("$skill")
+            fi
+          done
+          if [ "${#MISSING[@]}" -gt 0 ]; then
+            echo "::error::missing from response: ${MISSING[*]}"
+            exit 1
+          fi
+          echo "PASS: all ${#EXPECTED_SKILLS[@]} shipped skills mentioned"
+
+  codex-smoke:
+    name: Codex sees AGENTS.md
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      # Use OpenAI's official action rather than `npm install -g @openai/codex`
+      # + direct `codex exec`, because the action starts the Responses API
+      # proxy that API-key auth requires. Direct CLI invocation with only
+      # OPENAI_API_KEY in env returns 401 Unauthorized from /v1/responses.
+      - name: Run Codex via official action
+        id: codex
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          prompt: "List the shipped skills from AGENTS.md by directory name, comma-separated, no other text."
+          output-file: codex-response.txt
+          safety-strategy: drop-sudo
+          sandbox: read-only
+
+      - name: Verify Codex response mentions the shipped skill roster
+        run: |
+          set -euo pipefail
+          EXPECTED_SKILLS=()
+          for d in skills/*/; do
+            [ -f "$d/SKILL.md" ] || continue
+            EXPECTED_SKILLS+=("$(basename "$d")")
+          done
+          if [ "${#EXPECTED_SKILLS[@]}" -eq 0 ]; then
+            echo "::error::no shipped skills found under skills/"
+            exit 1
+          fi
+          RESP=$(cat codex-response.txt)
+          echo "::group::codex response"
+          echo "$RESP"
+          echo "::endgroup::"
+          MISSING=()
+          for skill in "${EXPECTED_SKILLS[@]}"; do
+            if ! grep -q "$skill" <<<"$RESP"; then
+              MISSING+=("$skill")
+            fi
+          done
+          if [ "${#MISSING[@]}" -gt 0 ]; then
+            echo "::error::missing from response: ${MISSING[*]}"
+            exit 1
+          fi
+          echo "PASS: all ${#EXPECTED_SKILLS[@]} shipped skills mentioned"
