@@ -21,10 +21,13 @@ Read before touching either repo:
 Other project repos bootstrap from this repo to get shared agent defaults and skills. The bootstrap script (defined in `AGENTS.md`) fetches:
 
 - **`AGENTS.md`** — user profile, writing/formatting defaults, environment notes, skill-sharing rules
+- **`CLAUDE.md` and `agents/codex.md`** — regenerated on every bootstrap run from `AGENTS.md` via `scripts/generate_agent_configs.py`
 - **`skills/`** — shared skills (e.g., `dual-pass-workflow`, `bibref-filler`)
 - **`.claude/commands/`** — Claude Code pointer commands for shared skills
 - **`.claude/settings.json`** — shared Claude project defaults (permissions, attribution, etc.)
 - **`user/settings.json`** — shared user-level Claude defaults (permissions, hook wiring, `CLAUDE_CODE_EFFORT_LEVEL=max` env entry that pins effort to max)
+- **`scripts/guard.py`** — deployed to `~/.claude/hooks/guard.py` as a PreToolUse hook (compound-`cd` guard, destructive Git/GitHub confirmation, writing-style deny on prose files, session-banner gate)
+- **`scripts/session_bootstrap.py`** — deployed to `~/.claude/hooks/session_bootstrap.py` as a SessionStart hook that re-runs bootstrap automatically on every session start
 
 ## Adding to a Project
 
@@ -75,8 +78,20 @@ Pure doc / test / CI-workflow changes skip the smoke automatically. Use `git pus
 
 ## Override Rules
 
-- Project-local `AGENTS.md` rules override shared defaults.
+Rule-file precedence (most specific wins):
+
+1. `CLAUDE.local.md` / `agents/codex.local.md` — per-agent + project-local. Hand-authored; never touched by bootstrap.
+2. `AGENTS.local.md` — cross-agent + project-local. Hand-authored; never touched by bootstrap.
+3. `CLAUDE.md` / `agents/codex.md` — per-agent. Generated from `AGENTS.md` by `scripts/generate_agent_configs.py` on every bootstrap.
+4. `AGENTS.md` — cross-agent baseline, synced from upstream on every bootstrap.
+
+Other precedence:
+
 - Project-local `skills/<name>/SKILL.md` overrides the shared copy of the same skill.
+- `.claude/settings.local.json` overrides shared keys in `.claude/settings.json`.
+- Environment variable `CLAUDE_CODE_EFFORT_LEVEL` outranks persisted `effortLevel`; see `AGENTS.md` "Configuration Precedence" for the full chain.
+
+See `AGENTS.md` "Configuration Precedence" for full details.
 
 ## Codex MCP Integration
 
@@ -102,6 +117,10 @@ After bootstrap, mention the skill name directly in the prompt. In Claude Code, 
 
 ```
 AGENTS.md                          # Shared agent config (entry point)
+CLAUDE.md                          # Generated from AGENTS.md for Claude Code
+agents/codex.md                    # Generated from AGENTS.md for Codex
+ONBOARDING.md                      # Maintainer one-page index (agent-config + anywhere-agents workflow)
+MIGRATIONS.md                      # One-shot bootstrap-script upgrade procedures
 bootstrap/
   bootstrap.ps1                    # Windows bootstrap logic
   bootstrap.sh                     # Unix bootstrap logic
@@ -155,15 +174,20 @@ reference-skills/                  # Domain skills (copied manually into project
 figure-references/                 # Reusable reference figures organized by visual job
   index.md                         # Annotated index with role, density, and trait labels
 scripts/
-  guard.py                         # PreToolUse hook: blocks compound cd, gates destructive git/gh
+  guard.py                         # PreToolUse hook: compound cd, destructive git/gh, writing-style, banner gates
+  session_bootstrap.py             # SessionStart hook: runs bootstrap automatically
+  generate_agent_configs.py        # Generator: AGENTS.md -> CLAUDE.md + agents/codex.md
 user/
   settings.json                    # User-level Claude Code settings (permissions, hooks)
-tests/                             # Validation tests (run in CI on Ubuntu and Windows)
+tests/                             # Validation tests (run in CI on Ubuntu, Windows, macOS)
   test_repo.py                     # Bootstrap contract, skill layout, smoke tests
   test_bibref_filler.py            # Cite-key validation script tests
   test_figure_prompt_builder.py    # Figure spec scaffold script tests
   test_guard.py                    # Guard hook tests
+  test_session_bootstrap.py        # SessionStart hook tests
+  test_generator.py                # AGENTS.md -> per-agent generator tests
 docs/
+  anywhere-agents.md               # Two-repo relationship, "what gets copied" table, release workflow
   claude-code-tips.md              # Workflows and best practices
   claude-code-reference.md         # Keyboard shortcuts, slash commands, vim mode
   claude-code-extras.md            # Buddy/companion, plugins
