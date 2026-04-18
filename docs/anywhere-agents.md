@@ -9,6 +9,8 @@ This document explains how the **private daily-driver (`yzhao062/agent-config`)*
 | `yzhao062/agent-config` | **Canonical source + personal daily driver** | Private | Full working config: USC-specific content, `reference-skills/` (NSF proposal composer, USC reimbursement, CS paper review, etc.), `figure-references/`, in-progress specs, `docs/superpowers/`, and every skill the author uses across research projects. |
 | `yzhao062/anywhere-agents` | **Sanitized public release** | Public | Only what a stranger can fork and use: clean `AGENTS.md`, four shared skills (`implement-review`, `my-router`, `ci-mockup-figure`, `readme-polish`), bootstrap scripts, guard hook, settings, tests, CI. No personal content, no research-specific reference skills. |
 
+**Shorthand**: `ac` = `agent-config`, `aa` = `anywhere-agents`. Both forms appear interchangeably in maintainer prompts and the private docs under `docs/`; the full names are used in public-facing text and commit messages.
+
 The two repos are **not linked as submodules or forks**. Keeping them independent is the primary defense against accidental personal leaks into the public release.
 
 ## Why two repos instead of one

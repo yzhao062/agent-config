@@ -30,6 +30,8 @@ From there the agent has enough context to work on either repo.
 
 ## The two-repo split (one paragraph)
 
+**Shorthand**: `ac` = `agent-config`, `aa` = `anywhere-agents`. Both forms appear interchangeably in maintainer prompts and docs; either refers to the same repo as the full name.
+
 - **`agent-config`** (private) — canonical source for shared components (bootstrap scripts, shared skills, guard hook, `AGENTS.md` baseline) PLUS personal content (USC-specific rules, `reference-skills/`, research docs, maintainer runbooks).
 - **`anywhere-agents`** (public) — sanitized public release. Only the shared components + packaging (PyPI + npm + RTD site).
 - Shared-core files mirror byte-identically (modulo branding) between the two. Full table of what gets copied vs stays private: `docs/anywhere-agents.md`.
