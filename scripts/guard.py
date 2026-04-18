@@ -277,18 +277,21 @@ def check_banner_emission(tool_name, tool_input):
 
     # Exact-path exemption for the ack file. Normalized equality prevents
     # off-root suffix spoofs and cross-project ack writes from bypassing.
+    # Uses realpath (not abspath) so macOS /var -> /private/var symlinks and
+    # Windows junctions resolve consistently on both sides of the comparison.
     if tool_name in ("Write", "Edit", "MultiEdit"):
         requested = tool_input.get("file_path", "")
         if requested:
             expected = os.path.join(
                 consumer_root, ".agent-config", "banner-emitted.json"
             )
-            req_norm = os.path.normcase(
-                os.path.normpath(os.path.abspath(requested))
-            )
-            exp_norm = os.path.normcase(
-                os.path.normpath(os.path.abspath(expected))
-            )
+            try:
+                req_norm = os.path.normcase(os.path.realpath(requested))
+                exp_norm = os.path.normcase(os.path.realpath(expected))
+            except OSError:
+                # realpath rarely raises but fall back to abspath just in case
+                req_norm = os.path.normcase(os.path.abspath(requested))
+                exp_norm = os.path.normcase(os.path.abspath(expected))
             if req_norm == exp_norm:
                 return None
 
