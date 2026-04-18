@@ -59,7 +59,7 @@ Full runbook is `../anywhere-agents/RELEASING.md`. Outline, in order (each step 
    - Whitespace-clean diff (`git diff --cached --check`)
    - Leak sweep for personal identifiers
    - Bilingual README parity if either `README.md` or `README.zh-CN.md` changed
-   - Cross-repo parity (shared-core files byte-identical against `agent-config`, modulo documented branding / upstream-URL differences)
+   - Cross-repo parity — run `bash scripts/check-parity.sh` from the `agent-config` root. Strict category (`guard.py`, `session_bootstrap.py`, `generate_agent_configs.py`, `pre-push-smoke.sh`, `remote-smoke.sh`, `.claude/settings.json`, `.githooks/pre-push`, 4 shipped `.claude/commands/*.md` pointers, `skills/{implement-review,ci-mockup-figure,readme-polish}` recursive) must be byte-identical; by-design category (`AGENTS.md`, `bootstrap/bootstrap.{sh,ps1}`, `user/settings.json`, `skills/my-router`) reports a +/- line delta per file so unusual drift is visible. Exit 0 means strict is clean.
    - **Spark Linux test** runs before tagging:
      ```bash
      ssh yzhao062@spark-37f2.local '

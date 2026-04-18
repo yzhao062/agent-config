@@ -43,6 +43,7 @@ A separate public repo provides **physical isolation**. Private content cannot l
 | `scripts/guard.py` | Yes, as-is | Already generic. |
 | `scripts/generate_agent_configs.py` | Yes, as-is | Central → per-agent generator. Already generic. |
 | `scripts/session_bootstrap.py` | Yes, as-is | SessionStart hook that enforces bootstrap without user typing. Already generic. |
+| `scripts/check-parity.sh` | No | Maintainer-only. Compares shared-core files between the `agent-config` and `anywhere-agents` clones; invoked by `anywhere-agents/RELEASING.md` pre-release check 5. Requires both repos side by side. Never sanitize or copy. |
 | `skills/implement-review/` | Yes, as-is | The signature skill. |
 | `skills/my-router/` | Yes, with content changes | The public version has concrete routing rules for the four shipped skills (`implement-review`, `ci-mockup-figure`, `readme-polish`, plus `my-router` itself) with clear "extend this in your fork" guidance. Strip references to `nsf-*`, `usc-reimbursement`, `cs-paper-review`, etc. |
 | `skills/dual-pass-workflow/` | No | Author uses it, but it is research-flavored. |
