@@ -29,6 +29,24 @@ import time
 VERSION_CACHE_TTL_SECONDS = 86400  # 24 hours
 
 
+def write_session_event() -> None:
+    """Write ~/.claude/hooks/session-event.json on every SessionStart fire so
+    the agent can detect resume / clear / compact events (not just fresh
+    startup) and re-emit the session banner when appropriate. The banner rule
+    in AGENTS.md compares this timestamp to ~/.claude/hooks/banner-emitted.json
+    and re-emits when the event is newer than the last emission.
+    """
+    path = os.path.join(
+        os.path.expanduser("~"), ".claude", "hooks", "session-event.json"
+    )
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"ts": time.time()}, f)
+    except Exception:
+        pass
+
+
 def update_version_cache() -> None:
     """Refresh ~/.claude/hooks/version-cache.json with the latest Claude Code and
     Codex versions from the npm registry. Used by the session-start banner to
@@ -92,6 +110,21 @@ def main() -> int:
     cwd = os.getcwd()
     cmd: list[str] | None = None
 
+    # Detect participating repos: consumer (has .agent-config/bootstrap.*) or
+    # the source repo itself (has bootstrap/ + skills at the root, where
+    # AGENTS.md is already present but bootstrap does not self-run). Accept
+    # either `reference-skills/` (agent-config layout) or `skills/`
+    # (anywhere-agents layout) so one shared script serves both repos.
+    has_source_skills = (
+        os.path.isdir(os.path.join(cwd, "reference-skills"))
+        or os.path.isdir(os.path.join(cwd, "skills"))
+    )
+    is_source_repo = (
+        os.path.isfile(os.path.join(cwd, "bootstrap", "bootstrap.sh"))
+        and os.path.isfile(os.path.join(cwd, "bootstrap", "bootstrap.ps1"))
+        and has_source_skills
+    )
+
     if platform.system() == "Windows":
         script = os.path.join(cwd, ".agent-config", "bootstrap.ps1")
         if os.path.isfile(script):
@@ -107,6 +140,19 @@ def main() -> int:
         script = os.path.join(cwd, ".agent-config", "bootstrap.sh")
         if os.path.isfile(script):
             cmd = ["bash", script]
+
+    is_consumer_repo = cmd is not None
+
+    # Skip any state mutation in unrelated Claude Code sessions. Writing the
+    # session-event file unconditionally would turn the banner gate (which
+    # reads the same file) into a machine-wide behavior change, blocking
+    # tools in repos that never loaded this AGENTS.md.
+    if not (is_source_repo or is_consumer_repo):
+        return 0
+
+    # Mark the SessionStart event for participating repos so the agent (and
+    # the banner gate in guard.py) can tell a fresh event needs a new banner.
+    write_session_event()
 
     if cmd is None:
         return 0

@@ -1,11 +1,25 @@
 """
 Claude Code PreToolUse hook guard.
-Parses the Bash tool input JSON, extracts the command, and checks for:
-1. Compound cd commands (cd path && cmd, cd path; cmd) → deny
-2. Destructive git subcommands (push, commit, merge, etc.) → ask
-3. Destructive gh subcommands (pr create, pr merge, etc.) → ask
+
+Dispatches by tool_name. Shared checks:
+
+1. Writing-style gate — Write/Edit/MultiEdit on prose files (.md/.tex/.rst/.txt)
+   is denied when the outgoing content contains a banned AI-tell word from
+   AGENTS.md Writing Defaults. Skips code files.
+2. Banner gate — every tool call except Read/Grep/Glob (and Write of
+   ~/.claude/hooks/banner-emitted.json used for acknowledgment) is denied
+   when a SessionStart event is pending but the banner has not been emitted
+   for it (session-event.json.ts > banner-emitted.json.ts).
+3. Compound cd commands (cd path && cmd, cd path; cmd) → deny  [Bash only]
+4. Destructive git subcommands (push, commit, merge, etc.) → ask  [Bash only]
+5. Destructive gh subcommands (pr create, pr merge, etc.) → ask  [Bash only]
+
+Escape hatch: set env var AGENT_CONFIG_GATES=off (or 0/disabled/false) to
+disable the new writing-style and banner gates only. Existing Bash-level
+checks (compound cd, destructive git/gh) remain active regardless.
 """
 import json
+import os
 import random
 import re
 import shlex
@@ -20,6 +34,230 @@ def make_response(decision, reason):
             "permissionDecisionReason": reason,
         }
     })
+
+
+# Banned AI-tell words (mirrors AGENTS.md Writing Defaults). Matched with
+# finite-inflection alternation — each banned word expands to a bounded set
+# of variants (self, plural, and common verb inflections) alternated with
+# `\b…\b` boundaries. Irregular cases and nouns/adjectives that would
+# otherwise pick up legit tech terms (e.g., `facet` → `faceted search`) are
+# given explicit overrides below. Hyphenated entries (e.g., `game-changing`)
+# match literally with non-word boundaries.
+BANNED_WORDS = frozenset([
+    "encompass", "burgeoning", "pivotal", "realm", "keen", "adept",
+    "endeavor", "uphold", "imperative", "profound", "ponder", "cultivate",
+    "hone", "delve", "embrace", "pave", "embark", "monumental",
+    "scrutinize", "vast", "versatile", "paramount", "foster", "necessitates",
+    "provenance", "multifaceted", "nuance", "obliterate", "articulate",
+    "acquire", "underpin", "underscore", "harmonize", "garner",
+    "undermine", "gauge", "facet", "bolster", "groundbreaking",
+    "game-changing", "reimagine", "turnkey", "intricate", "trailblazing",
+    "unprecedented",
+])
+
+# Prose-content file extensions subject to writing-style enforcement.
+PROSE_EXTENSIONS = frozenset([".md", ".tex", ".rst", ".txt"])
+
+# Tools exempt from the banner gate: Read/Grep/Glob let the agent inspect
+# state without writing. Write/Edit/MultiEdit to ~/.claude/hooks/banner-emitted.json
+# is also exempt via a path check (not a tool-name check), handled separately
+# in check_banner_emission.
+BANNER_GATE_EXEMPT_TOOLS = frozenset(["Read", "Grep", "Glob"])
+
+
+def gates_enabled():
+    """Return False if the escape-hatch env var disables the new gates."""
+    val = (os.environ.get("AGENT_CONFIG_GATES") or "").strip().lower()
+    return val not in ("0", "off", "false", "disabled", "no")
+
+
+def _content_for_write(tool_name, tool_input):
+    """Extract the outgoing content from a Write/Edit/MultiEdit tool input."""
+    if tool_name == "Write":
+        return tool_input.get("content", "")
+    if tool_name == "Edit":
+        return tool_input.get("new_string", "")
+    if tool_name == "MultiEdit":
+        edits = tool_input.get("edits", [])
+        return "\n".join(e.get("new_string", "") for e in edits)
+    return ""
+
+
+def _content_for_style_check(content, ext):
+    """Strip quoted/code examples before prose style matching. Banned words
+    inside code fences (``` … ```) or inline code (`foo`) are almost always
+    meta-discussion (examples of what to avoid), not AI-tell prose. Stripping
+    these avoids flagging legitimate style-guide documentation, generated
+    CLAUDE.md / agents/codex.md files, and CHANGELOG entries that quote the
+    ban list. Similarly for LaTeX verbatim / \\verb / \\texttt environments.
+    """
+    if ext in (".md", ".rst"):
+        # Fenced code blocks (``` ... ``` or ~~~ ... ~~~)
+        content = re.sub(r"(`{3,}|~{3,})[\s\S]*?\1", " ", content)
+        # Double-backtick inline code (for literals containing a single backtick)
+        content = re.sub(r"``[^`\n]+``", " ", content)
+        # Single-backtick inline code
+        content = re.sub(r"`[^`\n]+`", " ", content)
+    elif ext == ".tex":
+        content = re.sub(
+            r"\\begin\{verbatim\}[\s\S]*?\\end\{verbatim\}",
+            " ",
+            content,
+        )
+        content = re.sub(r"\\verb(.).*?\1", " ", content)
+        content = re.sub(r"\\texttt\{[^{}]*\}", " ", content)
+    return content
+
+
+# Explicit variant overrides for verbs whose default inflection rules would
+# miss or mis-generate. Keep these tight: the cost of an over-broad set is
+# false positives that block real prose (e.g., "honest" matching "hone").
+_BANNED_VARIANT_OVERRIDES = {
+    "delve": ("delve", "delves", "delved", "delving"),
+    "hone": ("hone", "hones", "honed", "honing"),
+    "pave": ("pave", "paves", "paved", "paving"),
+    "necessitates": (
+        "necessitate", "necessitates", "necessitated", "necessitating",
+    ),
+    # Doubled-consonant past tense that the default heuristic misses.
+    "underpin": ("underpin", "underpins", "underpinned", "underpinning"),
+    # Present participle is the banned entry; the verb stem is `burgeon`, so
+    # explicitly include plain and past-tense forms.
+    "burgeoning": ("burgeon", "burgeons", "burgeoned", "burgeoning"),
+    # Adjective + adverb pairs the default heuristic would miss.
+    "monumental": ("monumental", "monumentally"),
+    "profound": ("profound", "profoundly"),
+    # Noun only — default heuristic would generate "faceted" / "faceting",
+    # and "faceted" is a common technical adjective ("faceted search UI")
+    # that should not be denied. Restrict to plural only.
+    "facet": ("facet", "facets"),
+}
+
+
+def _word_variants(word):
+    """Return a finite set of inflections for a banned word. Uses simple
+    English-verb heuristics (+s / +ed / +ing, y→ies, trailing-e → +d/+ing)
+    plus the override table above for irregular cases. Deliberately bounded
+    — we prefer to miss rare variants than to block legitimate prose."""
+    if word in _BANNED_VARIANT_OVERRIDES:
+        return set(_BANNED_VARIANT_OVERRIDES[word])
+
+    variants = {word, word + "s"}
+    if word.endswith("e"):
+        variants.add(word + "d")
+        variants.add(word[:-1] + "ing")
+    elif word.endswith("y"):
+        variants.add(word[:-1] + "ies")
+        variants.add(word[:-1] + "ied")
+        variants.add(word + "ing")
+    else:
+        variants.add(word + "ed")
+        variants.add(word + "ing")
+    return variants
+
+
+def _banned_regex(word):
+    """Compile a regex for a banned word using finite variant alternation so
+    arbitrary prefix matches cannot block benign prose. Hyphenated terms
+    match exactly with non-word boundaries."""
+    if "-" in word:
+        return re.compile(
+            r"(?<!\w)" + re.escape(word) + r"(?!\w)", re.IGNORECASE
+        )
+    alternatives = sorted(_word_variants(word), key=len, reverse=True)
+    return re.compile(
+        r"\b(?:" + "|".join(re.escape(v) for v in alternatives) + r")\b",
+        re.IGNORECASE,
+    )
+
+
+_BANNED_PATTERNS = [(w, _banned_regex(w)) for w in sorted(BANNED_WORDS)]
+
+
+def check_writing_style(tool_name, tool_input):
+    """Return a deny message if the write introduces banned AI-tell words into
+    a prose file (.md/.tex/.rst/.txt). Code files are not checked — banned
+    words rarely appear naturally in code, and docstring false positives would
+    be a usability regression. Quoted/code-fenced examples within prose files
+    are also stripped before matching (see _content_for_style_check).
+    """
+    if tool_name not in ("Write", "Edit", "MultiEdit"):
+        return None
+
+    file_path = tool_input.get("file_path", "")
+    _, ext = os.path.splitext(file_path.lower())
+    if ext not in PROSE_EXTENSIONS:
+        return None
+
+    content = _content_for_write(tool_name, tool_input)
+    if not content:
+        return None
+
+    scan_target = _content_for_style_check(content, ext)
+
+    found = []
+    for word, pattern in _BANNED_PATTERNS:
+        if pattern.search(scan_target):
+            found.append(word)
+
+    if found:
+        hits = ", ".join(sorted(set(found)))
+        return (
+            f"Writing-style: banned AI-tell words detected in {file_path}: {hits}. "
+            f"Per AGENTS.md Writing Defaults, revise without these terms "
+            f"(close variants are caught too). Examples inside ``` code fences, "
+            f"`inline code`, or LaTeX \\verb/\\texttt are ignored. If a real "
+            f"meta-use is still blocking you, set AGENT_CONFIG_GATES=off in "
+            f"~/.claude/settings.json env and retry."
+        )
+
+    return None
+
+
+def _read_ts(path):
+    """Read {'ts': N} from a JSON file. Returns 0 on any error or missing."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            return float(json.load(f).get("ts", 0))
+    except Exception:
+        return 0
+
+
+def check_banner_emission(tool_name, tool_input):
+    """Return a deny message if a SessionStart event is pending but the banner
+    has not yet been emitted for it. Exempts Read/Grep/Glob (so the agent can
+    inspect state) and the Write to ~/.claude/hooks/banner-emitted.json (the
+    agent's acknowledgment mechanism).
+    """
+    if tool_name in BANNER_GATE_EXEMPT_TOOLS:
+        return None
+
+    if tool_name in ("Write", "Edit", "MultiEdit"):
+        path = tool_input.get("file_path", "").replace("\\", "/")
+        if path.endswith(".claude/hooks/banner-emitted.json"):
+            return None
+
+    home = os.path.expanduser("~")
+    event_path = os.path.join(home, ".claude", "hooks", "session-event.json")
+    emitted_path = os.path.join(home, ".claude", "hooks", "banner-emitted.json")
+
+    if not os.path.exists(event_path):
+        return None  # No event → not a participating session; skip gate
+
+    event_ts = _read_ts(event_path)
+    emitted_ts = _read_ts(emitted_path)
+
+    if event_ts > emitted_ts:
+        return (
+            "Session banner not yet emitted for this SessionStart event. "
+            "Per AGENTS.md Session Start Check, emit the banner as the first "
+            "content of your response, then Write to "
+            f"~/.claude/hooks/banner-emitted.json with content '{{\"ts\": {event_ts}}}' "
+            "to acknowledge. Only then retry this tool call. To bypass, set "
+            "AGENT_CONFIG_GATES=off in ~/.claude/settings.json env."
+        )
+
+    return None
 
 
 def check_cd_compound(cmd):
@@ -155,11 +393,37 @@ def main():
     except (json.JSONDecodeError, ValueError):
         return
 
-    cmd = data.get("tool_input", {}).get("command", "").strip()
+    tool_name = data.get("tool_name", "")
+    tool_input = data.get("tool_input", {})
+
+    # New gates (writing-style + banner) require an explicit tool_name. If the
+    # hook input omits it (older payload format used by some tests), skip the
+    # new gates and fall through to the Bash-only checks below, which run
+    # whenever `tool_input.command` is populated.
+    if tool_name and gates_enabled():
+        # Check 1 (new): writing-style gate on Write/Edit/MultiEdit to prose files.
+        deny = check_writing_style(tool_name, tool_input)
+        if deny:
+            print(make_response("deny", deny))
+            return
+
+        # Check 2 (new): banner gate on most tool calls until banner acknowledged.
+        deny = check_banner_emission(tool_name, tool_input)
+        if deny:
+            print(make_response("deny", deny))
+            return
+
+    # Remaining checks are Bash-only. When tool_name is set, only Bash applies;
+    # when tool_name is missing (legacy payload), the presence of `command` in
+    # tool_input is the signal this is a Bash invocation.
+    if tool_name and tool_name != "Bash":
+        return
+
+    cmd = tool_input.get("command", "").strip()
     if not cmd:
         return
 
-    # Check 1: compound cd (on raw string, before shlex parsing)
+    # Check 3: compound cd (on raw string, before shlex parsing)
     if check_cd_compound(cmd):
         print(make_response(
             "deny",
@@ -181,7 +445,7 @@ def main():
     if not parts:
         return
 
-    # Check 2: destructive git — ask with attention-grabbing message
+    # Check 4: destructive git — ask with attention-grabbing message
     if parts[0] == "git" and check_git_destructive(parts):
         _, sub = extract_git_subcommand(parts)
         warnings = [
@@ -194,7 +458,7 @@ def main():
         print(make_response("ask", random.choice(warnings)))
         return
 
-    # Check 3: destructive gh — ask with attention-grabbing message
+    # Check 5: destructive gh — ask with attention-grabbing message
     if parts[0] == "gh" and check_gh_destructive(parts):
         group, action = extract_gh_subcommand(parts)
         warnings = [

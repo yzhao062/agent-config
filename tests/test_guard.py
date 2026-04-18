@@ -366,5 +366,278 @@ class JsonPayloadTests(unittest.TestCase):
         self.assertIsNone(data)
 
 
+# --- 0.1.8 gates: writing-style + banner ---------------------------------
+
+import os
+import shutil
+import tempfile
+
+
+def run_guard_with_payload(payload, env=None):
+    """Run guard.py with a full hook payload (includes tool_name) and optional
+    env overrides. Returns parsed response JSON or None if no output.
+
+    Scrubs AGENT_CONFIG_GATES from the inherited environment so that a
+    developer shell or CI environment with the escape hatch set cannot
+    silently disable the new gates during tests. Callers that want the
+    escape-hatch on must pass it explicitly via env=."""
+    env_dict = dict(os.environ)
+    env_dict.pop("AGENT_CONFIG_GATES", None)
+    if env:
+        env_dict.update(env)
+    result = subprocess.run(
+        [sys.executable, str(GUARD)],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env_dict,
+    )
+    if result.returncode != 0:
+        raise AssertionError(
+            f"guard.py crashed (exit {result.returncode}): {result.stderr.strip()}"
+        )
+    stdout = result.stdout.strip()
+    return json.loads(stdout) if stdout else None
+
+
+class WritingStyleGateTests(unittest.TestCase):
+    def test_banned_word_in_markdown_denied(self):
+        resp = run_guard_with_payload({
+            "tool_name": "Write",
+            "tool_input": {"file_path": "/tmp/notes.md", "content": "This result was pivotal."},
+        })
+        self.assertIsNotNone(resp)
+        self.assertEqual(resp["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertIn("pivotal", resp["hookSpecificOutput"]["permissionDecisionReason"])
+
+    def test_banned_word_in_code_file_allowed(self):
+        resp = run_guard_with_payload({
+            "tool_name": "Write",
+            "tool_input": {"file_path": "/tmp/x.py", "content": "# pivotal insight\npass"},
+        })
+        self.assertIsNone(resp)
+
+    def test_banned_word_in_code_fence_allowed(self):
+        content = "Regular prose.\n\n```python\nlabel = 'pivotal'\n```\n"
+        resp = run_guard_with_payload({
+            "tool_name": "Write",
+            "tool_input": {"file_path": "/tmp/x.md", "content": content},
+        })
+        self.assertIsNone(resp)
+
+    def test_banned_word_in_inline_code_allowed(self):
+        resp = run_guard_with_payload({
+            "tool_name": "Write",
+            "tool_input": {"file_path": "/tmp/x.md", "content": "The word `pivotal` is not allowed in prose."},
+        })
+        self.assertIsNone(resp)
+
+    def test_close_variant_denied(self):
+        resp = run_guard_with_payload({
+            "tool_name": "Write",
+            "tool_input": {"file_path": "/tmp/x.md", "content": "We delved into the issue."},
+        })
+        self.assertIsNotNone(resp)
+        self.assertEqual(resp["hookSpecificOutput"]["permissionDecision"], "deny")
+
+    def test_hyphenated_banned_word_denied(self):
+        resp = run_guard_with_payload({
+            "tool_name": "Write",
+            "tool_input": {"file_path": "/tmp/x.md", "content": "A game-changing result."},
+        })
+        self.assertIsNotNone(resp)
+        self.assertEqual(resp["hookSpecificOutput"]["permissionDecision"], "deny")
+
+    def test_gates_disabled_via_env(self):
+        resp = run_guard_with_payload(
+            {
+                "tool_name": "Write",
+                "tool_input": {"file_path": "/tmp/x.md", "content": "This was pivotal."},
+            },
+            env={"AGENT_CONFIG_GATES": "off"},
+        )
+        self.assertIsNone(resp)
+
+    def test_edit_tool_new_string_scanned(self):
+        resp = run_guard_with_payload({
+            "tool_name": "Edit",
+            "tool_input": {
+                "file_path": "/tmp/x.md",
+                "old_string": "old text",
+                "new_string": "new foster-based approach",
+            },
+        })
+        self.assertIsNotNone(resp)
+        self.assertEqual(resp["hookSpecificOutput"]["permissionDecision"], "deny")
+
+    def test_honest_is_not_banned_hone_variant(self):
+        # Regression: earlier stem-match `\bhone\w*\b` caught "honest" as a
+        # false positive. Finite-inflection matching must not.
+        resp = run_guard_with_payload({
+            "tool_name": "Write",
+            "tool_input": {"file_path": "/tmp/x.md", "content": "This is an honest assessment."},
+        })
+        self.assertIsNone(resp)
+
+    def test_pavement_is_not_banned_pave_variant(self):
+        # Regression: "pavement" must not match the `pave` banned word.
+        resp = run_guard_with_payload({
+            "tool_name": "Write",
+            "tool_input": {"file_path": "/tmp/x.md", "content": "The pavement is wet."},
+        })
+        self.assertIsNone(resp)
+
+    def test_faceted_is_not_banned_facet_variant(self):
+        # Regression: technical writing about "faceted search UI" must pass.
+        resp = run_guard_with_payload({
+            "tool_name": "Write",
+            "tool_input": {"file_path": "/tmp/x.md", "content": "A faceted search UI."},
+        })
+        self.assertIsNone(resp)
+
+    def test_honed_still_denied_as_hone_variant(self):
+        # Positive regression: the verb form "honed" must still deny.
+        resp = run_guard_with_payload({
+            "tool_name": "Write",
+            "tool_input": {"file_path": "/tmp/x.md", "content": "We honed the prompt."},
+        })
+        self.assertIsNotNone(resp)
+        self.assertEqual(resp["hookSpecificOutput"]["permissionDecision"], "deny")
+
+    def test_paving_still_denied_as_pave_variant(self):
+        # Positive regression: the verb form "paving" must still deny.
+        resp = run_guard_with_payload({
+            "tool_name": "Write",
+            "tool_input": {"file_path": "/tmp/x.md", "content": "Paving the way forward."},
+        })
+        self.assertIsNotNone(resp)
+        self.assertEqual(resp["hookSpecificOutput"]["permissionDecision"], "deny")
+
+    def test_doubled_consonant_underpinned_denied(self):
+        resp = run_guard_with_payload({
+            "tool_name": "Write",
+            "tool_input": {"file_path": "/tmp/x.md", "content": "The method underpinned the result."},
+        })
+        self.assertIsNotNone(resp)
+        self.assertEqual(resp["hookSpecificOutput"]["permissionDecision"], "deny")
+
+    def test_burgeoned_denied_as_burgeoning_variant(self):
+        resp = run_guard_with_payload({
+            "tool_name": "Write",
+            "tool_input": {"file_path": "/tmp/x.md", "content": "The field burgeoned rapidly."},
+        })
+        self.assertIsNotNone(resp)
+        self.assertEqual(resp["hookSpecificOutput"]["permissionDecision"], "deny")
+
+    def test_adverb_monumentally_denied(self):
+        resp = run_guard_with_payload({
+            "tool_name": "Write",
+            "tool_input": {"file_path": "/tmp/x.md", "content": "The result was monumentally different."},
+        })
+        self.assertIsNotNone(resp)
+        self.assertEqual(resp["hookSpecificOutput"]["permissionDecision"], "deny")
+
+    def test_adverb_profoundly_denied(self):
+        resp = run_guard_with_payload({
+            "tool_name": "Write",
+            "tool_input": {"file_path": "/tmp/x.md", "content": "This changed the result profoundly."},
+        })
+        self.assertIsNotNone(resp)
+        self.assertEqual(resp["hookSpecificOutput"]["permissionDecision"], "deny")
+
+    def test_embargo_is_not_banned_embark_variant(self):
+        # Negative regression: "embargo" must not match "embark".
+        resp = run_guard_with_payload({
+            "tool_name": "Write",
+            "tool_input": {"file_path": "/tmp/x.md", "content": "An embargo was placed."},
+        })
+        self.assertIsNone(resp)
+
+
+class BannerGateTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp_home = tempfile.mkdtemp(prefix="guard-banner-")
+        self.hooks_dir = Path(self.tmp_home) / ".claude" / "hooks"
+        self.hooks_dir.mkdir(parents=True)
+        # Override both HOME (POSIX) and USERPROFILE (Windows) so
+        # os.path.expanduser("~") inside the hook resolves to our temp dir.
+        self.env = {"HOME": self.tmp_home, "USERPROFILE": self.tmp_home}
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp_home, ignore_errors=True)
+
+    def _run(self, payload, extra_env=None):
+        env = dict(self.env)
+        if extra_env:
+            env.update(extra_env)
+        return run_guard_with_payload(payload, env=env)
+
+    def _write_event(self, ts):
+        (self.hooks_dir / "session-event.json").write_text(json.dumps({"ts": ts}))
+
+    def _write_emitted(self, ts):
+        (self.hooks_dir / "banner-emitted.json").write_text(json.dumps({"ts": ts}))
+
+    def test_denies_bash_when_event_pending(self):
+        self._write_event(100)
+        resp = self._run({"tool_name": "Bash", "tool_input": {"command": "ls"}})
+        self.assertIsNotNone(resp)
+        self.assertEqual(resp["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertIn("banner", resp["hookSpecificOutput"]["permissionDecisionReason"].lower())
+
+    def test_allows_when_emitted_current(self):
+        self._write_event(100)
+        self._write_emitted(100)
+        resp = self._run({"tool_name": "Bash", "tool_input": {"command": "ls"}})
+        self.assertIsNone(resp)
+
+    def test_allows_read_when_event_pending(self):
+        self._write_event(100)
+        resp = self._run({"tool_name": "Read", "tool_input": {"file_path": "/tmp/x"}})
+        self.assertIsNone(resp)
+
+    def test_allows_write_to_banner_emitted_posix(self):
+        self._write_event(100)
+        resp = self._run({
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": os.path.join(self.tmp_home, ".claude", "hooks", "banner-emitted.json"),
+                "content": json.dumps({"ts": 100}),
+            },
+        })
+        self.assertIsNone(resp)
+
+    def test_allows_write_to_banner_emitted_windows_separator(self):
+        self._write_event(100)
+        # Simulate a path with Windows-style backslashes.
+        win_path = self.tmp_home.replace("/", "\\") + "\\.claude\\hooks\\banner-emitted.json"
+        resp = self._run({
+            "tool_name": "Write",
+            "tool_input": {"file_path": win_path, "content": "{}"},
+        })
+        self.assertIsNone(resp)
+
+    def test_allows_when_event_file_missing(self):
+        resp = self._run({"tool_name": "Bash", "tool_input": {"command": "ls"}})
+        self.assertIsNone(resp)
+
+    def test_bypassed_via_gates_off(self):
+        self._write_event(100)
+        resp = self._run(
+            {"tool_name": "Bash", "tool_input": {"command": "ls"}},
+            extra_env={"AGENT_CONFIG_GATES": "off"},
+        )
+        self.assertIsNone(resp)
+
+    def test_legacy_payload_without_tool_name_falls_through(self):
+        self._write_event(100)
+        # Legacy payload has only tool_input.command, no tool_name. The new
+        # gates skip, falling through to the Bash-only checks (which will
+        # return None for a safe command like `ls`).
+        resp = self._run({"tool_input": {"command": "ls"}})
+        self.assertIsNone(resp)
+
+
 if __name__ == "__main__":
     unittest.main()
