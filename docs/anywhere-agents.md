@@ -61,7 +61,7 @@ A separate public repo provides **physical isolation**. Private content cannot l
 | `.claude/settings.json` | Yes, sanitized | Already generic in `agent-config`. |
 | `user/settings.json` | Yes, sanitized | Strip `additionalDirectories` (contains user-specific paths). Keep permissions, hook wiring (both `PreToolUse` guard and `SessionStart` bootstrap hook), `CLAUDE_CODE_EFFORT_LEVEL=max`. |
 | `tests/` | Yes, with edits | Remove tests for unshipped skills. Update `test_repo.py` to assert the four-skill shipped set and correct URLs. |
-| `.github/workflows/` | Yes | Same CI, same actions. |
+| `.github/workflows/` | Partial | `real-agent-smoke.yml` and `validate.yml` mirror byte-identically (STRICT in `scripts/check-parity.sh`). `docs-strict-build.yml` is `anywhere-agents`-only (RTD MkDocs strict-build gate; `agent-config` does not host RTD). `package-smoke.yml` is `anywhere-agents`-only (published PyPI/npm package verification; no `agent-config` counterpart). |
 
 ## Package and documentation assets
 

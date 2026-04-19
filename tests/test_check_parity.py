@@ -1,9 +1,10 @@
-"""Smoke tests for scripts/check-parity.sh.
+"""Smoke + behavioral tests for scripts/check-parity.sh.
 
-This script is a maintainer-only tool that runs against both ac and aa clones,
-so full behavioral testing requires both to be present. These tests verify
-script existence and shell-syntax validity; the real behavioral check is the
-manual invocation from aa/RELEASING.md pre-release check 5.
+The script is a maintainer-only tool that runs against both ac and aa clones,
+so full fidelity requires both to be present. The behavioral tests build a
+minimal fake ac+aa tree in a tempdir and invoke the script via its `AA_ROOT`
+argument, which lets us cover each exit-code contract without depending on
+the real sibling clone.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ import pathlib
 import platform
 import shutil
 import subprocess
+import tempfile
 import unittest
 
 
@@ -41,12 +43,84 @@ def _find_bash() -> str | None:
 BASH = _find_bash()
 
 
+def _build_fake_tree(base: pathlib.Path):
+    """Build a minimal ac+aa pair the script judges clean.
+
+    Populates every file in the script's STRICT and BY-DESIGN lists.
+    STRICT files get identical content on both sides; BY-DESIGN files get
+    different content. The real check-parity.sh is copied into
+    ``ac/scripts/`` so the script's AC_ROOT resolution lands on the fake
+    tree rather than the real repo.
+    """
+    ac = base / "ac"
+    aa = base / "aa"
+    for repo in (ac, aa):
+        (repo / "scripts").mkdir(parents=True)
+        (repo / ".claude" / "commands").mkdir(parents=True)
+        (repo / ".githooks").mkdir(parents=True)
+        (repo / "bootstrap").mkdir(parents=True)
+        (repo / "skills").mkdir(parents=True)
+        (repo / "user").mkdir(parents=True)
+        (repo / ".github" / "workflows").mkdir(parents=True)
+
+    strict_files = {
+        "scripts/guard.py": "# guard stub\n",
+        "scripts/session_bootstrap.py": "# session bootstrap stub\n",
+        "scripts/generate_agent_configs.py": "# generator stub\n",
+        "scripts/pre-push-smoke.sh": "#!/bin/bash\nexit 0\n",
+        "scripts/remote-smoke.sh": "#!/bin/bash\nexit 0\n",
+        ".claude/settings.json": "{}\n",
+        ".githooks/pre-push": "#!/bin/bash\nexit 0\n",
+        ".github/workflows/real-agent-smoke.yml": "name: smoke\non: push\n",
+        ".github/workflows/validate.yml": "name: validate\non: push\njobs:\n  repo-validation: {}\n",
+    }
+    for rel, content in strict_files.items():
+        (ac / rel).write_text(content)
+        (aa / rel).write_text(content)
+
+    for skill in ("implement-review", "my-router", "ci-mockup-figure", "readme-polish"):
+        rel = f".claude/commands/{skill}.md"
+        content = f"# pointer: {skill}\n"
+        (ac / rel).write_text(content)
+        (aa / rel).write_text(content)
+
+    for skill in ("implement-review", "ci-mockup-figure", "readme-polish"):
+        (ac / f"skills/{skill}").mkdir()
+        (aa / f"skills/{skill}").mkdir()
+        (ac / f"skills/{skill}/SKILL.md").write_text(f"# {skill}\n")
+        (aa / f"skills/{skill}/SKILL.md").write_text(f"# {skill}\n")
+
+    by_design = {
+        "AGENTS.md": ("# ac AGENTS (USC section)\n", "# aa AGENTS\n"),
+        "bootstrap/bootstrap.sh": ("# ac bootstrap\ngit config --global x\n", "# aa bootstrap\n"),
+        "bootstrap/bootstrap.ps1": ("# ac ps1\n", "# aa ps1\n"),
+        "user/settings.json": ("{\"additionalDirectories\": []}\n", "{}\n"),
+    }
+    for rel, (ac_content, aa_content) in by_design.items():
+        (ac / rel).write_text(ac_content)
+        (aa / rel).write_text(aa_content)
+
+    (ac / "skills/my-router").mkdir()
+    (aa / "skills/my-router").mkdir()
+    (ac / "skills/my-router/SKILL.md").write_text("# ac router (NSF flavor)\n")
+    (aa / "skills/my-router/SKILL.md").write_text("# aa router (generic)\n")
+
+    (ac / "scripts/check-parity.sh").write_text(SCRIPT.read_text(encoding="utf-8"))
+    return ac, aa
+
+
+def _run(ac_root: pathlib.Path, aa_root: pathlib.Path):
+    result = subprocess.run(
+        [BASH, str(ac_root / "scripts/check-parity.sh"), str(aa_root)],
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode, result.stdout + result.stderr
+
+
 class CheckParityScriptExists(unittest.TestCase):
     def test_script_present(self):
-        self.assertTrue(
-            SCRIPT.is_file(),
-            f"expected {SCRIPT} to exist",
-        )
+        self.assertTrue(SCRIPT.is_file(), f"expected {SCRIPT} to exist")
 
     def test_script_has_shebang(self):
         first_line = SCRIPT.read_text(encoding="utf-8").splitlines()[0]
@@ -55,11 +129,8 @@ class CheckParityScriptExists(unittest.TestCase):
             f"expected shebang on first line, got {first_line!r}",
         )
 
-    @unittest.skipUnless(
-        BASH, "bash not found (Git Bash on Windows, /bin/bash on Unix)"
-    )
+    @unittest.skipUnless(BASH, "bash not found")
     def test_script_shell_syntax_clean(self):
-        # bash -n parses without executing; catches syntax errors locally.
         result = subprocess.run(
             [BASH, "-n", str(SCRIPT)],
             capture_output=True,
@@ -70,6 +141,70 @@ class CheckParityScriptExists(unittest.TestCase):
             0,
             f"bash -n failed: stdout={result.stdout!r}, stderr={result.stderr!r}",
         )
+
+
+@unittest.skipUnless(BASH, "bash not found")
+class CheckParityBehavior(unittest.TestCase):
+    def test_clean_run_exits_0(self):
+        with tempfile.TemporaryDirectory() as d:
+            ac, aa = _build_fake_tree(pathlib.Path(d))
+            rc, out = _run(ac, aa)
+            self.assertEqual(rc, 0, f"expected 0, got {rc}; output:\n{out}")
+            self.assertIn("STRICT clean", out)
+
+    def test_strict_drift_exits_1(self):
+        with tempfile.TemporaryDirectory() as d:
+            ac, aa = _build_fake_tree(pathlib.Path(d))
+            (aa / "scripts/guard.py").write_text("drifted\n")
+            rc, out = _run(ac, aa)
+            self.assertEqual(rc, 1, f"expected 1, got {rc}; output:\n{out}")
+            self.assertIn("scripts/guard.py", out)
+            self.assertIn("DRIFT", out)
+
+    def test_strict_shipped_pointer_drift_exits_1(self):
+        with tempfile.TemporaryDirectory() as d:
+            ac, aa = _build_fake_tree(pathlib.Path(d))
+            (aa / ".claude/commands/my-router.md").write_text("drifted pointer\n")
+            rc, out = _run(ac, aa)
+            self.assertEqual(rc, 1)
+            self.assertIn(".claude/commands/my-router.md", out)
+
+    def test_strict_workflow_drift_exits_1(self):
+        # Guards against drift in shared parts of validate.yml (action versions,
+        # matrix changes, unittest command etc.) now that it is STRICT.
+        with tempfile.TemporaryDirectory() as d:
+            ac, aa = _build_fake_tree(pathlib.Path(d))
+            (aa / ".github/workflows/validate.yml").write_text(
+                "name: validate\non: push\njobs:\n  drifted: {}\n"
+            )
+            rc, out = _run(ac, aa)
+            self.assertEqual(rc, 1)
+            self.assertIn("validate.yml", out)
+
+    def test_missing_by_design_file_exits_1(self):
+        with tempfile.TemporaryDirectory() as d:
+            ac, aa = _build_fake_tree(pathlib.Path(d))
+            (aa / "AGENTS.md").unlink()
+            rc, out = _run(ac, aa)
+            self.assertEqual(rc, 1, f"expected 1, got {rc}; output:\n{out}")
+            self.assertIn("AGENTS.md", out)
+
+    def test_missing_my_router_dir_exits_1(self):
+        with tempfile.TemporaryDirectory() as d:
+            ac, aa = _build_fake_tree(pathlib.Path(d))
+            shutil.rmtree(aa / "skills/my-router")
+            rc, out = _run(ac, aa)
+            self.assertEqual(rc, 1, f"expected 1, got {rc}; output:\n{out}")
+            self.assertIn("my-router", out)
+
+    def test_missing_aa_root_exits_2(self):
+        with tempfile.TemporaryDirectory() as d:
+            result = subprocess.run(
+                [BASH, str(SCRIPT), str(pathlib.Path(d) / "nonexistent")],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 2)
 
 
 if __name__ == "__main__":

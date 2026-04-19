@@ -12,16 +12,21 @@
 #               is drift and fails the check. Covers: guard.py,
 #               session_bootstrap.py, generate_agent_configs.py,
 #               pre-push-smoke.sh, remote-smoke.sh, .claude/settings.json,
-#               .githooks/pre-push, .claude/commands/*.md for each of the
-#               4 shipped skills, skills/{implement-review,ci-mockup-figure,
-#               readme-polish} as recursive trees.
+#               .githooks/pre-push, .github/workflows/real-agent-smoke.yml,
+#               .github/workflows/validate.yml,
+#               .claude/commands/*.md for each of the 4 shipped skills,
+#               skills/{implement-review,ci-mockup-figure,readme-polish}
+#               as recursive trees.
 #
-#   BY-DESIGN   expected to differ. Reported with an additions/deletions
-#               summary so the maintainer can see if the delta is in the
-#               expected range. A byte-for-byte match here is a warning
-#               (sanitization may have been skipped). Covers: AGENTS.md
-#               (USC / Overleaf / PyCharm stripping), bootstrap/bootstrap.sh
-#               and .ps1 (default-upstream + CRLF-config stripping),
+#   BY-DESIGN   expected to differ (sanitized mirror). Must still exist
+#               on both sides; a missing file fails the check because the
+#               release gate needs the mirror to be present, just with
+#               different contents. Reports a +/- line delta per file so
+#               unusual drift is visible. A byte-for-byte match is a
+#               warning (sanitization may have been skipped during
+#               backport). Covers: AGENTS.md (USC / Overleaf / PyCharm
+#               stripping), bootstrap/bootstrap.sh and .ps1
+#               (default-upstream + CRLF-config stripping),
 #               user/settings.json (additionalDirectories stripping),
 #               skills/my-router (routing-table rewrite with extension
 #               guidance for forks).
@@ -30,8 +35,10 @@
 #   bash scripts/check-parity.sh                           # default sibling path
 #   bash scripts/check-parity.sh /path/to/anywhere-agents  # explicit
 #
-# Exit 0: strict category all clean. by-design summary shown.
-# Exit 1: strict drift - fix before tagging.
+# Exit 0: STRICT clean and every BY-DESIGN mirror present. By-design
+#         summary shown for eyeball.
+# Exit 1: STRICT drift, or a required BY-DESIGN mirror missing. Fix
+#         before tagging.
 # Exit 2: usage error (anywhere-agents clone not found).
 
 set -uo pipefail
@@ -63,6 +70,8 @@ strict_files=(
   scripts/remote-smoke.sh
   .claude/settings.json
   .githooks/pre-push
+  .github/workflows/real-agent-smoke.yml
+  .github/workflows/validate.yml
 )
 for f in "${strict_files[@]}"; do
   if [ ! -f "$AC_ROOT/$f" ] || [ ! -f "$AA_ROOT/$f" ]; then
@@ -100,7 +109,7 @@ for skill in implement-review ci-mockup-figure readme-polish; do
   fi
 done
 
-# ---- BY-DESIGN: files expected to differ (summary only, not blocking) ----
+# ---- BY-DESIGN: files expected to differ (summary only; not blocking unless missing) ----
 printf '\n== expected to differ by design (summary; eyeball if delta is unusual) ==\n'
 by_design_files=(
   AGENTS.md
@@ -110,16 +119,14 @@ by_design_files=(
 )
 for f in "${by_design_files[@]}"; do
   if [ ! -f "$AC_ROOT/$f" ] || [ ! -f "$AA_ROOT/$f" ]; then
-    printf '  SKIP: %s (missing on one side)\n' "$f"
+    fail "$f (missing on one side; expected sanitized mirror)"
     continue
   fi
   if diff -q "$AC_ROOT/$f" "$AA_ROOT/$f" >/dev/null 2>&1; then
     printf '  WARN: %s matches byte-for-byte (expected to differ; sanitization may have been skipped)\n' "$f"
   else
-    # > = lines only in aa (second arg); < = lines only in ac (first arg).
-    # Using --unchanged-line-format to count cleanly is not portable, so use
-    # diff -u | grep counts which include header noise - subtract 1 for each
-    # direction marker line.
+    # Plain `diff` emits changed lines with `<` (only in first arg = ac) and
+    # `>` (only in second arg = aa). Count each prefix to summarize direction.
     raw_diff=$(diff "$AC_ROOT/$f" "$AA_ROOT/$f")
     in_aa=$(printf '%s\n' "$raw_diff" | grep -c '^>' || true)
     in_ac=$(printf '%s\n' "$raw_diff" | grep -c '^<' || true)
@@ -128,7 +135,9 @@ for f in "${by_design_files[@]}"; do
 done
 
 # skills/my-router as a recursive tree
-if [ -d "$AC_ROOT/skills/my-router" ] && [ -d "$AA_ROOT/skills/my-router" ]; then
+if [ ! -d "$AC_ROOT/skills/my-router" ] || [ ! -d "$AA_ROOT/skills/my-router" ]; then
+  fail "skills/my-router/ (missing on one side; expected sanitized mirror)"
+else
   my_router_diff=$(diff -rq "$AC_ROOT/skills/my-router" "$AA_ROOT/skills/my-router" 2>&1)
   if [ -z "$my_router_diff" ]; then
     printf '  WARN: skills/my-router/ matches byte-for-byte (expected to differ; sanitization may have been skipped)\n'
@@ -140,9 +149,9 @@ fi
 
 # ---- Summary ----
 if [ "$exit_code" -eq 0 ]; then
-  printf '\n== check-parity: STRICT category clean. BY-DESIGN summary above. ==\n'
+  printf '\n== check-parity: STRICT clean + BY-DESIGN mirrors present. ==\n'
 else
-  printf '\n== check-parity: STRICT DRIFT FOUND (fix before tagging) ==\n'
+  printf '\n== check-parity: DRIFT or MISSING MIRROR (fix before tagging) ==\n'
 fi
 
 exit "$exit_code"
