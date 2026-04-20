@@ -1,13 +1,14 @@
-# Onboarding — agent-config + anywhere-agents
+# Onboarding — agent-config + anywhere-agents + agent-style
 
 One-page index for a new maintainer machine or future-you coming back after a gap. Read this file first; it points at the right deeper docs for whatever task you are starting.
 
 ## New machine in 3 steps
 
 ```bash
-# 1. Clone both repos side by side under ~/PycharmProjects/
+# 1. Clone all three repos side by side under ~/PycharmProjects/
 git clone https://github.com/yzhao062/agent-config.git     ~/PycharmProjects/agent-config
 git clone https://github.com/yzhao062/anywhere-agents.git  ~/PycharmProjects/anywhere-agents
+git clone https://github.com/yzhao062/agent-style.git      ~/PycharmProjects/agent-style
 ```
 
 ```
@@ -28,22 +29,26 @@ First prompt after `claude` starts:
 
 From there the agent has enough context to work on either repo.
 
-## The two-repo split (one paragraph)
+## The three-repo landscape
 
-**Shorthand**: `ac` = `agent-config`, `aa` = `anywhere-agents`. Both forms appear interchangeably in maintainer prompts and docs; either refers to the same repo as the full name.
+**Shorthand**: `ac` = `agent-config`, `aa` = `anywhere-agents`, `as` = `agent-style`. All three forms appear interchangeably in maintainer prompts and docs; either form refers to the same repo as the full name.
 
-- **`agent-config`** (private) — canonical source for shared components (bootstrap scripts, shared skills, guard hook, `AGENTS.md` baseline) PLUS personal content (USC-specific rules, `reference-skills/`, research docs, maintainer runbooks).
-- **`anywhere-agents`** (public) — sanitized public release. Only the shared components + packaging (PyPI + npm + RTD site).
-- Shared-core files mirror byte-identically (modulo branding) between the two. Full table of what gets copied vs stays private: `docs/anywhere-agents.md`.
-- Not a fork, not a submodule. Manual backport from `agent-config` → `anywhere-agents` on every release cut. Physical isolation is the primary leak defense.
+The three repos are linked by **two distinct relationships**; do not confuse them:
+
+- **`ac` ↔ `aa` — mirror (shared core).**
+  `agent-config` (private) is the canonical source for shared components (bootstrap scripts, shared skills, guard hook, `AGENTS.md` baseline) PLUS personal content (USC-specific rules, `reference-skills/`, research docs, maintainer runbooks). `anywhere-agents` (public) is the sanitized public release — only the shared components + packaging (PyPI + npm + RTD site). Shared-core files mirror byte-identically (modulo branding). Not a fork, not a submodule — manual backport from `ac` → `aa` on every release cut; physical isolation is the primary leak defense. "What gets copied vs stays private" table lives in `docs/anywhere-agents.md`.
+- **`as` ↔ `ac` / `aa` — reference only.**
+  `agent-style` (public) is a standalone project: a literature-backed English technical-prose writing ruleset for AI agents, shipped via PyPI + npm + GitHub. It is NOT a mirror of anything in `ac` or `aa`. The only cross-reference is editorial: each `as` field-observed rule (RULE-A..I) cites `ac/aa`'s `AGENTS.md` "Writing Defaults" section as an adjacent in-practice anchor, not as a source authority. No files are copied between `as` and the other two; the three release flows are independent.
 
 ## "I am doing X, what should I read?"
 
 | Task | Read first |
 |---|---|
 | Setting up a new machine | This file |
-| Release cut (bump version, publish to PyPI/npm/GitHub) | `../anywhere-agents/RELEASING.md` + the cheat-sheet section below |
-| Cross-repo shared-core change (guard.py / session_bootstrap.py / AGENTS.md) | `docs/anywhere-agents.md` — the "what gets copied" table |
+| Release cut on `aa` (bump version, publish to PyPI/npm/GitHub) | `../anywhere-agents/RELEASING.md` + the cheat-sheet section below |
+| Release cut on `as` (bump version, publish PyPI + npm + GitHub release) | `../agent-style/RELEASING.md` — same 12-section pattern as `aa`, independent version stream |
+| Cross-repo shared-core change (guard.py / session_bootstrap.py / AGENTS.md) on `ac`/`aa` | `docs/anywhere-agents.md` — the "what gets copied" table |
+| Adding or editing a rule in `as` | `../agent-style/README.md` "Curation and method" details section; canonical rules need a cited source, field-observed rules are the maintainer's call |
 | Bootstrap misbehaving on a consumer project / stuck on old version | `MIGRATIONS.md` |
 | Complex task (hook redesign, paper outline, proposal structure) | `skills/implement-review/SKILL.md` "When to plan-review first" |
 | Banner gate or writing-style gate blocking something unexpected | `AGENTS.md` "Mechanical Enforcement" section; escape via `AGENT_CONFIG_GATES=off` |
@@ -103,6 +108,16 @@ Each step's exact commands are in `../anywhere-agents/RELEASING.md`.
 - `packages/pypi/` + `packages/npm/` — CLI package sources; version stream synced to the repo tag
 - `docs/` — Read the Docs site source (MkDocs Material), hero/banner images
 - `skills/` — only the shared skills (subset of `agent-config/skills/`)
+
+### `agent-style` (public, standalone)
+
+- `RULES.md` — canonical 12 rules (RULE-01..12 from Strunk & White / Orwell / Pinker / Gopen & Swan) + 9 field-observed rules (RULE-A..I from the maintainer); each rule carries source metadata, directive, 5+ BAD/GOOD pairs, rationale
+- `README.md` — public landing page with hero figure and four-source collage
+- `CHANGELOG.md` + `RELEASING.md` — version history and release runbook (same 12-section pattern as `aa`)
+- `agents/` — 8 primary adapter files (Claude Code, AGENTS.md, Copilot repo / path, Cursor, Anthropic Skills, Codex, Aider)
+- `packages/pypi/` + `packages/npm/` — CLI package sources (byte-identical canonical JSON across both ecosystems)
+- `.github/workflows/real-agent-smoke.yml` — live-API smoke test against Claude + Codex on `release.published` + `workflow_dispatch`
+- `scripts/verify-fresh-install.py` — cross-platform end-to-end install smoke (Windows + Linux aarch64)
 
 ### Consumer projects (your daily projects under `~/PycharmProjects/*`)
 
