@@ -112,10 +112,13 @@ Each step's exact commands are in `../anywhere-agents/RELEASING.md`.
 ### `agent-style` (public, standalone)
 
 - `RULES.md` — canonical 12 rules (RULE-01..12 from Strunk & White / Orwell / Pinker / Gopen & Swan) + 9 field-observed rules (RULE-A..I from the maintainer); each rule carries source metadata, directive, 5+ BAD/GOOD pairs, rationale
-- `README.md` — public landing page with hero figure and four-source collage
-- `CHANGELOG.md` + `RELEASING.md` — version history and release runbook (same 12-section pattern as `aa`)
-- `agents/` — 8 primary adapter files (Claude Code, AGENTS.md, Copilot repo / path, Cursor, Anthropic Skills, Codex, Aider)
-- `packages/pypi/` + `packages/npm/` — CLI package sources (byte-identical canonical JSON across both ecosystems)
+- `README.md` — public landing page with hero figure, four-source collage, and bench scorecard panel
+- `CHANGELOG.md` + `RELEASING.md` — version history and release runbook (same general pattern as `aa`, independent version stream)
+- `agents/` — 9 primary adapter files (Claude Code, AGENTS.md, Copilot repo / path, Cursor, Anthropic Skills, Codex, Aider, Kiro); `list-tools` surfaces a 10th entry, `style-review`, owned by `skills/` below
+- `skills/style-review/` — opt-in post-hoc review pass (`skill-with-references` install mode added in v0.2.0); complements generation-time soft enforcement. Bundled copies under `packages/pypi/agent_style/data/skills/` and `packages/npm/data/skills/`; manifest-based safe disable (sha256 per file) lives at `.agent-style/skills/style-review/manifest.json` in consumer projects
+- `packages/pypi/` + `packages/npm/` — CLI package sources (byte-identical canonical JSON across both ecosystems; `agent-style review <file>` available from the plain CLI without a skill host)
+- `scripts/bench/run.sh` + `.github/workflows/bench.yml` + `docs/bench-*.md` — sanity benchmark: 10 fixed prose tasks × 2 generations, Claude Code baseline vs `agent-style`-loaded. `workflow_dispatch` only (~$0.40–0.80/run). Scorecard committed per release
+- `scripts/smoke-skill-safety.sh` — regression suite for the `skill-with-references` install mode (20 scenarios × Python + Node: ownership proof, atomicity, path traversal, drift fail-closed, missing-sha256, empty entries, absent-manifest). Platform-aware; runs on Windows + Linux
 - `.github/workflows/real-agent-smoke.yml` — live-API smoke test against Claude + Codex on `release.published` + `workflow_dispatch`
 - `scripts/verify-fresh-install.py` — cross-platform end-to-end install smoke (Windows + Linux aarch64)
 
