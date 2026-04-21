@@ -102,7 +102,7 @@ Each step's exact commands are in `../anywhere-agents/RELEASING.md`.
 
 ### `anywhere-agents` (public)
 
-- `RELEASING.md` — release runbook (six pre-release checks + the publish pipeline)
+- `RELEASING.md` — release runbook (six pre-release checks + the publish pipeline). Also hosts the `CI API cost exposure` section (workflow-by-workflow cost table + agent dispatch-approval policy) that applies to both `aa` and `ac` — the `real-agent-smoke.yml` and `validate.yml` workflows are STRICT byte-identical mirrors between the two repos, so the cost model is shared. Read this before dispatching any paid workflow in either repo.
 - `CHANGELOG.md` — version history and current version (read this to know what version we are at)
 - `README.md` + `README.zh-CN.md` — public-facing docs; bilingual parity required on structural changes
 - `packages/pypi/` + `packages/npm/` — CLI package sources; version stream synced to the repo tag
