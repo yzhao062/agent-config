@@ -64,6 +64,7 @@ What this means in practice:
 | Complex task (hook redesign, paper outline, proposal structure) | `skills/implement-review/SKILL.md` "When to plan-review first" |
 | Banner gate or writing-style gate blocking something unexpected | `AGENTS.md` "Mechanical Enforcement" section; escape via `AGENT_CONFIG_GATES=off` |
 | Consumer project not picking up upstream | Open Claude Code there once — bootstrap self-updates automatically. Or force refresh via `MIGRATIONS.md` block. |
+| Switching an existing ac-bootstrapped consumer project to aa | `docs/ac-to-aa-migration.md` — decision matrix, migration mechanics (Path 1 change-upstream / Path 2 nuke-and-reinstall), pre/post checks, rollback, forward direction on skill-pack composition |
 | Adding a new skill | `skills/implement-review/SKILL.md` shows the skill structure; `skills/my-router/` for routing integration |
 
 ## Release cut — minimal cheat-sheet
