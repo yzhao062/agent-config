@@ -40,6 +40,17 @@ The three repos are linked by **two distinct relationships**; do not confuse the
 - **`as` ↔ `ac` / `aa` — reference only.**
   `agent-style` (public) is a standalone project: a literature-backed English technical-prose writing ruleset for AI agents, shipped via PyPI + npm + GitHub. It is NOT a mirror of anything in `ac` or `aa`. The only cross-reference is editorial: each `as` field-observed rule (RULE-A..I) cites `ac/aa`'s `AGENTS.md` "Writing Defaults" section as an adjacent in-practice anchor, not as a source authority. No files are copied between `as` and the other two; the three release flows are independent.
 
+## Direction of travel: gradually retiring `ac`
+
+The `ac` → `aa` mirror relationship is transitional. The maintainer is moving daily use into `aa` directly (consuming the public `anywhere-agents` bootstrap on personal projects) so the shared-core lives in one place rather than two, and the sanitization backport step goes away over time.
+
+What this means in practice:
+
+- **New feature work lands in `aa` first.** Rule-pack composition (v0.3.0, 2026-04-22) was the first feature to ship this way — built, reviewed, tagged, and published directly from `aa` without a parallel `ac` mirror commit.
+- **`ac` still holds maintainer-only content indefinitely.** `reference-skills/`, NSF / USC / research docs, and personal runbooks stay private. Only the shared-core layer is converging.
+- **Parity expectations loosen over time.** `scripts/check-parity.sh` still guards pre-release drift, but expect STRICT-category matches to degrade as `aa`-first changes accumulate and back-porting to `ac` becomes optional rather than required.
+- **Future-you reading this**: prefer touching `aa` directly unless the change is maintainer-only. If a shared-core file has already drifted in `aa`'s favor, do NOT revert it to match `ac` without confirming that is still the intent.
+
 ## "I am doing X, what should I read?"
 
 | Task | Read first |
@@ -76,6 +87,7 @@ Full runbook is `../anywhere-agents/RELEASING.md`. Outline, in order (each step 
        python3 -B -m unittest discover -s ~/agent-config/tests -p "test_*.py" 2>&1 | tail -5
      '
      ```
+   - **Local end-to-end install tests (Claude-Code-driven).** For releases that touch `bootstrap.sh` / `bootstrap.ps1`, the rule-pack composer (`scripts/compose_rule_packs.py`), or the manifest (`bootstrap/rule-packs.yaml`): ask Claude Code in the active session to drive consumer-install smoke tests end-to-end on **BOTH target platforms** (Windows this machine AND Spark Ubuntu), not only the pytest discover above. The agent has local execution on the maintainer's Windows host and SSH access to Spark, so it can create scratch consumer dirs, fetch the bootstrap from `raw.githubusercontent.com`, run it via Git Bash + PowerShell on Windows and bash on Spark, then verify the composed `AGENTS.md` contains `rule-pack:agent-style:begin` under default-on and matches upstream byte-for-byte under `rule_packs: []` opt-out. This catches shim / Git-Bash-path / PowerShell-execution-policy / pip-install-user-path issues the in-repo pytest suite does not exercise. Ask for it by name: "run the consumer-install end-to-end on Windows bash + PowerShell + Spark Ubuntu against the v<X.Y.Z> candidate".
 2. **Pre-tag real-agent smoke** on the candidate checkout: `bash scripts/pre-push-smoke.sh` (the pre-push git hook runs it automatically on affected pushes; this explicit run gates the release-candidate commit regardless of hook bypass).
 3. **Bump versions and changelog** before the release commit:
    - `packages/pypi/pyproject.toml`
