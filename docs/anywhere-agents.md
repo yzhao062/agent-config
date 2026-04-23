@@ -53,10 +53,10 @@ A separate public repo provides **physical isolation**. Private content cannot l
 | `skills/readme-polish/` | Yes, as-is | Generally useful (modern GitHub README patterns). No personal or institutional content. |
 | `reference-skills/` | No | Entirely domain-specific (NSF, NIH, USC). |
 | `figure-references/` | No | Personal asset gallery. |
-| `docs/` (internal: specs, superpowers, CodexReview) | No | Internal specs stay private. |
+| `docs/` (internal: specs, superpowers, Review-*.md if any) | No | Internal specs stay private. |
 | `docs/hero.html`, `docs/hero.png`, `docs/avatar.jpg` | Only in public | These are public README assets authored in `anywhere-agents` directly. They do not exist in `agent-config`. |
 | `.readthedocs.yaml`, `mkdocs.yml`, `docs/requirements.txt`, `docs/*.md`, `docs/stylesheets/` | Only in public | Read the Docs + MkDocs Material site source, authored directly in `anywhere-agents`. Skill pages use `mkdocs-include-markdown-plugin` to pull from `skills/<name>/SKILL.md` so the skill source-of-truth stays in one place. |
-| `CodexReview.md` | No | Scratch file for review rounds. |
+| `Review-*.md` (e.g., `Review-Codex.md`, `Review-GitHub-Copilot.md`, `Review-Gemini.md`) | No | Per-reviewer scratch files for review rounds; each reviewer self-names via the `implement-review` skill. |
 | `.claude/commands/` | Only for shipped skills | `implement-review.md`, `my-router.md`, `ci-mockup-figure.md`, `readme-polish.md`. |
 | `.claude/settings.json` | Yes, sanitized | Already generic in `agent-config`. |
 | `user/settings.json` | Yes, sanitized | Strip `additionalDirectories` (contains user-specific paths). Keep permissions, hook wiring (both `PreToolUse` guard and `SessionStart` bootstrap hook), `CLAUDE_CODE_EFFORT_LEVEL=max`. |

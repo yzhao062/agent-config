@@ -132,7 +132,7 @@ Start a fresh clone of the private `agent-config`, then prune aggressively:
 
 - [ ] **Copy:** `bootstrap/`, `scripts/guard.py`, `scripts/merge_settings.py`, `user/settings.json` (sanitized), `.claude/commands/`, `.claude/settings.json` (sanitized), `tests/`, `.github/workflows/`
 - [ ] **Copy shared skills:** `implement-review` and `my-router` only. Keep v1.0 tight. `implement-review` is the signature dual-agent review loop; `my-router` ships as a sanitized template where `implement-review` is the only concrete routing entry — the `routing-table.md` includes an extension template so users can register their own skills in a fork. Do **not** ship `dual-pass-workflow`, `bibref-filler`, `figure-prompt-builder`, or `ci-mockup-figure` in v1.0 — these are research-flavored and best added by users who need them, rather than shipped as defaults that may not match a general-purpose audience.
-- [ ] **Do not copy:** `reference-skills/` (nsf-proposal-*, usc-reimbursement, etc.), `figure-references/`, `docs/superpowers/`, `CodexReview.md`, anything with personal details
+- [ ] **Do not copy:** `reference-skills/` (nsf-proposal-*, usc-reimbursement, etc.), `figure-references/`, `docs/superpowers/`, `Review-*.md` (per-reviewer scratch files), `CodexReview.md` (legacy single-reviewer scratch file), anything with personal details
 - [ ] **Rewrite AGENTS.md from scratch** for the public audience. Keep the opinionated sections (Writing Defaults, Git Safety, Shell Command Style) as the product, but strip USC-specific content, Overleaf rules, and PyCharm-specific paths. Replace specific paths (`C:\Users\yuezh\...`) with platform-generic placeholders.
 - [ ] **Sanitize `user/settings.json`:** remove hardcoded user paths; keep permission patterns and hook wiring.
 
