@@ -104,8 +104,24 @@ That is the full migration. Bootstrap is idempotent and self-healing; on the nex
 
 Use this when the project's `.agent-config/` cache is corrupted, or when you want to start from a verified-clean state.
 
+**Precondition (aa v0.4.0+)**: if the project has active packs installed (detectable by the presence of `.agent-config/pack-state.json`), **run the uninstall-all step first**. Deleting `.agent-config/` alone is cache cleanup; it does not clean user-level pack-owned hooks in `~/.claude/hooks/<pack>/` or pack-owned entries in `~/.claude/settings.json`, and skipping the uninstall leaves them orphaned with the current repo still in their `owners:` list. The aa v0.4.0 composer ships the canonical command `anywhere-agents uninstall --all`; the PyPI entry point and `npx anywhere-agents uninstall --all` expose the same command semantics. If the command exits nonzero, stop and resolve the reported issue before deleting `.agent-config/`.
+
 ```bash
 # From the consumer project root
+
+# Pre-step (aa v0.4.0+ only): uninstall active packs to clean user-level state.
+# Skippable when .agent-config/pack-state.json does not exist (pre-v0.4.0
+# install) OR when the project had only passive packs installed.
+# Nonzero exit from uninstall aborts Path 2 so the state file needed for
+# retry/inspection is not destroyed (drift, lock timeout, malformed state
+# all surface here via the exit-code contract in docs/pack-architecture.md).
+if [ -f .agent-config/pack-state.json ]; then
+  if ! anywhere-agents uninstall --all; then
+    echo "anywhere-agents uninstall --all failed; aborting Path 2 cleanup." >&2
+    exit 1
+  fi
+fi
+
 # DANGER: deletes local cache and generated per-agent files.
 # Confirm AGENTS.local.md is committed and any direct edits to AGENTS.md are
 # already migrated to AGENTS.local.md. Bootstrap regenerates AGENTS.md and
@@ -118,6 +134,8 @@ bash .agent-config/bootstrap.sh
 ```
 
 `AGENTS.local.md` and `.claude/settings.local.json` are NEVER touched by either path.
+
+**Warning**: skipping the uninstall pre-step and going straight to `rm -rf .agent-config/` leaves any user-level hooks (`~/.claude/hooks/<pack>/*`) and permission entries (`~/.claude/settings.json`) orphaned. Running bootstrap afterward does not re-register ownership of those orphans, and a future install from the same or a different pack at the same target path will fail closed with `user-level-output-conflict` until you manually clean the orphan entry from `~/.claude/pack-state.json`.
 
 ## Pre-migration checks (do these once, per project)
 
@@ -211,13 +229,13 @@ Treat aa-first rule-pack composition as a by-design divergence, but do NOT ignor
 
 No scheduled end-of-life for ac. Retirement is about shrinking the public-facing role, not about shutting ac down.
 
-### Forward direction: first-class private skill packs in aa
+### Forward direction: first-class private packs in aa
 
-The "stay on ac for paper / proposal repos" row in the decision matrix exists because aa has no general mechanism yet for a consumer to mount their own private skills alongside the four shipped ones. An open design ([`PLAN-skill-pack-composition.md`](../PLAN-skill-pack-composition.md) if present) extends aa's bootstrap with a `skill_packs:` config surface parallel to today's `rule_packs:` — supporting direct source URLs, private Git repos, and an SSH / gh CLI / `GITHUB_TOKEN` auth chain. This NEW surface does not exist in v0.3.0 (`rule_packs:` today accepts only manifest-registered pack names; private / direct-source is a skill-pack-era addition).
+The "stay on ac for paper / proposal repos" row in the decision matrix exists because aa has no general mechanism yet for a consumer to mount their own private content alongside the shipped packs. The long-term design ([`docs/pack-architecture.md`](pack-architecture.md)) extends aa's manifest into a unified two-axis model: passive vs active (today's rule-pack vs skill-pack collapse into one abstraction) and public vs private (with an SSH / gh CLI / `GITHUB_TOKEN` auth chain). A consumer `agent-config.yaml` can then list private packs via direct source URLs.
 
-When that ships (tentatively v0.4.0), the "paper repos stay on ac" row collapses: paper / proposal / submodule projects become "aa + one private skill pack". ac's remaining role narrows further to personal planning docs and truly private rules that are not loaded into any consumer project. Until skill-pack composition ships, ac's current `skills/` + `reference-skills/` layout remains the practical path for those projects.
+Tentative release trajectory: aa v0.4.0 introduces the unified manifest BC-preservingly; aa v0.5.0 activates the auth chain and unlocks paper-repo migration. Once v0.5.0 ships, the "Paper repo → stay on ac" decision matrix row collapses to "Paper repo → aa + one private pack", and ac's remaining role narrows to personal planning docs and truly private text that is not loaded into any consumer project.
 
-Do not anticipate the collapse in this guide's decision matrix — keep "stay on ac" as today's answer for paper repos until the skill-pack composer is released and tested.
+Until aa v0.5.0 ships, ac's current `skills/` + `reference-skills/` layout remains the practical path for those projects. Do not anticipate the collapse in this guide's decision matrix — keep "stay on ac" as today's answer for paper repos until the private-pack composer is released and tested.
 
 ## FAQ
 
@@ -235,7 +253,7 @@ No. `guard.py` and `session_bootstrap.py` are byte-identical between ac and aa (
 
 **Can a project pull some skills from ac and some from aa?**
 
-Not with the current bootstrap design. Upstream is a single URL. Workarounds: (a) copy the specific ac-only skill into the project's own repo-local `skills/<name>/` directory (repo-local wins over shared on name conflict); (b) stay on ac for the whole project. There is no partial-upstream mode. See `PLAN-skill-pack-composition.md` for the in-flight design that would unblock this with a `skill_packs:` opt-in.
+Not with the current bootstrap design. Upstream is a single URL. Workarounds: (a) copy the specific ac-only skill into the project's own repo-local `skills/<name>/` directory (repo-local wins over shared on name conflict); (b) stay on ac for the whole project. There is no partial-upstream mode. See [`docs/pack-architecture.md`](pack-architecture.md) for the long-term design that replaces this workaround with a `packs:` opt-in (public or private source; v0.5.0 target).
 
 **When does ac actually retire?**
 

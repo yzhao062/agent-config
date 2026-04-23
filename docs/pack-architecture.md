@@ -1,0 +1,687 @@
+# Pack architecture (long-term design)
+
+Design note for the `anywhere-agents` (aa) pack composition architecture. Spans aa core design, coordinated `agent-style` (as) variants, the future `agent-behave` (ab) product shape, and the knock-on effects on `MIGRATIONS.md`, `ONBOARDING.md`, and `docs/ac-to-aa-migration.md` across the v0.4.0 → v1.0.0 release trajectory.
+
+**Audience**: maintainer; tracked in `ac` but not mirrored to `aa` (see `docs/anywhere-agents.md` for the mirror policy). Parts may be sanitized for public reference once implementation lands.
+
+**Status**: pre-implementation design contract. Acceptance requires Codex and Gemini plan-reviews with no High findings. Replaces any prior `PLAN-skill-pack-composition.md` reference.
+
+## Purpose
+
+Decide the long-term pack abstraction so that:
+
+1. Rule-pack and skill-pack stop being parallel concepts with parallel code paths (Axis 1 below: passive vs active).
+2. Future content types (safety bundles, behavior bundles) fit the same shape without schema carve-outs.
+3. Hard-enforcement noise is a first-class manifest property, not an emergent cost.
+4. Paper / proposal / submodule repos can leave `ac` and use `aa` via private-source packs (Axis 2: public vs private).
+5. The `ac` ↔ `aa` divergence stops being a mirror maintenance problem and becomes a natural source-axis asymmetry the platform handles natively.
+6. The release-runbook contract (consumer migration, STRICT parity, bootstrap self-update, local end-to-end install smoke) stays enforceable at every step of the v0.4.0 → v1.0.0 trajectory.
+
+## Non-goals
+
+- Shipping v0.4.0 code as part of this doc.
+- Changing `agent-style`'s 21 rules or `RULES.md` content.
+- Picking a product name between `agent-behave` and `agent-enforce` (both fine; product naming is separate from taxonomy).
+- Setting an EOL date for `ac`. `ac` shrinks organically; no forced calendar.
+- Public marketing / README rewrites; those follow the architecture lock-in.
+
+## Context: the four questions
+
+The design came out of a single session walking four architectural questions on `ac` / `aa` / `as`:
+
+**Q1 — Real `ac` ↔ `aa` divergence today**: three ac-only shared skills (`bibref-filler`, `dual-pass-workflow`, `figure-prompt-builder`), `reference-skills/*`, USC / Overleaf AGENTS.md sections, aa-only rule-pack composer, aa-only PyPI + npm packaging. Hooks (`guard.py`, `session_bootstrap.py`) and generator (`generate_agent_configs.py`) are STRICT byte-identical. The real blocker for migration: `aa` cannot load private content.
+
+**Q2 — Migration lever**: one change unlocks ac→aa for paper / proposal / submodule repos: `aa` gains a unified `packs:` config surface with SSH / gh CLI token / `GITHUB_TOKEN` auth. Paper repos become "aa + one private pack" and stop depending on `ac`'s private skills directory.
+
+**Q3 — `aa` final shape**: composition platform. Packs (public or private) declare content; `aa` composes into `AGENTS.md` + `.claude/` + `~/.claude/hooks/` + `~/.claude/settings.json`. `ac` shrinks to "content that does not belong in any private git repo either" (personal planning, scratch, vision docs).
+
+**Q4 — Is safety a third pillar?**: no. Safety content (text instructions, hook code, permission patterns) reduces to a passive-rule pack that ships optional hook and permission items. The real axis is passive vs active; enforcement strength is a property of active items only.
+
+## The two axes
+
+**Axis 1 — behavior**:
+
+```
+passive   →  text absorbed into the agent's context (inline into AGENTS.md)
+active    →  explicit invocation on a trigger (agent-invoked OR runtime-invoked)
+             - "skill" = active, trigger = agent-detect
+             - "hook" = active, trigger = PreToolUse / SessionStart / etc.
+             - "permission" = active, trigger = PreToolUse (declarative form)
+```
+
+Enforcement strength (`warn / ask / deny / allow / modify`) is a property of each active item. Passive content has no enforcement dial; it is soft by construction.
+
+**Axis 2 — source**:
+
+```
+public    →  fetched from public repos on GitHub (or other open source);
+             no auth required (today: aa shared skills, agent-style rule-pack)
+private   →  requires auth chain: ssh key → gh CLI token → GITHUB_TOKEN env
+             (today: blocked; this is the ac→aa migration gap)
+```
+
+**2x2 grid of real packs**:
+
+```
+                  passive                            active
+public       agent-style (rule-pack)             implement-review, my-router,
+             agent-style-field (as v0.4)          ci-mockup-figure (aa-shipped)
+             agent-behave text (future)          agent-behave hooks (future)
+
+private      lab-writing rules                   nsf-helper skill
+             USC-Overleaf rules                  bibref-filler / dual-pass /
+                                                 figure-prompt-builder (migrated
+                                                 out of ac to per-user private repo)
+```
+
+Every cell uses the same manifest shape. Axis 1 is expressed via `passive:` / `active:` field presence. Axis 2 is expressed via `source:` URL + auth chain. The composer does not branch on either axis; dispatch is by field presence.
+
+Six candidate third-axis dimensions were considered and rejected through two plan-review rounds; see "Open questions / Axis completeness" at the end of this doc for the rejection rationale for each.
+
+## The unified manifest
+
+A pack is a set of passive slots plus a list of active items. No `type:` field; composer dispatch is by `kind:` on each active entry (four kinds below). Every active entry declares which agent hosts it targets.
+
+```yaml
+# bootstrap/packs.yaml (keeps rule-packs.yaml as a loader alias through v0.5.x)
+version: 2
+packs:
+  - name: agent-style
+    description: Writing rules (21 from Strunk/White, Orwell, Pinker, Gopen-Swan + field observation).
+    source:
+      ref: v0.3.2
+      repo: https://github.com/yzhao062/agent-style
+    update_policy: locked                      # default for active items; see Source resolution below
+    passive:
+      - files:
+          - from: docs/rule-pack.md
+            to: AGENTS.md
+    active:
+      - kind: hook
+        hosts: [claude-code]
+        files:
+          - from: scripts/banned-word-hook.py
+            to: ~/.claude/hooks/agent-style/01-banned-word.py
+        trigger: PreToolUse
+        scope: [Write, Edit, MultiEdit]
+        file-filter: [.md, .tex, .rst, .txt]
+        decision: ask                          # demoted from deny; see Noise audit
+        trigger-rate: high
+        false-positive-risk: high
+        impact-if-allowed: low
+        rationale: Banned AI-tell words; false positives on meta-discussion are common.
+
+  - name: agent-behave
+    description: Behavior rules (git safety, shell guards, permission policies).
+    source:
+      ref: v0.1.0
+      repo: https://github.com/yzhao062/agent-behave
+    update_policy: locked
+    passive:
+      - files:
+          - from: docs/behave-rules.md
+            to: AGENTS.md
+    active:
+      - kind: hook
+        hosts: [claude-code]
+        files:
+          - from: scripts/git-destructive-guard.py
+            to: ~/.claude/hooks/agent-behave/01-git-guard.py
+        trigger: PreToolUse
+        scope: [Bash]
+        match: [git push, git commit, git merge, git rebase]
+        decision: ask
+        trigger-rate: medium
+        false-positive-risk: low
+        impact-if-allowed: high
+      - kind: hook
+        hosts: [claude-code]
+        required: false                        # skip with warn on non-claude hosts; pack still installs
+        files:
+          - from: scripts/compound-cd-guard.py
+            to: ~/.claude/hooks/agent-behave/02-compound-cd.py
+        trigger: PreToolUse
+        scope: [Bash]
+        match: [cd * && *, cd *; *]
+        decision: ask                          # demoted from deny
+        trigger-rate: high
+        false-positive-risk: high
+        impact-if-allowed: medium
+      - kind: permission
+        hosts: [claude-code]
+        files:
+          - from: settings/permissions.json
+            to: ~/.claude/settings.json
+        merge: permissions
+
+  - name: implement-review
+    description: Review-loop workflow skill.
+    passive: []
+    active:
+      - kind: skill
+        hosts: [claude-code]
+        files:
+          - from: skills/implement-review/       # directory; deep-copied
+            to: .claude/skills/implement-review/
+        trigger: agent-detect
+        scope: [on user request, on staged diff]
+        decision: execute                         # not a gate
+        trigger-rate: low
+```
+
+**Four active kinds** (explicit `kind:` replaces target-path inference):
+
+- `kind: hook` → copy files to `~/.claude/hooks/<pack>/<NN>-<name>`, where `<NN>` is the manifest-order two-digit prefix (forces deterministic execution order against Claude Code's filename-alphabetical hook runner). Wire up in `~/.claude/settings.json` hooks block.
+- `kind: skill` → deep-copy the source directory into `.claude/skills/<name>/`, preserving `references/`, `scripts/`, `assets/`, etc. Auto-emit `.claude/commands/<name>.md` pointer unless the pack ships one explicitly via a separate `kind: command` entry. Starting v0.4.0, all `aa`-shipped skills (`implement-review`, `my-router`, `ci-mockup-figure`, `readme-polish`) become pack-emitted, removing the 4 static pointers from the STRICT parity list (see STRICT trajectory table).
+- `kind: permission` → merge declarative JSON into `~/.claude/settings.json` permissions array (add-only during install; ownership tracked in `.agent-config/pack-state.json` and `~/.claude/pack-state.json`, not inline since JSON disallows comments).
+- `kind: command` → standalone `.claude/commands/<name>.md` files not tied to a skill. v0.4.0 parser accepts `kind: command` entries but treats them as **no-op + warn** (forward-compatibility slot). Full install support lands when a shipped pack first uses it; decision deadline before that pack merges.
+
+**Per-entry required field**:
+
+Every active entry carries `required: true | false` (default: `true`). On composition:
+
+- If the current host appears in the entry's `hosts:` list, the entry installs normally.
+- If the current host is **not** in `hosts:` and `required: true`: composition fails with a `host-mismatch: pack '<name>' requires host X, current host is Y` error. The pack does not partially install.
+- If the current host is **not** in `hosts:` and `required: false`: the entry is skipped with an info-level log line (`pack '<name>': skipping active entry for host X on current host Y`). The rest of the pack (passive + other compatible active entries) installs normally.
+
+The default `required: true` protects pack authors who designed their pack around a specific host; pack authors mark optional cross-host entries with `required: false` explicitly. At v0.4.0 the only supported host is `claude-code`, so entries with `hosts: [claude-code]` install and entries with any other host either fail (if `required: true`) or skip (if `required: false`). This future-proofs the schema without committing v0.4.0 to multi-host implementation.
+
+**Pack-level fields**:
+- `hosts:` can be declared at the pack level as a default; each `active:` entry may override. Entry-level value wins on conflict.
+- `update_policy:` (`locked` | `auto`) governs whether a mutable ref may refresh content across bootstraps. Default: `locked` for active items, `auto` permitted for passive items if the pack declares it. See "Source resolution and active-code trust" below.
+
+**Dispatch order**: passive entries inline-concatenate into `<consumer>/AGENTS.md` with begin/end markers, byte-stable under re-compose, deterministic sort by pack name. Active entries dispatch by `kind:` per the four rules above. All writes produce entries in the pack state files (see "Pack lifecycle operations").
+
+**Public vs private source (Axis 2 in practice)**: `source:` is the only field that distinguishes public from private. No `visibility:` flag, no `auth:` branch in the composer's top-level dispatch. **Starting in v0.5.0**, the composer attempts the auth chain for every source URL; public URLs succeed on anonymous, private URLs succeed on an authenticated method. Manifest shape is identical across the 2x2 grid. In v0.4.0, private source entries are rejected at parse time with a "v0.5.0 feature" error; the v0.4.0 composer only fetches public anonymous URLs.
+
+**Source resolution and active-code trust**: public / private controls how a pack is fetched, not whether the fetched content is trusted. Every source resolves to an immutable commit id before composition. The composer writes `.agent-config/pack-lock.json` recording, per pack and per file: the declared source URL, the declared ref (tag or branch), the resolved commit id, and the sha256 of every passive and active input. Passive entries may auto-refresh from a mutable ref only when the pack declares `update_policy: auto` (or the consumer overrides in `agent-config.yaml`). Active entries default to `update_policy: locked` and fail closed if the resolved commit id or any active-file hash changes outside an explicit pack-update command. The first install and every explicit update print the active files that will be copied into `~/.claude/hooks/`, `.claude/skills/`, `.claude/commands/`, or `~/.claude/settings.json`. A public tag, private branch, SSH auth, or `GITHUB_TOKEN` proves only where the content came from; the lock file proves what content is currently installed.
+
+**`update_policy: auto` churn semantics**: a passive entry with `auto` policy refreshes content when the upstream commit id or file sha256 changes. The composer rewrites `pack-lock.json` **only when the resolved hash actually changed**. Repeated bootstraps against an unchanged upstream leave `pack-lock.json` byte-identical (no git-diff churn). Active entries never use `auto`; attempting to set it on an active entry is a manifest error.
+
+**`pack-lock.json` schema** (expanded example covering mixed pack types):
+
+```json
+{
+  "version": 1,
+  "packs": {
+    "agent-style": {
+      "source_url": "https://github.com/yzhao062/agent-style",
+      "requested_ref": "v0.3.2",
+      "resolved_commit": "39cdc67a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e",
+      "pack_update_policy": "locked",
+      "files": [
+        {
+          "role": "passive",
+          "host": null,
+          "source_path": "docs/rule-pack.md",
+          "input_sha256": "f175e39b...",
+          "output_paths": ["AGENTS.md"],
+          "output_scope": "project-local",
+          "effective_update_policy": "locked"
+        }
+      ]
+    },
+    "agent-behave": {
+      "source_url": "https://github.com/yzhao062/agent-behave",
+      "requested_ref": "v0.1.0",
+      "resolved_commit": "ab12cd34...",
+      "pack_update_policy": "locked",
+      "files": [
+        {
+          "role": "active-hook",
+          "host": "claude-code",
+          "source_path": "scripts/git-destructive-guard.py",
+          "input_sha256": "9a8b7c6d...",
+          "output_paths": ["~/.claude/hooks/agent-behave/01-git-guard.py"],
+          "output_scope": "user-level",
+          "effective_update_policy": "locked"
+        },
+        {
+          "role": "active-permission",
+          "host": "claude-code",
+          "source_path": "settings/permissions.json",
+          "input_sha256": "fe09dc...",
+          "output_paths": ["~/.claude/settings.json"],
+          "output_scope": "user-level",
+          "effective_update_policy": "locked"
+        }
+      ]
+    },
+    "implement-review": {
+      "source_url": "bundled:aa",
+      "requested_ref": "bundled",
+      "resolved_commit": "bundled",
+      "pack_update_policy": "locked",
+      "files": [
+        {
+          "role": "active-skill",
+          "host": "claude-code",
+          "source_path": "skills/implement-review/",
+          "input_sha256": "dir-sha256:1122aa...",
+          "output_paths": [".claude/skills/implement-review/"],
+          "output_scope": "project-local",
+          "effective_update_policy": "locked"
+        },
+        {
+          "role": "generated-command",
+          "host": "claude-code",
+          "source_path": null,
+          "input_sha256": null,
+          "output_paths": [".claude/commands/implement-review.md"],
+          "output_scope": "project-local",
+          "effective_update_policy": "locked",
+          "generated_from": "active-skill:implement-review",
+          "source_input_sha256": "dir-sha256:1122aa...",
+          "template_sha256": "aa-composer-command-v1:7f8e9d...",
+          "output_sha256": "b4c3d2e1..."
+        }
+      ]
+    }
+  }
+}
+```
+
+Fields per file entry:
+- `role`: one of `passive`, `active-hook`, `active-skill`, `active-permission`, `generated-command`. Distinguishes fetched-then-installed files from composer-generated outputs (like skill command pointers).
+- `host`: the host this file targets (e.g., `claude-code`); `null` for passive content.
+- `source_path`: path inside the pack source tree; `null` for generated outputs.
+- `input_sha256`: hash of the fetched source file; for directory copies (skills), the prefix `dir-sha256:` denotes a merkle-style hash over the directory tree. `null` for generated outputs.
+- `output_paths`: list of on-disk paths written (multi-target allowed).
+- `output_scope`: `project-local` or `user-level`. Drives which state file (`project` or `user`) owns the entry.
+- `effective_update_policy`: per-entry resolution of `pack_update_policy` plus any overrides. Active entries with `auto` are rejected at parse time.
+- `generated_from` (generated-command only): references the active-skill entry that produced this output.
+- `source_input_sha256` (generated-command only): copy of the referenced active entry's `input_sha256` at the time the output was generated. Drives re-generation when the source entry's source changes.
+- `template_sha256` (generated-command only): identifier + hash of the composer's internal generation template (versioned as `aa-composer-<template-name>-<version>`). Drives re-generation when the composer's pointer template itself changes across aa releases.
+- `output_sha256` (generated-command only): hash of the rendered on-disk output. Drives drift detection against the current file.
+
+The composer reads this file on every bootstrap; mismatch between recorded `input_sha256` and current upstream content, or between recorded `resolved_commit` and current source tip, triggers either the `locked` fail-closed path or the `auto` refresh path depending on `effective_update_policy`. For `generated-command` entries, re-generation fires when any of `source_input_sha256`, `template_sha256`, or `output_sha256` no longer matches reality; unchanged inputs produce byte-identical outputs with no re-write.
+
+**Consumer opt-in syntax**:
+
+```yaml
+# agent-config.yaml at consumer project root
+packs:                          # new unified field (v0.4.0+)
+  - agent-style                 # short form: name only; look up in manifest
+
+  # ----- v0.5.0+ only: private sources -----
+  - name: my-lab-writing
+    source:
+      url: ssh://git@github.com/yzhao062/private-writing
+      ref: main
+      path: rule-pack.md
+      auth: ssh                 # disables anonymous fallback; required for private
+  - name: nsf-helper
+    source:
+      url: https://api.github.com/repos/yzhao062/nsf-helper/tarball/v0.2.0
+      auth: GITHUB_TOKEN
+
+rule_packs:                     # legacy alias; accepted through v0.6.x,
+  - agent-style                 # hard-fail at v1.0.0; warning on use from v0.4.0
+```
+
+**Auth chain** (v0.5.0+): tried in order per source URL: SSH agent → `gh` CLI token → `GITHUB_TOKEN` env → anonymous. First success wins. Explicit `auth: <method>` on a source disables the fallback chain (prevents a silent anonymous fallback from succeeding against a public repo of the same path). v0.4.0 does not run the auth chain; private entries are rejected at parse time.
+
+## Pack lifecycle operations
+
+Pack lifecycle state is **split by ownership boundary**. Two different files record two different classes of output; a third file records source provenance.
+
+- **`.agent-config/pack-lock.json`** (project-local). Records the selected packs for this consumer repo, the declared source URL and ref, the resolved commit id, and sha256 values for every input file used to compose this repo. Schema above. Gitignored automatically.
+- **`.agent-config/pack-state.json`** (project-local). Records project-local outputs: `AGENTS.md` begin/end marker blocks, `.claude/skills/<name>/` directories, `.claude/commands/<name>.md` pointers, and any files written under the consumer repo. One entry per output path with pack attribution and sha256.
+- **`~/.claude/pack-state.json`** (user-level). Records shared user-level outputs: files under `~/.claude/hooks/<pack>/` and entries merged into `~/.claude/settings.json`. Each output is keyed by `(kind, absolute_target_path)`. The entry carries an `owners:` list whose items are full records of the form `{repo_id, pack, requested_ref, resolved_commit, expected_sha256_or_json}`. A second repo may **join** an existing user-level entry only when the target path **and** the expected content match byte-for-byte. A repo's uninstall removes its owner record from the list; the physical hook file or settings entry is deleted only when the `owners:` list becomes empty **and** the current on-disk content still matches the recorded value.
+
+**Same-path / different-content conflict** (Round 3 decision): when a second repo tries to install a user-level output at the same target path with a **different** expected content (e.g., repo A has `agent-behave@v0.1.0` and repo B requests `agent-behave@v0.1.1`, both targeting `~/.claude/hooks/agent-behave/01-git-guard.py`), composition fails closed with `user-level-output-conflict`. The error surfaces the existing owners (repo ids, resolved commits) and the requested ref; no file is overwritten, no `owners:` merge is attempted, the installing repo receives no partial installation for that entry.
+
+**Side-by-side version opt-in syntax** (Round 4 clarification): packs whose authors want multiple versions to coexist declare **versioned target paths** using two template variables that the composer substitutes at install time:
+
+- `{pack}` → the pack name (from manifest `name:`).
+- `{resolved_commit}` → the full resolved commit id (40-char hex) from `pack-lock.json`.
+
+Example manifest fragment for a pack that opts into side-by-side:
+
+```yaml
+- name: agent-behave
+  active:
+    - kind: hook
+      hosts: [claude-code]
+      files:
+        - from: scripts/git-destructive-guard.py
+          to: ~/.claude/hooks/{pack}/{resolved_commit}/01-git-guard.py
+      ...
+```
+
+Composed path with `resolved_commit = ab12cd34...`: `~/.claude/hooks/agent-behave/ab12cd34.../01-git-guard.py`. Repo A at v0.1.0 and repo B at v0.1.1 install to distinct directories, each with its own `owners:` list entry; neither conflicts with the other. The composer rejects unknown template variables at parse time.
+
+Named slot support (arbitrary consumer-declared slot names with pack-documented conflict policy) is **deferred to a later release**. v0.4.0 ships only the two template variables above plus the default fail-closed singleton behavior for any path without templating. The default singleton hook / settings target never merges owners across different content. The composer refuses to reason about user intent on its own.
+
+**Atomicity contract** (recoverable staged transaction, not atomic directory swap). Cross-platform atomic directory replacement is not a reliable primitive: POSIX `rename(2)` atomicity on directories requires the target to be empty; Windows `MoveFileEx(MOVEFILE_REPLACE_EXISTING)` does not work on non-empty directories; antivirus, Python, or Claude Code may hold file handles that block rename. The contract below is "recoverable staged transaction" — the composer can always reconcile a partial state on the next run, and per-file atomic rename is the only primitive relied on.
+
+All lifecycle writes follow this pattern:
+
+- Acquire a **per-user lock** (`~/.claude/.pack-lock.lock` via `flock` on POSIX, `msvcrt.locking` on Windows) before touching `~/.claude/pack-state.json`, `~/.claude/hooks/`, or `~/.claude/settings.json`.
+- Acquire a **per-repo lock** before touching `.agent-config/pack-lock.json` or `.agent-config/pack-state.json`.
+- For every transaction (install, update, uninstall, re-stamp), write a `transaction.json` under a transaction-scoped staging directory: `~/.claude/hooks/<pack>.staging-<txn_id>/` for user-level hook-layout changes, `.agent-config/<txn_id>.staging/` for project-local. `transaction.json` records intent: the set of pending file writes, the set of state-file entries that must update, pre-state hashes (for rollback verification), and the target commit state.
+- Stage every output to a sibling temporary path, `fsync`, then **atomic-rename per file** (`os.replace` on Python; maps to POSIX `rename(2)` for regular files and Windows `MoveFileEx(MOVEFILE_REPLACE_EXISTING)`).
+- After all per-file renames succeed, update `pack-state.json` (project or user, per scope) using the same write-temp-then-rename pattern.
+- On completion, delete the transaction staging dir and `transaction.json`.
+- **Startup reconciliation**: on every bootstrap, the composer scans `~/.claude/hooks/*.staging-*` and `.agent-config/*.staging/` for orphan transaction dirs. Reconciliation acquires the same per-user and per-repo locks described above **before** scanning or writing; a transaction whose owning process is still live (its PID is holding the relevant lock) is skipped and not treated as orphaned. For each true orphan, the composer reads `transaction.json`, compares on-disk content against pre-state hashes, and either rolls back (reverting any partially-applied files whose hashes still match the pre-state) or rolls forward (completing the transaction if all new files are already in place and `pack-state.json` is the only missing update). Orphans with drift (on-disk content matches neither pre-state nor expected new state) are left in place and surfaced as a drift report; the user resolves manually. Reconciliation runs before the main compose step, so every bootstrap starts from a reconciled state.
+- Hook filename re-stamping (consumer `hook_order:` changes) uses the same contract: new filenames stage in the transaction dir, `pack-state.json` updates name-by-name, then atomic-rename each file into its new prefixed path, then delete the old prefixed files one by one. Mid-operation crash is recovered on next startup per the reconciliation pass above.
+- On write failure before commit, roll back files whose hashes still match the transaction's pre-state; leave files with unexpected content alone and surface a drift report.
+
+**Lock contention and cross-process safety**: two Claude Code sessions bootstrapping in two different consumer repos contend only on the per-user lock (which serializes access to `~/.claude/*`). The per-repo lock is project-scoped and uncontended across sessions. Lock timeout is 30 seconds; timeout surfaces a clear error and no state is modified.
+
+**Three explicit operations**:
+
+- **install or update**: fetch source, resolve to commit id, validate `update_policy`, stage every project-local and user-level output, update both state files in one transaction, then commit file copies and settings merges. If an update sees changed commit or sha256 on an `update_policy: locked` active entry, fail closed and surface the delta for explicit approval. Hook filename re-stamping is a remove+add transaction that updates both state files before old names are deleted.
+- **uninstall**: read project-local and user-level state, remove this repo's ownership record from every user-level entry, delete project-local files owned only by this repo, and delete user-level hooks / settings entries only when no other repo still owns them **and** the on-disk content still matches the recorded hash / JSON value. Drifted files (on-disk content no longer matches recorded state) are skipped with a clear report, never blindly overwritten or deleted.
+- **rollback to ac** (or to a different upstream): run uninstall for every aa pack currently recorded for this repo, then re-bootstrap from the new upstream. `docs/ac-to-aa-migration.md` Path 1 (`change upstream + rerun`) invokes this uninstall path internally before re-composing. **Path 2 (`nuke and reinstall`) must run the same uninstall first when active packs are present** — deleting `.agent-config/` alone is cache cleanup only, not active-pack cleanup, and leaving user-level hooks / settings behind is the critical stale-state path Round 2 plan-review flagged.
+
+These operations exist from the first release that ships or installs packs with active components. Since v0.4.0 already materializes the four shipped skills (`implement-review`, `my-router`, `ci-mockup-figure`, `readme-polish`) via `kind: skill` entries, all three operations and both state files are first-class v0.4.0 deliverables.
+
+**CLI contract for `uninstall --all`** (called by `docs/ac-to-aa-migration.md` Path 2 pre-step):
+
+The canonical invocation is `anywhere-agents uninstall --all`. Both the PyPI distribution (`pipx run anywhere-agents uninstall --all` or the installed `anywhere-agents` entry point) and the npm distribution (`npx anywhere-agents uninstall --all`) expose this exact command with identical semantics.
+
+Exit code contract:
+
+| Condition | Exit | Behavior |
+|---|---|---|
+| `.agent-config/pack-state.json` absent OR present-but-empty | 0 | no-op; print "no packs to uninstall"; safe to re-run |
+| All packs uninstall cleanly; state files consistent after | 0 | state files updated; orphan staging cleaned; print per-pack summary |
+| Lock timeout (per-user or per-repo lock held) | 10 | print lock holder PID if available; no state change |
+| Drift detected (on-disk content neither pre-state nor expected) | 20 | print drift report with affected paths; abort; leave files in place; state files unchanged |
+| Malformed state file (parse error) | 30 | print parse error; refuse to proceed; suggest manual inspection |
+| Partial cleanup (some packs failed mid-operation) | 40 | roll back applied changes where safe; surface still-dirty packs; subsequent run resumes |
+
+Idempotence: exit 0 on consecutive invocations when there is nothing left to clean. Path 2 in the migration runbook must check `exit == 0` before proceeding to `rm -rf .agent-config/`; any nonzero exit aborts Path 2 with the `anywhere-agents` output as the explanation.
+
+The `ONBOARDING.md` release-runbook cheat-sheet gains a post-release verification covering: install smoke, uninstall-is-idempotent smoke, reorder smoke (consumer `hook_order:` override regenerates prefixes without breaking state), rollback smoke, and **two-repo shared-user-hook smoke** (two scratch consumer repos install the same pack, repo A uninstalls, assert repo B's hooks survive). These run on Windows and Spark Ubuntu against every release that changes active-entry dispatch, parallel to the existing Claude-Code-driven end-to-end smoke.
+
+## Release sequence (detailed)
+
+### aa v0.4.0 — Unified manifest (BC-preserving, public-source only)
+
+**Scope decision (Option A after plan-review Round 1)**: v0.4.0 is schema unification on **public** sources only. The auth chain and private-source support move entirely to v0.5.0. Avoids a half-working state where v0.4.0 would parse private config without fetching it.
+
+- Rename `bootstrap/rule-packs.yaml` to `bootstrap/packs.yaml`; keep the old filename as a loader alias (both paths read, deduped, unified into internal state).
+- Add `active:` field support in the manifest schema with four kinds (`hook`, `skill`, `permission`, `command`). Accept both old (passive-only, public) and new shapes.
+- Introduce `kind:`, `hosts:`, `required:`, `files: [{from, to}]` as required active-entry fields; v0.4.0 supports `hosts: [claude-code]` only.
+- Non-claude-code hosts: `required: true` entries fail composition with a `host-mismatch` error; `required: false` entries skip with an info log. Default is `required: true`.
+- `kind: command` entries are parsed and warned (`no-op at v0.4.0; full support in a later release`) rather than errored — forward-compatibility slot.
+- `agent-config.yaml` accepts `rule_packs:` (legacy, passive-only) and `packs:` (new, both slots, public source only). `rule_packs: []` opt-out continues to work verbatim.
+- Existing `agent-style` pack: remanifest with passive slot only. Its current banned-word enforcement remains inside `aa`'s built-in `guard.py` for this release (extraction is a v1.0 step).
+- **Pack-emitted command pointers**: the four `aa`-shipped skills (`implement-review`, `my-router`, `ci-mockup-figure`, `readme-polish`) remanifest as `kind: skill` entries that auto-emit their `.claude/commands/<name>.md` pointer on install. The 4 static pointer files **leave the STRICT parity list** in v0.4.0 because they are now outputs of the composer, not aa-core source files. `scripts/check-parity.sh` and `docs/anywhere-agents.md` "what gets copied" table update in the same release. See STRICT trajectory table below.
+- Write `.agent-config/pack-lock.json` and `.agent-config/pack-state.json` on install; write `~/.claude/pack-state.json` for every active entry touching user-level paths. `update_policy: locked` enforced from day one.
+- All lifecycle operations (install/update, uninstall, rollback) are v0.4.0 deliverables, with atomic-transaction contract per "Pack lifecycle operations" above.
+- Ship `scripts/compose_packs.py` alongside `compose_rule_packs.py`; old script delegates. `compose_rule_packs.py` stays in STRICT parity list until the delegation is final.
+- Private-source config entries are rejected at parse time with a "v0.5.0 feature" error (not silently ignored).
+- Update `ONBOARDING.md` "Release cut" cheat-sheet: add `scripts/compose_packs.py` to the pre-tag real-agent-smoke coverage; add pack-lock integrity smoke, two-repo shared-user-hook smoke, reorder smoke, rollback smoke.
+
+**Consumer-facing change**: none. Fresh v0.4.0 install on an unmodified consumer produces byte-identical `AGENTS.md` to v0.3.2; command pointers that used to be static copies now appear as composer outputs with the same content.
+
+**Bootstrap compat**: post-2026-04-17 caches self-update via the sparse-clone tail; pre-2026-04-17 caches need the existing `MIGRATIONS.md` 2026-04-17 entry (already in place). No new MIGRATIONS.md entry required IF `bootstrap.{sh,ps1}` and the sparse-checkout spec stay unchanged. If either changes (e.g., sparse-checkout adds a new path for the new manifest filename, `pack-lock.json` placement, or the user-level `~/.claude/pack-state.json`), add a new MIGRATIONS.md entry.
+
+**STRICT parity**: 4 shipped command pointers (`.claude/commands/{implement-review,my-router,ci-mockup-figure,readme-polish}.md`) **drop from STRICT list** as they become pack-emitted outputs. `rule-packs.yaml` stays (as alias); `packs.yaml`, `pack-lock.json`, and `pack-state.json` are aa-only content (not mirrored to ac since ac does not ship a composer). `docs/anywhere-agents.md` mirror policy table updates to reflect this reclassification.
+
+### as v0.4.0 — Slim variants (coordinated; may ship before or after aa v0.4.0)
+
+- Author `docs/rule-pack-field.md` (nine field-observed rules, RULE-A..I; hand-synced with the RULE-A..I section of `RULES.md`). Estimated size: 35-40k chars.
+- Author `docs/rule-pack-lite.md` (21 directives + banned-word list; drops BAD/GOOD examples and rationale). Estimated size: 10-15k chars.
+- Add release-time drift check (byte-identical mirror of the source section of `RULES.md`) to the `as` release runbook.
+- `aa`'s manifest gains two entries: `agent-style-field` and `agent-style-lite`, both pointing at the new `as` doc paths.
+
+**aa default selection**: still `agent-style` (full) at v0.4.0 ship. Default switch is a separate release (see below).
+
+### aa v0.4.x — Default switch
+
+- Change `DEFAULT_SELECTIONS` from `[{"name": "agent-style"}]` to `[{"name": "agent-style-field"}]`.
+- Fresh installs produce a `CLAUDE.md` under the 40k warning threshold.
+- Existing consumers with no `packs:` / `rule_packs:` override see a visible size change. Users who want the full pack pin via `packs: [agent-style]` or `rule_packs: [agent-style]`.
+
+**Consumer-facing change**: visible. CHANGELOG highlights and release notes flag this.
+
+**ac-to-aa-migration.md update**: the "Opting out of the default agent-style rule pack" section needs a parallel "Pinning the full pack" subsection for consumers who preferred the 21-rule default.
+
+### aa v0.5.0 — Private-source packs (THE private-source release)
+
+Everything private lands here in one coherent release. No half-shipped state before v0.5.0.
+
+- Activate the auth chain (SSH agent → `gh` CLI token → `GITHUB_TOKEN` env → anonymous). Auth chain tests against each private URL at compose time; fails closed on `auth: <method>` when the named method does not succeed.
+- Support direct-URL packs in `agent-config.yaml` (not just manifest-registered names).
+- Parser accepts private source entries (removes the v0.4.0 rejection).
+- Apply pack-lock integrity to private sources identically: resolve to commit id, record sha256, enforce `update_policy: locked` on active items.
+- Paper / proposal / submodule repos can now consume private packs. The `docs/ac-to-aa-migration.md` decision matrix "Paper repo → stay on ac" row collapses to "Paper repo → aa + private pack". This release is the payoff for Q2.
+
+**Consumer-facing change**: new capability only; no behavior change for existing consumers who do not declare private packs.
+
+**Bootstrap compat**: if `bootstrap.{sh,ps1}` gains auth-chain plumbing (ssh / gh / token resolution), it is a bootstrap-script change → **new MIGRATIONS.md entry required** for seed-refresh of pre-v0.5.0 bootstrap caches.
+
+**ac-to-aa-migration.md update**: the "Forward direction" section (already updated in the v0.4.0 cycle to point at `docs/pack-architecture.md`) gets its decision matrix updated; "Paper repo → aa + private pack" replaces "stay on ac".
+
+### ab (`agent-behave`) v0.1.0 — First multi-component pack
+
+- Standalone repo, PyPI-published, parallel release flow to `agent-style` (same 12-section runbook pattern).
+- First pack with all three active slot kinds (hook files, permissions, passive text).
+- Logically separate from `aa` and `as`: new release stream.
+
+**`ac` / `aa` impact**: none at this release — `aa`'s built-in `guard.py` still handles git / gh / compound-cd checks. `ab` is an opt-in addition, not a replacement.
+
+### aa v0.6.0 — Noise audit
+
+- Walk existing guards; demote `decision: deny` to `decision: ask` where the combination `false-positive-risk: high + impact-if-allowed: low|medium` holds. Trigger rate alone is not the criterion: a high-frequency, precise-match, harmful-action check may stay `deny` if false positives are rare and the impact of allowing is high (e.g., destructive git). Known demotion candidates: writing-style hook (high FP, low impact allowed), compound-cd hook (high FP, medium impact allowed).
+- `compose_packs.py` enforces a noise budget at install time using the full criterion above. Warns (or refuses with explicit override) when a combined install produces more than N `high-FP + low/medium-impact + deny` entries; users can override per pack via `decision-override: deny` in `agent-config.yaml`.
+- Per-guard escape hatch env vars: `AGENT_STYLE_HOOK=off`, `AGENT_BEHAVE_HOOK=off`, etc. The blanket `AGENT_CONFIG_GATES=off` stays as the emergency switch.
+
+**Consumer-facing change**: visible. Users who previously saw silent `deny` on compound-cd / banned-word writes will now see `ask` prompts. CHANGELOG highlights.
+
+**Budget gate scope**: after demotions, `aa`'s own defaults have no `high-FP + deny` entries left, so the budget gate mainly serves third-party packs. It still exists as the guardrail that prevents a bundled pack install from accidentally stacking several noisy `deny` hooks.
+
+**STRICT parity**: `guard.py` is STRICT byte-identical between ac and aa. Noise-audit changes land in both. `check-parity.sh` continues to enforce byte-identical until v1.0 extraction.
+
+### aa v1.0.0 — Full decoupling
+
+- `guard.py`'s git / gh / compound-cd logic extracts into `agent-behave`.
+- `aa` core keeps only banner + session-event plumbing in `guard.py` (or renames to `banner-guard.py`).
+- `DEFAULT_SELECTIONS` covers `agent-style-field` + `agent-behave` (both default-on for opinionated install; easy opt-out via `packs: []`).
+- STRICT parity list **drops** `guard.py` (since most of the content is no longer in `aa` core); `check-parity.sh` and the `ONBOARDING.md` STRICT-category list update in sync.
+- `ac`'s `scripts/guard.py` is either removed (if ac becomes pure text content) or kept as a pinned-version compatibility copy for consumers still bootstrapping from ac (paper repos not yet migrated).
+
+**Consumer-facing change**: visible. Users who relied on aa-bundled git safety need `packs: [agent-behave]` to retain it (or it is default-on and they only notice the namespacing change).
+
+**Bootstrap compat**: if `bootstrap.{sh,ps1}` changes, new MIGRATIONS.md entry. Otherwise consumer bootstrap caches self-update.
+
+## Per-release maintainer-doc impact
+
+Summary of which maintainer docs change per release:
+
+| Release | `MIGRATIONS.md` | `ONBOARDING.md` (STRICT list + runbook) | `docs/ac-to-aa-migration.md` |
+|---|---|---|---|
+| aa v0.4.0 | New entry only if `bootstrap.{sh,ps1}` or sparse-checkout spec changes | Add `compose_packs.py` to release-smoke coverage; no STRICT change | Add note that `packs:` is the new opt-in; `rule_packs:` continues to work |
+| as v0.4.0 | None (no bootstrap touch) | None | None |
+| aa v0.4.x default switch | None | None | Add "Pinning the full pack" subsection under opt-out |
+| aa v0.5.0 | **New entry required** (auth-chain plumbing in bootstrap) | Update "Claude-Code-driven end-to-end install tests" to cover private-source packs on Windows + Spark | Rewrite "Forward direction" section, replace PLAN-skill-pack-composition.md reference with pointer to this doc, collapse "Paper repo → stay on ac" matrix row |
+| ab v0.1.0 | None | None | Optional: add `agent-behave` to the examples of ab-available packs |
+| aa v0.6.0 | None unless `guard.py` hook wiring changes in bootstrap | Document per-guard escape env vars in "Mechanical Enforcement" | Update FAQ if consumer-visible prompt behavior changes |
+| aa v1.0.0 | **New entry required** if `bootstrap.{sh,ps1}` changes for default-pack set | **STRICT list changes**: drop `guard.py` (or rename entry to `banner-guard.py`). Update the mirror table in `docs/anywhere-agents.md`. | Major rewrite: decision matrix collapses further; "what ac keeps" section updates to reflect guard.py extraction |
+
+## Consumer migration surface
+
+The consumer-side migration mechanics in `docs/ac-to-aa-migration.md` must survive every release:
+
+- **Path 1 (change upstream + rerun)** stays the one-line flip (`echo 'yzhao062/anywhere-agents' > .agent-config/upstream; bash .agent-config/bootstrap.sh`). Every v0.4.0+ change preserves this contract.
+- **Path 2 (nuke and reinstall)** is a two-phase clean slate on aa v0.4.0+. If `.agent-config/pack-state.json` exists, run `anywhere-agents uninstall --all` first and require exit 0 before deleting `.agent-config/`. If the state file is absent (pre-v0.4.0 install, or passive-only install), Path 2 remains the pre-v0.4 cache cleanup (`rm -rf .agent-config AGENTS.md CLAUDE.md agents/codex.md` + re-curl). This preserves the old simple path where safe and prevents user-level hooks, settings entries, and `~/.claude/pack-state.json` owner records from being orphaned in the v0.4.0+ case.
+- **Pre-migration checks**: (a) AGENTS.md manual edits (unchanged), (b) ac-only skill dependencies (refined per release as private-pack migration absorbs them), (c) four-aa-skills-enough (superseded by private-pack check post-v0.5.0), (d) pre-push smoke (unchanged).
+- **Verification checklist**: `cat .agent-config/upstream`, `grep -c 'rule-pack:agent-style:begin' AGENTS.md`, `ls .agent-config/repo/skills/` — checklist content updates per release to match current shipped set. The `rule-pack:agent-style:begin` marker persists through v1.0 (switches to `rule-pack:agent-style-field:begin` at the v0.4.x default switch; consumers pinning the full pack see the original marker).
+- **Rollback**: one-line upstream flip back to `ac`. Always free.
+- **Submodules**: bootstrap does not recursively walk submodules. Each submodule has its own `.agent-config/upstream`; migration is per-submodule. Private skill-packs work per-submodule identically to the outer repo (post-v0.5.0). For co-authored paper submodules, the "stay on ac" default stands until the co-PI explicitly agrees to the switch.
+- **Opt-out**: `rule_packs: []` continues through v0.6.x; `packs: []` is the new primary syntax from v0.4.0. Both are equivalent. The `AGENT_CONFIG_RULE_PACKS` env var is renamed to `AGENT_CONFIG_PACKS` at v0.4.0 and gains a `-packname` subtract syntax (see Decisions section below); v1.0 hard-fail on legacy `rule_packs:` takes priority over any env override.
+
+## STRICT parity trajectory
+
+Snapshot of the STRICT list and how it evolves:
+
+| File | v0.3.x | v0.4.0 | v0.5.0 | v0.6.0 | v1.0.0 |
+|---|---|---|---|---|---|
+| `scripts/guard.py` | STRICT | STRICT | STRICT | STRICT (demotions land in both) | **DROPPED** (extracted to ab) |
+| `scripts/session_bootstrap.py` | STRICT | STRICT | STRICT | STRICT | STRICT |
+| `scripts/generate_agent_configs.py` | STRICT | STRICT | STRICT | STRICT | STRICT |
+| `scripts/compose_rule_packs.py` | — | STRICT (mirrored during delegation) | may drop once `compose_packs.py` is sole entry | dropped | dropped |
+| `scripts/compose_packs.py` | — | aa-only (not mirrored) | aa-only | aa-only | aa-only |
+| `bootstrap/rule-packs.yaml` | BY-DESIGN | BY-DESIGN (alias) | BY-DESIGN | deprecated | dropped (if alias removed) |
+| `bootstrap/packs.yaml` | — | aa-only | aa-only | aa-only | aa-only |
+| `.claude/settings.json` | STRICT | STRICT | STRICT | STRICT | may simplify if guard.py wiring moves |
+| `.githooks/pre-push`, workflows | STRICT | STRICT | STRICT | STRICT | STRICT |
+| 4 shipped `.claude/commands/*.md` pointers | STRICT | **DROPPED** (pack-emitted via `kind: skill`) | dropped | dropped | dropped |
+| `skills/{implement-review, ci-mockup-figure, readme-polish}` | STRICT | STRICT | STRICT | STRICT | STRICT |
+
+`check-parity.sh` updates in lockstep with each row change. The script's `STRICT=()` array lives in `scripts/check-parity.sh`; the edit is a single-line per dropped / added entry.
+
+## Regression and failure analysis
+
+**What could break**:
+
+1. BC break on `rule-packs.yaml` loader if the schema change is not backward compatible. Mitigation: old schema stays valid through v0.5.x; warning from v0.4.0.
+2. `AGENTS.md` byte drift if pack ordering changes. Mitigation: deterministic sort order by pack name; begin/end markers unchanged.
+3. Hook namespace collision (two packs shipping hooks targeting the same file path). Mitigation: mandatory pack-name prefix in hook target path (`~/.claude/hooks/<pack>/<file>`).
+4. `settings.json` merge: multiple packs adding the same permission pattern, or stale pack-owned entries after an uninstall. Mitigation: dedupe on exact JSON-value match during install; ownership tracked in `~/.claude/pack-state.json` (user-level) with `owners:` sets, not inline since `settings.json` is strict JSON and disallows comments. Uninstall removes this repo's id from `owners:` and only deletes the on-disk entry when `owners:` becomes empty and current JSON still matches the recorded value.
+5. Active-hook execution order matters (first PreToolUse hook that denies wins), and Claude Code's hook runner dispatches in filename-alphabetical order, not in manifest declaration order. Mitigation: the composer prefixes hook target filenames with manifest-order two-digit indices (`01-foo.py`, `02-bar.py`). Consumer may override ordering via `hook_order: [pack-a, pack-b]` in `agent-config.yaml`; the composer re-stamps prefixes through the recoverable staged transaction in "Pack lifecycle operations" (transaction-scoped staging dir, `transaction.json`, state write by temp-file rename, then per-file `os.replace` for hook files). Mid-operation crashes are reconciled on next startup; the plan does not rely on directory-level atomic swap.
+6. Private-source auth chain silently falls back to anonymous and hits a public repo at the same path. Mitigation: explicit `auth: <method>` disables the fallback chain for private sources. v0.5.0 ships this as the default posture.
+7. Pre-2026-04-17 bootstrap caches do not self-update; any pre-2026-04-17 consumer missing the MIGRATIONS.md seed-refresh will not see v0.4.0+ behavior. Mitigation: detection check in `scripts/check-bootstrap-version.sh` recommended as part of v0.5.0 release runbook.
+8. ac-only skills that import ac-internal paths (e.g., `../reference-skills/`) do not work unmodified as private packs. Mitigation: migration doc covers repackaging; low effort since the skill content is the same, only the load path changes.
+9. STRICT parity gate becomes vestigial as aa-first features accumulate. Mitigation: formalize in `ONBOARDING.md` that STRICT is informational for specific files once extraction lands; the gate remains BLOCKING for files where byte-identical matters (hooks, generators, workflows until v1.0).
+10. **Active-code supply-chain drift** (unlocked active refs): a private pack on `ref: main` could install different hook code on each bootstrap with no approval record. Mitigation: `update_policy: locked` is the default for active entries; any resolved-commit or sha256 change fails closed and surfaces the delta for explicit update approval. Setting `update_policy: auto` on an active entry is a manifest error rejected at parse time.
+11. **Stale active state after rollback or pack removal**: switching upstream or removing a pack could leave pack-owned hooks in `~/.claude/hooks/`, skill directories in `.claude/skills/`, or permission entries in `~/.claude/settings.json`. Mitigation: the three lifecycle operations (install/update, uninstall, rollback) read the split state files (project-local + user-level) and undo each recorded write under the `owners:` ownership contract. Path 1 in `docs/ac-to-aa-migration.md` calls uninstall-all before re-composing from the new upstream; **Path 2 must run uninstall-all first when active packs are present**, since deleting `.agent-config/` alone loses the project-local state record and leaves user-level hooks orphaned.
+12. **Cross-repo user-level ownership collision**: two consumer repos install the same pack; one uninstalls. Without ownership tracking the second repo loses its hooks. Mitigation: `~/.claude/pack-state.json` carries an `owners:` set per user-level entry; uninstall removes only this repo's id; physical deletion happens only when `owners:` is empty and the current on-disk content still matches the recorded hash. Release runbook adds a two-repo shared-user-hook smoke test on Windows and Spark.
+13. **Lifecycle-write interruption**: composer crash mid-operation could leave partial hook files, half-written state files, or incomplete settings merges. Mitigation: every write is recorded in `transaction.json`, staged to a temp path, `fsync`ed where supported, and committed with per-file atomic rename (`os.replace`); state-file updates use the same pattern. Startup reconciliation scans orphan staging dirs under the same per-user and per-repo locks and rolls back, rolls forward, or reports drift as defined in "Pack lifecycle operations". Per-user and per-repo file locks serialize concurrent bootstraps (two Claude Code sessions in two repos cannot race each other on `~/.claude/*`).
+14. **Host-mismatch silent installs or whole-pack blocks**: before the `required:` field, unsupported hosts either block every pack touching them or silently skip their active content. Mitigation: `required: true` fails composition with a clear `host-mismatch` error; `required: false` skips the entry with an info log and installs the rest. Default is `required: true` (conservative) so pack authors annotate optional cross-host entries explicitly.
+
+**False-positive / noise risk**:
+
+1. `trigger-rate: high + decision: ask` is less blocking than today's `deny` but still visible. Users who preferred silent deny may see more prompts. Mitigation: noise audit is a separate release (v0.6.0); users pin `decision-override: deny` per-pack in `agent-config.yaml` if they want the old behavior.
+2. Composing 3+ packs each with their own hooks doubles or triples PreToolUse latency. Mitigation: composer flags at install time when combined hook count exceeds a threshold (say 5).
+3. Writing-style gate false positives on meta-discussion documents (style guides, CHANGELOGs that quote banned words). Mitigation: `ask` instead of `deny` from v0.6.0 reduces the blast radius; per-file-name whitelist in manifest (e.g., `exempt: [STYLE.md, CHANGELOG.md]`) is a possible extension.
+
+**BC policy**:
+
+- `rule_packs:` accepted with deprecation warning from v0.4.0 through v0.6.x. In **v1.0.0 the key is detected and the composer hard-fails** with an explicit migration error: prints the current value, prints the equivalent `packs:` rewrite, and does not compose any default packs until the user edits `agent-config.yaml`. This prevents the silent-break case where a `rule_packs: []` opt-out gets replaced with "no config, use v1.0 defaults" during upgrade.
+- `rule-packs.yaml` manifest file: alias through v0.6.x, same hard-fail treatment at v1.0.0 if still present without a parallel `packs.yaml`.
+- `DEFAULT_SELECTIONS` change from `agent-style` to `agent-style-field` (v0.4.x): visible; CHANGELOG + release notes highlight. Users pin back via `packs: [agent-style]`.
+- `guard.py` git / gh / compound-cd logic extraction at v1.0: default-on `agent-behave` pack preserves behavior for most consumers; opt-out via `packs: []` and manual hook install if a user wants the old aa-bundled layout.
+
+## Validation plan
+
+**Pre-code (this doc's plan-review)**: walk three case-study packs through the proposed manifest.
+
+1. **Today's `agent-style`**: passive slot (`docs/rule-pack.md` → AGENTS.md) ✓; active slot (banned-word hook) currently lives in aa core — declarable via manifest once hook is extracted ✓. Verdict: backward fit works; migration = remanifest-then-extract.
+
+2. **Hypothetical `agent-behave`**: passive (behave-rules.md) ✓; active 1 (git-guard hook) ✓; active 2 (compound-cd hook) ✓; active 3 (permissions merge) ✓. Verdict: forward fit works.
+
+3. **Private `nsf-helper` skill-pack**: source (ssh url + ssh auth) ✓; passive empty; active (SKILL.md → `.claude/skills/nsf-helper/`, trigger=agent-detect, decision=execute) ✓. Verdict: migration fit works.
+
+If any case cannot be expressed in the schema, extend the schema before implementation.
+
+**Post-code smoke tests** (run on each release):
+
+1. Fresh v0.4.0 install with no `agent-config.yaml` → `AGENTS.md` byte-identical to v0.3.2 install (including the 4 pack-emitted command pointers matching their old static content); `.agent-config/pack-lock.json` and `.agent-config/pack-state.json` present; `~/.claude/pack-state.json` records every user-level write with correct `owners:` set.
+2. Fresh v0.4.0 install with `packs: [agent-style-field]` (after default switch) → `AGENTS.md` contains only the nine-rule block, under 40k.
+3. v0.4.0 active-code trust: manually modify a pack's source on a mutable branch between two bootstrap runs with `update_policy: locked` → second bootstrap fails closed with a clear delta (no silent overwrite of installed hooks).
+4. v0.4.0 `update_policy: auto` no-churn: install a passive pack with `auto` policy, bootstrap twice with unchanged upstream → `pack-lock.json` byte-identical across runs (no git diff).
+5. v0.4.0 hook order: a manifest declaring two hooks on the same trigger installs them as `01-<a>.py` and `02-<b>.py`; consumer `hook_order: [B, A]` override re-stamps to `01-<b>.py` / `02-<a>.py` via staged transaction; kill composer mid-restamp via SIGKILL and re-run → hook directory either fully at old layout or fully at new, never mixed.
+6. v0.4.0 private source rejection: a consumer's `agent-config.yaml` entry with SSH URL returns "v0.5.0 feature" error at parse time; no partial installation, no silent skip.
+7. v0.4.0 `kind: command` forward-compat: a manifest entry with `kind: command` parses without error, emits a `no-op at v0.4.0; full support in a later release` warning, and does not write any `.claude/commands/<name>.md` file.
+8. v0.4.0 `required: false` skip: a manifest entry with `hosts: [codex], required: false` on a Claude Code install logs the skip, installs the rest of the pack normally, and records no user-level state for the skipped entry. `required: true` on the same entry returns a `host-mismatch` error.
+9. v0.4.0 uninstall idempotence: install `packs: [X]`, then remove → every file recorded in `pack-state.json` and every user-level entry with this repo in `owners:` is cleaned per the ownership contract; re-run uninstall with no state → no-op, no error.
+10. v0.4.0 two-repo shared-user-hook: scratch consumer repos A and B both install pack X (same ref) with a user-level hook; uninstall X from A → A's owner record removed from `owners:` list but hook file and settings entry remain (B still owns them); uninstall X from B → `owners:` empty, hook file and settings entry removed.
+10b. v0.4.0 same-path different-version conflict: repo A installs `agent-behave@v0.1.0`; repo B attempts to install `agent-behave@v0.1.1` with the same default target path → composition fails closed with `user-level-output-conflict`, repo A's hook untouched, repo B receives no partial install for the conflicting entry. Manifest with versioned target path (`to: ~/.claude/hooks/<pack>/<resolved_commit>/01-name.py`) installs both versions side-by-side with distinct `owners:` lists.
+10c. v0.4.0 startup reconciliation: run `install`, kill the composer process mid-transaction with SIGKILL, leave orphan `~/.claude/hooks/<pack>.staging-<txn>/` dir. Re-run bootstrap → composer detects orphan, reads `transaction.json`, rolls back (pre-state hashes match) or rolls forward (new files all in place). Consumer state ends fully consistent. A third run with no orphan is a no-op.
+10d. v0.4.0 drift detection on reconciliation: stage a transaction, manually corrupt one of the staged files before re-running. Startup reconciliation reports drift, leaves the orphan in place, does not auto-overwrite; user resolves manually.
+10e. v0.4.0 side-by-side versions: two scratch repos install the same pack at different `ref:` values with `to: ~/.claude/hooks/{pack}/{resolved_commit}/...` in the manifest → both versions install to distinct `{resolved_commit}` subdirectories; each repo's `owners:` list contains only its own record; uninstall of one repo leaves the other version intact.
+10f. v0.4.0 generated-command drift detection: install a pack with a skill; manually edit `.claude/commands/<name>.md` on disk; re-run bootstrap → composer detects `output_sha256` mismatch and re-emits the pointer (restoring byte-identical content), leaving no drift.
+10g. v0.4.0 `uninstall --all` exit-code contract: run on a project with no packs → exit 0; run twice in a row → second call exits 0 with "no packs to uninstall"; run with a held lock → exit 10; run with a corrupted state file → exit 30 without modifying state.
+11. v0.4.0 Path 2 active cleanup: install `packs: [X]` (X has active entries), run `docs/ac-to-aa-migration.md` Path 2 (uninstall-all then `rm -rf .agent-config/`) → user-level state and files cleaned; re-bootstrap starts clean.
+12. Fresh v0.5.0 install with a private-source pack (test fixture) + valid SSH → skill materialized in `.claude/skills/<name>/`, pack-lock records resolved commit; invalid SSH → clear error, no silent anonymous fallback to a public repo of the same path.
+13. Fresh v0.5.0 install in a submodule with its own `.agent-config/upstream` → private pack loads per-submodule without leaking into the outer repo.
+14. v0.5.0 rollback: `packs: [X]` installed, then flip upstream back to `ac` → uninstall-all runs before re-bootstrap, resulting in no `X`-owned hooks / skills / permissions remaining.
+15. v0.6.0: previously-denied writing-style match now surfaces `ask` prompt; user confirm → write succeeds; user deny → write rejected with no side effects.
+16. v1.0.0: fresh install + `packs: [agent-behave]` → git / gh / compound-cd guards active at same severity as today's v0.3.x aa-bundled `guard.py`. Legacy `rule_packs: []` in `agent-config.yaml` → composer hard-fails with explicit migration error, prints the `packs: []` rewrite, does not compose any default packs. `AGENT_CONFIG_PACKS=-agent-style` env var does not bypass the legacy-key hard-fail (migration error takes priority).
+
+**Release-runbook integration** (per `ONBOARDING.md` cheat-sheet):
+
+- Every release touching `bootstrap.{sh,ps1}`, `compose_packs.py`, `compose_rule_packs.py`, `bootstrap/*.yaml`, or the active-item dispatch must run the Claude-Code-driven end-to-end install smoke on Windows bash + PowerShell + Spark Ubuntu against the release candidate (existing gate).
+- `scripts/check-parity.sh` STRICT category gate stays BLOCKING for every release; the list contents update per the STRICT parity trajectory table above.
+- Pre-tag `bash scripts/pre-push-smoke.sh` continues to gate release-candidate commits.
+
+## Decisions made in plan-review
+
+Promoted from Open Questions across plan-review rounds; recorded here as fixed design decisions, not issues.
+
+**Round 1 decisions**:
+
+- **Trigger vocabulary and host coupling** (was #1): active entries declare explicit `hosts:`. v0.4.0 supports `[claude-code]` only. The trigger vocabulary is Claude Code's (`PreToolUse`, `SessionStart`, etc.) with a host-neutral `agent-detect` for skill invocation. When a second host lands, the composer translates triggers at compose time rather than leaking Claude Code naming into pack manifests. Host-mismatch handling is governed by the `required:` field on each active entry (see Round 2 below).
+- **Hook execution order** (was #2): deterministic by manifest order via composer-generated two-digit filename prefix (`~/.claude/hooks/<pack>/01-<file>`), because Claude Code dispatches hooks filename-alphabetically at runtime. Consumer may override via `hook_order: [pack-a, pack-b]` in `agent-config.yaml`; composer re-stamps prefixes as an atomic staged transaction.
+- **Permission merge and uninstall semantics** (was #3): add-only install with ownership tracked in sidecar state files (project-local and user-level, split by ownership boundary). Uninstall drops exact JSON-value matches from the permissions array, gated on `owners:` set becoming empty. Rollback (switching upstream) calls uninstall-all before re-bootstrapping.
+- **Default switch timing** (was #5): `DEFAULT_SELECTIONS → agent-style-field` lands in a v0.4.x follow-up, not at v0.4.0 ship. Keeps v0.4.0 consumer-invisible and one visible concern per release.
+- **Active-kind dispatch** (was #6): the schema uses an explicit `kind:` field (`hook | skill | permission | command`). The composer branches on `kind:`, not on inferred paths. `target:` path no longer carries hidden semantics.
+- **`guard.py` extraction timing** (was #10): stays at v1.0.0. Folding it into v0.6.0 would couple two visible consumer changes (noise demotions + deploy-pattern change) in one release; keep them separate.
+
+**Round 4 decisions** (internal-consistency and follow-on specs):
+
+- **Still-open wording cleanup**: three stale atomic-directory-swap references in the regression and migration sections (items 5, 13, and the Consumer migration surface Path 2 bullet) rewritten to match the Round 3 recoverable-staged-transaction contract. No architectural change, just internal consistency.
+- **Generated-command change detection**: `role: generated-command` entries in `pack-lock.json` record `source_input_sha256` (the referenced skill's hash at generation time), `template_sha256` (composer template version + hash), and `output_sha256` (rendered output hash). Re-generation fires when any of these no longer matches. Unchanged inputs produce byte-identical outputs with no re-write.
+- **Side-by-side version syntax**: two template variables (`{pack}`, `{resolved_commit}`) substituted into `files.to:` paths at install time. Unknown template variables rejected at parse. Named slot support deferred to a later release; v0.4.0 ships only the two template variables plus default fail-closed singleton.
+- **`anywhere-agents uninstall --all` CLI contract**: canonical command name unified across PyPI and npm distributions; six exit codes defined (0 clean / no-op, 10 lock timeout, 20 drift, 30 malformed state, 40 partial cleanup); Path 2 in migration doc requires exit 0 before proceeding.
+- **Startup reconciliation locks**: explicit requirement that reconciliation acquires the same per-user and per-repo locks before scanning / rolling back / rolling forward; transactions whose owning process is still live are skipped rather than treated as orphans. Runs before the main compose step.
+
+**Round 3 decisions**:
+
+- **User-level same-path conflict policy**: `owners:` entries are full records (`repo_id`, `pack`, `requested_ref`, `resolved_commit`, `expected_sha256_or_json`), not bare ids. Same target path with different expected content = fail closed with `user-level-output-conflict`, surface existing owners and refs, no overwrite. Side-by-side versions require explicit versioned target paths via the `{pack}` and `{resolved_commit}` template variables in the manifest (named slots deferred to a later release per Round 4).
+- **`pack-lock.json` schema completeness**: the lock file records each file entry's `role` (passive / active-hook / active-skill / active-permission / generated-command), `host`, `source_path`, `input_sha256`, `output_paths`, `output_scope` (project-local / user-level), and `effective_update_policy`. Generated outputs (skill command pointers) carry `generated_from:` attribution and `null` source-path / input-sha256. Active entries with `effective_update_policy: auto` are rejected at manifest parse time.
+- **Atomicity via recoverable staged transaction** (not atomic directory swap): per-transaction staging dir with `transaction.json`; only per-file atomic rename (`os.replace`) is relied on; startup reconciliation scans orphan staging dirs and rolls back or rolls forward based on pre-state hash match; drift leaves the orphan in place and surfaces a report. Works on Windows and POSIX without depending on directory-level atomic replace.
+- **`ac-to-aa-migration.md` Path 2 update**: Path 2 must call uninstall-all first whenever `.agent-config/pack-state.json` exists, so user-level hooks and permission entries are cleaned before `.agent-config/` is removed. The migration doc text updates in the same release that ships this plan's implementation.
+
+**Round 2 decisions**:
+
+- **Compression layering** (was #4): passive text compression (lite vs full) is expressed by manifest entries pointing at different `source.path:` values (`agent-style` vs `agent-style-field` vs `agent-style-lite`). No `variant:` field needed. Decision closed.
+- **Noise budget threshold** (was #7): v0.6.0 threshold is `> 0` — any combined install that produces at least one `false-positive-risk: high` + `impact-if-allowed: low|medium` + `decision: deny` entry from a third-party pack triggers the composer warning and requires explicit consumer `decision-override: deny` in `agent-config.yaml` to proceed. First-party packs post-v0.6.0 produce zero such entries by design, so the gate mainly serves third-party stacking.
+- **Pack-local command pointers** (was #8): command pointers move to pack manifests in v0.4.0 (not deferred to v0.5.0). `kind: skill` entries auto-emit their `.claude/commands/<name>.md` pointer; `kind: command` entries ship standalone pointers. The four aa-shipped skill pointers become pack-emitted outputs and drop from the STRICT parity list at v0.4.0. `docs/anywhere-agents.md` mirror table updates in sync.
+- **Env var semantics** (was #9): rename `AGENT_CONFIG_RULE_PACKS` → `AGENT_CONFIG_PACKS` (v0.4.0, with deprecation warning on the old name through v0.6.x, hard-fail at v1.0). Add subtract syntax: prefix `-` subtracts a pack from the resolved selection (`AGENT_CONFIG_PACKS=-agent-style` per-session opt-out without editing `agent-config.yaml`). v1.0 hard-fail on legacy `rule_packs:` in `agent-config.yaml` takes **priority over** any env var override — env vars cannot silently bypass an explicit migration error.
+- **Host-mismatch semantics** (Round 2 new): `required: true | false` per active entry, default `true`. Unsupported host + `required: true` = fail closed with explicit `host-mismatch` error; unsupported host + `required: false` = skip with info log, rest of pack installs. See the "Per-entry required field" subsection of the manifest.
+- **State split and atomicity** (Round 2 new): project-local state (`.agent-config/pack-lock.json`, `.agent-config/pack-state.json`) and user-level state (`~/.claude/pack-state.json`) are distinct; user-level entries carry an `owners:` set to prevent cross-repo deletion. All lifecycle writes are staged + atomic-rename + lock-protected; Path 2 in `docs/ac-to-aa-migration.md` must run uninstall before removing `.agent-config/`.
+- **`update_policy: auto` churn**: composer rewrites `pack-lock.json` only when the resolved commit id or file sha256 actually changed. Unchanged upstream → byte-identical lock file → no git-diff noise.
+
+## Open questions
+
+**Axis completeness** (was #0; retained here as a living check, not a decision to lock):
+
+Is the 2-axis (passive / active × public / private) model complete? Candidates considered and rejected through Round 2:
+
+- "ownership" (maintainer / team / community) → reduces to source-axis variants, not a new axis.
+- "language" (Python hook / shell hook / YAML permissions) → implementation detail captured by `files:` + `kind:`, not architectural.
+- "lifecycle" (install-time / session-time / tool-time) → captured by `trigger:` on active items, not a separate axis.
+- "scope" (repo-level vs user-level) → already handled naturally by `files.to:` paths (relative to consumer root vs absolute `~/.claude/...`); a strength of the current shape, not a new axis.
+- "trust" (integrity / provenance) → handled as a required manifest field set (`update_policy:`, `pack-lock.json` with resolved commit id and sha256), not a top-level axis.
+- "host applicability" (claude-code / codex / other) → handled by per-entry `hosts:` + `required:`, not a top-level axis.
+
+If a further axis is spotted at any later release-planning round, schema change before v1.0 is cheaper than after.
+
+**All Round 1 and Round 2 remaining open questions (#4, #7, #8, #9) are now closed and recorded in the Decisions section above.** Zero open questions remain as of the close of Round 2 plan-review.
+
+## Release sequence summary
+
+| Release | Theme | Key deliverables | Consumer-visible |
+|---|---|---|---|
+| aa v0.4.0 | Unified manifest (public-only) | `packs.yaml`, `active:` with four kinds, `hosts:` + `required:` semantics, `files: [{from, to}]`, project-local + user-level state files, atomic lifecycle ops, pack-emitted command pointers (4 aa pointers drop from STRICT list), BC aliases. Private source rejected at parse time. | None |
+| as v0.4.0 | Slim variants | `rule-pack-field.md`, `rule-pack-lite.md`, release-time drift check | None |
+| aa v0.4.x | Default switch | `DEFAULT_SELECTIONS → agent-style-field`, CHANGELOG note | Medium |
+| aa v0.5.0 | Private-source packs | SSH / gh / token auth chain, direct-URL packs, parser accepts private entries, pack-lock integrity applies to private, MIGRATIONS.md seed-refresh entry | None (new capability only) |
+| ab v0.1.0 | `agent-behave` product | First 3-slot pack | None (opt-in) |
+| aa v0.6.0 | Noise audit | Demotion criterion is `false-positive-risk` × `impact-if-allowed` (not trigger-rate alone); composer noise budget; per-guard env vars | Medium |
+| aa v1.0.0 | Full decoupling | `guard.py` extraction, STRICT list shrinks, default-on ab, **hard-fail on legacy `rule_packs:` / `rule-packs.yaml` with explicit migration error** | Medium |
+
+## References
+
+- `docs/anywhere-agents.md` — two-repo mirror policy and "what gets copied" table. Must update on STRICT-list changes (v1.0).
+- `docs/ac-to-aa-migration.md` — consumer-side migration runbook. Updates per release per the table above; the "Forward direction" section is rewritten at v0.5.0.
+- `MIGRATIONS.md` — bootstrap-cache seed-refresh entries. New entries at v0.5.0 (auth chain) and potentially v1.0.0 (guard.py extraction) if `bootstrap.{sh,ps1}` changes.
+- `ONBOARDING.md` — release runbook cheat-sheet, STRICT parity reference. Updates on STRICT-list changes.
+- `scripts/check-parity.sh` — STRICT list implementation. Updates in lockstep with the STRICT parity trajectory table.
+- `skills/implement-review/SKILL.md` — the plan-review-first loop used to validate this doc before implementation.
