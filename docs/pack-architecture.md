@@ -6,6 +6,8 @@ Design note for the `anywhere-agents` (aa) pack composition architecture. Spans 
 
 **Status**: pre-implementation design contract. Acceptance requires Codex and Gemini plan-reviews with no High findings. Replaces any prior `PLAN-skill-pack-composition.md` reference.
 
+**Scope**: this design contract is scoped to ac → aa consolidation and bootstrap portability (private-pack support, user-level config, CLI, auth chain). Broader platform surface (registry, `~/.agent-profile/memory.md` bridge, consumer-facing rename migration, ecosystem framing) remains gated by the adoption tests in `docs/vision.md` and is not a deliverable of this contract.
+
 ## Purpose
 
 Decide the long-term pack abstraction so that:
@@ -319,6 +321,73 @@ rule_packs:                     # legacy alias; accepted through v0.6.x,
   - agent-style                 # hard-fail at v1.0.0; warning on use from v0.4.0
 ```
 
+**User-level config layer**:
+
+A user-level config file carries pack selections that apply to every aa-bootstrapped project for the current OS user ("one time, all projects"). The file is optional; consumers that never create one behave exactly per the project-level-only design in the block above.
+
+**Path**:
+
+- POSIX: `$XDG_CONFIG_HOME/anywhere-agents/config.yaml` when `$XDG_CONFIG_HOME` is set and non-empty, else `$HOME/.config/anywhere-agents/config.yaml`.
+- Windows: `%APPDATA%\anywhere-agents\config.yaml`.
+- When neither `$HOME` nor `%APPDATA%` is set, CLI `pack add` / `pack remove` fail with an actionable error ("user-level config home not resolvable; set $HOME or $XDG_CONFIG_HOME"). The composer falls back to project-level only and prints a one-line stderr note.
+
+**Precedence (base → most specific)**:
+
+1. User-level (base list).
+2. Project tracked (`<project>/agent-config.yaml`).
+3. Project local (`<project>/agent-config.local.yaml`).
+4. `AGENT_CONFIG_PACKS` env var (transient additive overlay).
+
+**Merge semantics**:
+
+- Different pack names across layers: union (all appear in the final list).
+- Same pack name at different layers: the more-specific layer overrides for all fields (`ref`, `skills-path`, etc.).
+- Explicit opt-out (`packs: []` at any layer, plus legacy `rule_packs: []` during the v0.4.0–v0.6.x alias window): **clears all earlier-in-precedence layers** for that list. Later layers (env var) MAY still add. Project-level `packs: []` suppresses user-level and project-tracked entries for that project; env-var additions still apply. A consumer who wants zero packs regardless of env must also ensure the env var is unset in the invocation context (e.g., omit it in CI config).
+
+**CLI `anywhere-agents pack ...`**:
+
+Target workflow: "I have a private pack and I want it available in every project I bootstrap, with update behavior governed by the pack's `update_policy`." Writes target the user-level file only; project-level configs are never touched by these commands. The CLI always writes the unified `packs:` key. It never creates `rule_packs:`; that key is read as a legacy alias only.
+
+```bash
+# One-time mount of a private skill pack at user level (default --type skill):
+anywhere-agents pack add git@github.com:me/private-skills.git
+
+# With all available flags:
+anywhere-agents pack add <source> \
+    [--type skill|rule]            # defaults to skill
+    [--ref REF]                    # defaults to main
+    [--name NAME]                  # override derived pack name
+    [--skills-path PATH]           # override default 'skills/'
+
+anywhere-agents pack list                    # both types, user + cwd project merged
+anywhere-agents pack list --type skill       # filter to one type
+
+anywhere-agents pack remove <name-or-source> [--type skill|rule]
+# --type is required only when a skill pack and a rule pack share the same name/source
+```
+
+CLI contract:
+
+- `pack list` merges user-level + cwd project-level and labels each entry with its source layer.
+- Default `ref: main` is a convenience default for branch tracking, not an auto-update guarantee. Active entries still honor `update_policy: locked`: if `main` resolves to changed active content, bootstrap fails closed and reports the new resolved commit until the user explicitly approves or pins a reviewed ref. Passive-only entries may opt into automatic refresh through manifest `update_policy: auto`.
+- Idempotent on duplicate source; different `--ref` on an existing source updates the ref in place with a stderr notice.
+- Credential-URL rejection before any file write (see Auth safety preconditions below).
+- **First CLI add default preservation**: `pack add <src>` of either type into an empty or absent user-level `packs:` list auto-seeds the list as `[{name: agent-style}, {user pack}]` so the v0.3.0 default pack is not silently replaced by the first user-level write. Subsequent `pack add` operations append only. Users who explicitly want to drop `agent-style` globally run `pack remove agent-style --type rule`. Hand-editing user-level `packs:` remains subject to replacement semantics; the CLI is the recommended path. If a legacy user-level `rule_packs:` key exists, `pack add` / `pack remove` first normalizes it in memory to unified `packs:` semantics, then writes back only `packs:`.
+- Atomic write: temp file + `os.replace`-style rename in the same directory. Interrupt mid-write leaves no partial file.
+- Malformed-YAML safety: if the existing user-level file cannot be parsed, `pack add` / `pack remove` refuses to rewrite, prints the exact path and parse error to stderr, and exits non-zero. The file bytes stay unchanged.
+
+**Env var grammar**: `AGENT_CONFIG_PACKS="name1,-name2"` accepts manifest names only, comma-separated. Subtract prefix `-` removes a pack from the resolved selection (Round 2 env-var decision). Direct-source entries are not supported in the env var because shell quoting of URLs with `&` / `/` across bash and PowerShell is fragile. Consumers who need transient direct-source use a temp project-local config.
+
+**Auth safety preconditions**:
+
+Before any network call in the auth chain below, the composer enforces two safety preconditions:
+
+1. **Reject secret-bearing `source:` URLs** in every config layer (user-level, project-tracked, project-local). For HTTP(S), any userinfo component is rejected (`https://user@host/...`, `https://user:password@host/...`, or `https://<token>@github.com/...`). For SSH, the standard transport usernames in `git@host:path` and `ssh://git@host/path` are allowed because they are not credentials; SSH URLs are rejected only if they embed password-like secret material. Rejection happens at parse time, before any network call, with: "credentials in a URL are unsafe in config; use `git@` SSH, `gh auth login`, or `GITHUB_TOKEN` env instead." `AGENT_CONFIG_PACKS` is names-only; direct-source input there is rejected by env grammar before URL validation runs.
+
+2. **Set noninteractive fetch env** on the composer subprocess: `GIT_TERMINAL_PROMPT=0` (HTTPS does not open a password prompt) and `GIT_SSH_COMMAND=ssh -o BatchMode=yes -o ConnectTimeout=10` (SSH does not hang on missing keys or unknown-host prompts). Failures surface a clear error within the connect-timeout window instead of a hung bootstrap.
+
+**GitHub URL normalization (`github.com` only)**: for the exact host `github.com`, the composer extracts the canonical `<owner>/<repo>` identity regardless of URL form (`git@github.com:<owner>/<repo>.git`, `https://github.com/<owner>/<repo>.git`, `ssh://git@github.com/<owner>/<repo>.git`). After extraction, all four auth methods become applicable by identity rather than URL shape. `pack add git@github.com:me/private.git` on a Windows machine with no working SSH agent but with `gh auth status` OK still succeeds via gh CLI: the composer tries SSH (fails quickly under `BatchMode=yes`), normalizes to `me/private`, then tries gh CLI which succeeds. Normalization applies only to `github.com`; GitHub Enterprise hosts (`github.mycompany.edu`, etc.) and any other remote continue to gate the method by URL shape. Enterprise support is out of scope for v0.5.0 to keep the auth surface bounded; adding it later means calling `gh auth status -h <host>` and running gh commands with `--hostname <host>`.
+
 **Auth chain** (v0.5.0+): tried in order per source URL: SSH agent → `gh` CLI token → `GITHUB_TOKEN` env → anonymous. First success wins. Explicit `auth: <method>` on a source disables the fallback chain (prevents a silent anonymous fallback from succeeding against a public repo of the same path). v0.4.0 does not run the auth chain; private entries are rejected at parse time.
 
 ## Pack lifecycle operations
@@ -566,6 +635,7 @@ Snapshot of the STRICT list and how it evolves:
 - `rule-packs.yaml` manifest file: alias through v0.6.x, same hard-fail treatment at v1.0.0 if still present without a parallel `packs.yaml`.
 - `DEFAULT_SELECTIONS` change from `agent-style` to `agent-style-field` (v0.4.x): visible; CHANGELOG + release notes highlight. Users pin back via `packs: [agent-style]`.
 - `guard.py` git / gh / compound-cd logic extraction at v1.0: default-on `agent-behave` pack preserves behavior for most consumers; opt-out via `packs: []` and manual hook install if a user wants the old aa-bundled layout.
+- **Python + PyYAML dependency fallback** (v0.3.0 contract, preserved through v1.0.0): consumers without Python 3 + PyYAML see the verbatim upstream `AGENTS.md` on bootstrap; the composer does not run and no pack content is mounted. Skill-pack opt-in additionally requires `git` (already a bootstrap prerequisite for sparse clone). This preserves the v0.3.0 BC path byte-for-byte regardless of later pack schema changes.
 
 ## Validation plan
 
@@ -603,6 +673,16 @@ If any case cannot be expressed in the schema, extend the schema before implemen
 14. v0.5.0 rollback: `packs: [X]` installed, then flip upstream back to `ac` → uninstall-all runs before re-bootstrap, resulting in no `X`-owned hooks / skills / permissions remaining.
 15. v0.6.0: previously-denied writing-style match now surfaces `ask` prompt; user confirm → write succeeds; user deny → write rejected with no side effects.
 16. v1.0.0: fresh install + `packs: [agent-behave]` → git / gh / compound-cd guards active at same severity as today's v0.3.x aa-bundled `guard.py`. Legacy `rule_packs: []` in `agent-config.yaml` → composer hard-fails with explicit migration error, prints the `packs: []` rewrite, does not compose any default packs. `AGENT_CONFIG_PACKS=-agent-style` env var does not bypass the legacy-key hard-fail (migration error takes priority).
+17. User-level config absent: no user-level file → bootstrap behavior byte-identical to project-level-only mode (v0.4.0 through v1.0.0).
+18. User-level config path resolution: POSIX `$XDG_CONFIG_HOME` honored when set; fallback to `$HOME/.config/anywhere-agents/config.yaml` when unset or empty; Windows `%APPDATA%\anywhere-agents\config.yaml`; missing both `$HOME` and `%APPDATA%` produces actionable error from CLI `pack add` / `pack remove` and stderr-only warning from composer (v0.4.0).
+19. User-level config CLI (`pack add` / `pack remove` / `pack list`): absent / empty / pre-existing user-level file handled; atomic write via temp file + rename in the same directory; malformed YAML refuses rewrite with exact path + parse error to stderr and non-zero exit (v0.4.0).
+20. First CLI add default preservation: `pack add <src>` with default `--type skill` into empty or absent user-level `packs:` seeds `[{name: agent-style}, {user pack}]`; `pack add <src> --type rule` does the same for the first rule-pack add. Subsequent adds append only. `pack remove agent-style --type rule` drops the default explicitly. Legacy user-level `rule_packs:` normalizes to `packs:` on write (v0.4.0).
+21. Four-layer merge matrix: all meaningful intersections of user-level / project-tracked / project-local / env-var, including same-name override (more-specific layer wins for all fields) and `packs: []` clearing earlier layers while env-var additions still apply (v0.4.0).
+22. Env var grammar: `AGENT_CONFIG_PACKS` accepts names and `-name` subtracts, comma-separated; rejects direct-source URLs with explicit grammar error before URL validation (v0.4.0 through v1.0.0).
+23. Credential-URL rejection: HTTP(S) `source:` with any userinfo (`user@`, `user:password@`, `<token>@`) rejects at parse time before any network call; SSH `git@host:path` and `ssh://git@host/path` transport usernames are allowed (not credentials). Applied in every config layer (v0.5.0 once auth chain activates; v0.4.0 rejects private at parse regardless).
+24. Noninteractive fetch env: with no SSH key and no `gh auth status` and no `GITHUB_TOKEN`, private-pack fetch fails within `ConnectTimeout=10` window (does not hang) and produces composite auth-failure error listing all attempted methods (v0.5.0).
+25. GitHub URL normalization: `git@github.com:owner/repo.git` source with no working SSH agent but `gh auth status OK` succeeds via gh CLI after SSH preflight fails quickly under `BatchMode=yes`. Non-`github.com` hosts (GitHub Enterprise, other remotes) do NOT get normalization; URL shape continues to gate the auth method (v0.5.0).
+26. Python/PyYAML fallback: consumers without Python 3 + PyYAML see verbatim upstream `AGENTS.md` on bootstrap; composer does not run; no pack content mounted. Preserves v0.3.0 BC path byte-for-byte (v0.3.0 contract, preserved through v1.0.0).
 
 **Release-runbook integration** (per `ONBOARDING.md` cheat-sheet):
 
