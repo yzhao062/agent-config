@@ -8,6 +8,13 @@ Design note for the `anywhere-agents` (aa) pack composition architecture. Spans 
 
 **Scope**: this design contract is scoped to ac → aa consolidation and bootstrap portability (private-pack support, user-level config, CLI, auth chain). Broader platform surface (registry, `~/.agent-profile/memory.md` bridge, consumer-facing rename migration, ecosystem framing) remains gated by the adoption tests in `docs/vision.md` and is not a deliverable of this contract.
 
+**Related docs**: this file is the implementation hub. During coding, read this file only. Open companions at specific triggers:
+
+- `docs/vision.md` — scope gates (Step 2/3 adoption tests, kill criteria, naming stance). Consult before adding or expanding this contract to confirm the proposed feature passes vision's gates. Frozen after 2026-04-22; not edited during impl.
+- `docs/ac-to-aa-migration.md` — consumer-side migration runbook for today's ac → aa rollout. Updated at release time per the Per-release maintainer-doc impact table below; not touched during impl iteration.
+- `archive/plans/PLAN-skill-pack-composition.md` — archived source plan (gitignored under `/archive/`); superseded by this file per the Status line above. Consult only for design archaeology, not for current truth.
+- `../anywhere-agents/RELEASING.md`, `ONBOARDING.md`, `scripts/check-parity.sh` — release runbook, release-runbook cheat sheet, STRICT parity gate. Touched at release time per the impact table.
+
 ## Purpose
 
 Decide the long-term pack abstraction so that:
@@ -759,9 +766,11 @@ If a further axis is spotted at any later release-planning round, schema change 
 
 ## References
 
+- `docs/vision.md` — strategy doc and scope gates (Step 2/3 adoption tests, kill criteria). Frozen after 2026-04-22 pass. Consulted before expanding this contract.
 - `docs/anywhere-agents.md` — two-repo mirror policy and "what gets copied" table. Must update on STRICT-list changes (v1.0).
 - `docs/ac-to-aa-migration.md` — consumer-side migration runbook. Updates per release per the table above; the "Forward direction" section is rewritten at v0.5.0.
 - `MIGRATIONS.md` — bootstrap-cache seed-refresh entries. New entries at v0.5.0 (auth chain) and potentially v1.0.0 (guard.py extraction) if `bootstrap.{sh,ps1}` changes.
 - `ONBOARDING.md` — release runbook cheat-sheet, STRICT parity reference. Updates on STRICT-list changes.
 - `scripts/check-parity.sh` — STRICT list implementation. Updates in lockstep with the STRICT parity trajectory table.
 - `skills/implement-review/SKILL.md` — the plan-review-first loop used to validate this doc before implementation.
+- `archive/plans/PLAN-skill-pack-composition.md` — archived source plan (gitignored under `/archive/`); superseded by this file per the Status line. Kept for design archaeology.
