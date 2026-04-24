@@ -83,18 +83,16 @@ for f in "${strict_files[@]}"; do
   fi
 done
 
-# ---- STRICT: shipped .claude/commands pointers (4 skills) ----
-printf '\n== shipped .claude/commands/*.md (4 pointers) ==\n'
-for skill in implement-review my-router ci-mockup-figure readme-polish; do
-  f=".claude/commands/$skill.md"
-  if [ ! -f "$AC_ROOT/$f" ] || [ ! -f "$AA_ROOT/$f" ]; then
-    fail "$f (missing on one side)"
-    continue
-  fi
-  if ! diff -q "$AC_ROOT/$f" "$AA_ROOT/$f" >/dev/null 2>&1; then
-    fail "$f"
-  fi
-done
+# ---- (v0.4.0) shipped .claude/commands pointers dropped from STRICT ----
+# Since aa v0.4.0, the 4 shipped pointer files (implement-review,
+# my-router, ci-mockup-figure, readme-polish) are pack-emitted outputs
+# of scripts/packs/handlers/skill.py (via the kind: skill dispatch),
+# not aa-core source files requiring byte-identical parity with ac.
+# The pointers still exist in both trees for the PyYAML-missing fallback
+# path in bootstrap, but STRICT byte-identity is no longer enforced
+# here per pack-architecture.md § "STRICT parity trajectory" (v0.4.0
+# row drops these four entries). See
+# docs/anywhere-agents.md mirror-policy table for the updated status.
 
 # ---- STRICT: shared skills (recursive; my-router excluded - BY-DESIGN) ----
 printf '\n== shared skills (recursive byte-identical) ==\n'

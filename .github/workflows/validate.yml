@@ -48,5 +48,12 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Install test dependencies
+        # PyYAML is required for test_compose_rule_packs (the rule-pack
+        # composer opt-in path). The composer itself also auto-installs
+        # PyYAML at bootstrap time; CI pre-installs it so test discovery
+        # does not hit the import-time exit(2) in scripts/compose_rule_packs.py.
+        run: python -m pip install --quiet pyyaml
+
       - name: Run validation tests
         run: python -B -m unittest discover -s tests -p "test_*.py" -v
