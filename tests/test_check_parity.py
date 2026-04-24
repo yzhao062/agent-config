@@ -161,13 +161,19 @@ class CheckParityBehavior(unittest.TestCase):
             self.assertIn("scripts/guard.py", out)
             self.assertIn("DRIFT", out)
 
-    def test_strict_shipped_pointer_drift_exits_1(self):
+    def test_shipped_pointer_drift_ignored_after_v040(self):
+        # Since aa v0.4.0 dropped the 4 shipped .claude/commands/*.md
+        # pointers from STRICT (pack-emitted via kind: skill dispatch,
+        # not aa-core source requiring byte-identical parity), drift in
+        # these files must NOT fail the parity check. Guards against a
+        # regression that re-adds them to STRICT. See
+        # docs/pack-architecture.md § "STRICT parity trajectory".
         with tempfile.TemporaryDirectory() as d:
             ac, aa = _build_fake_tree(pathlib.Path(d))
             (aa / ".claude/commands/my-router.md").write_text("drifted pointer\n")
             rc, out = _run(ac, aa)
-            self.assertEqual(rc, 1)
-            self.assertIn(".claude/commands/my-router.md", out)
+            self.assertEqual(rc, 0, f"expected 0 (drift ignored), got {rc}; output:\n{out}")
+            self.assertNotIn(".claude/commands/my-router.md", out)
 
     def test_strict_workflow_drift_exits_1(self):
         # Guards against drift in shared parts of validate.yml (action versions,

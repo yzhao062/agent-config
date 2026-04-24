@@ -129,8 +129,10 @@ def write_output(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     # newline="\n" forces LF on Windows; without it, Python's text-mode
     # write converts "\n" to "\r\n" and the committed LF-normalized file
-    # byte-diffs against the regenerated CRLF file in pre-push-smoke.
-    output_path.write_text(header + body, encoding="utf-8", newline="\n")
+    # byte-diffs against the regenerated file in pre-push-smoke.
+    # Path.write_text(newline=) was added in 3.10; open() works on 3.9+.
+    with open(output_path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(header + body)
     if not quiet:
         print(f"generated {output_rel}", file=sys.stderr)
 
