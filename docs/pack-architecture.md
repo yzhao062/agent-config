@@ -483,7 +483,7 @@ The `ONBOARDING.md` release-runbook cheat-sheet gains a post-release verificatio
 - Introduce `kind:`, `hosts:`, `required:`, `files: [{from, to}]` as required active-entry fields; v0.4.0 supports `hosts: [claude-code]` only.
 - Non-claude-code hosts: `required: true` entries fail composition with a `host-mismatch` error; `required: false` entries skip with an info log. Default is `required: true`.
 - `kind: command` entries are parsed and warned (`no-op at v0.4.0; full support in a later release`) rather than errored — forward-compatibility slot.
-- `agent-config.yaml` accepts `rule_packs:` (legacy, passive-only) and `packs:` (new, both slots, public source only). `rule_packs: []` opt-out continues to work verbatim.
+- `agent-config.yaml` schema accepts `rule_packs:` (legacy, passive-only) and `packs:` (new, both slots, public source only). `rule_packs: []` opt-out continues to work verbatim. **Note:** v0.4.0 ships schema acceptance and the legacy `rule_packs:` consumption path against names registered in `bootstrap/packs.yaml` only. Bootstrap-active consumption of `packs:` and inline-`source:` third-party fetches (i.e., a consumer naming a public GitHub repo not registered in the bundled manifest) lands in v0.5.0 alongside the auth chain. Consumers who try to bootstrap-load `agent-pack`-style third-party packs in v0.4.0 either copy the passive bodies into `AGENTS.local.md` or register the names in their own bootstrap-manifest fork. The v0.4.0 → v0.5.0 release sequence below tracks this explicitly so the gap closes in one coherent release rather than half-shipping in v0.4.x.
 - Existing `agent-style` pack: remanifest with passive slot only. Its current banned-word enforcement remains inside `aa`'s built-in `guard.py` for this release (extraction is a v1.0 step).
 - **Pack-emitted command pointers**: the four `aa`-shipped skills (`implement-review`, `my-router`, `ci-mockup-figure`, `readme-polish`) remanifest as `kind: skill` entries that auto-emit their `.claude/commands/<name>.md` pointer on install. The 4 static pointer files **left the STRICT parity list** in v0.4.0 because they are now outputs of the composer, not aa-core source files. `scripts/check-parity.sh` and `docs/anywhere-agents.md` "what gets copied" table update in the same release. See STRICT trajectory table below.
 - Write `.agent-config/pack-lock.json` and `.agent-config/pack-state.json` on install; write `~/.claude/pack-state.json` for every active entry touching user-level paths. `update_policy: locked` enforced from day one.
@@ -517,15 +517,17 @@ The `ONBOARDING.md` release-runbook cheat-sheet gains a post-release verificatio
 
 **ac-to-aa-migration.md update**: the "Opting out of the default agent-style rule pack" section needs a parallel "Pinning the full pack" subsection for consumers who preferred the 21-rule default.
 
-### aa v0.5.0 — Private-source packs (THE private-source release)
+### aa v0.5.0 — Direct-URL packs + private-source release
 
-Everything private lands here in one coherent release. No half-shipped state before v0.5.0.
+Two related capabilities land together: bootstrap-active consumption of inline `source:` URLs in `agent-config.yaml` (closes the v0.4.0 schema-vs-consumption gap), and the auth chain that makes private-source URLs work alongside public-source URLs through the same code path. No half-shipped state before v0.5.0.
 
-- Activate the auth chain (SSH agent → `gh` CLI token → `GITHUB_TOKEN` env → anonymous). Auth chain tests against each private URL at compose time; fails closed on `auth: <method>` when the named method does not succeed.
-- Support direct-URL packs in `agent-config.yaml` (not just manifest-registered names).
+- **Direct-URL packs (public source).** `agent-config.yaml` `packs:` (and legacy `rule_packs:` for passive-only) entries with an inline `source: { repo: ..., ref: ... }` are bootstrap-active. The composer fetches the named pack from its source URL anonymously; manifest-registration in `bootstrap/packs.yaml` is no longer required for third-party packs. This is what the v0.4.0 schema already accepted; v0.5.0 finally consumes it. **`yzhao062/agent-pack` becomes loadable end-to-end via `agent-config.yaml`** as the v0.5.0 acceptance test (one-step migration replaces today's manual `AGENTS.local.md` copy).
+- **Auth chain (private source).** SSH agent → `gh` CLI token → `GITHUB_TOKEN` env → anonymous. Auth chain tests against each private URL at compose time; fails closed on `auth: <method>` when the named method does not succeed.
 - Parser accepts private source entries (removes the v0.4.0 rejection).
 - Apply pack-lock integrity to private sources identically: resolve to commit id, record sha256, enforce `update_policy: locked` on active items.
 - Paper / proposal / submodule repos can now consume private packs. The `docs/ac-to-aa-migration.md` decision matrix "Paper repo → stay on ac" row collapses to "Paper repo → aa + private pack". This release is the payoff for Q2.
+
+**Why direct-URL packs are bundled with the auth chain (not extracted to v0.4.x):** the public-source path and the auth-chain path share one composer entry point that fetches per-pack from a URL. Shipping public-only without the auth chain duplicates code that the auth chain immediately replaces. Shipping the auth chain without the public path leaves the same `unknown rule pack` error standing for `yzhao062/agent-pack`-style consumers. Both land together so the composer touches each fetch site once.
 
 **Consumer-facing change**: new capability only; no behavior change for existing consumers who do not declare private packs.
 
@@ -759,7 +761,7 @@ If a further axis is spotted at any later release-planning round, schema change 
 | aa v0.4.0 | Unified manifest (public-only) | `packs.yaml`, `active:` with four kinds, `hosts:` + `required:` semantics, `files: [{from, to}]`, project-local + user-level state files, atomic lifecycle ops, pack-emitted command pointers (4 aa pointers drop from STRICT list), BC aliases. Private source rejected at parse time. | None |
 | as v0.4.0 | Slim variants | `rule-pack-field.md`, `rule-pack-lite.md`, release-time drift check | None |
 | aa v0.4.x | Default switch | `DEFAULT_SELECTIONS → agent-style-field`, CHANGELOG note | Medium |
-| aa v0.5.0 | Private-source packs | SSH / gh / token auth chain, direct-URL packs, parser accepts private entries, pack-lock integrity applies to private, MIGRATIONS.md seed-refresh entry | None (new capability only) |
+| aa v0.5.0 | Direct-URL packs (public + private) | Bootstrap-active consumption of inline `source:` in `agent-config.yaml` for both `rule_packs:` and `packs:` (closes v0.4.0 schema-vs-consumption gap; `yzhao062/agent-pack` loadable end-to-end), SSH / gh / token auth chain, parser accepts private entries, pack-lock integrity applies to private, MIGRATIONS.md seed-refresh entry | None (new capability only) |
 | ab v0.1.0 | `agent-behave` product | First 3-slot pack | None (opt-in) |
 | aa v0.6.0 | Noise audit | Demotion criterion is `false-positive-risk` × `impact-if-allowed` (not trigger-rate alone); composer noise budget; per-guard env vars | Medium |
 | aa v1.0.0 | Full decoupling | `guard.py` extraction, STRICT list shrinks, default-on ab, **hard-fail on legacy `rule_packs:` / `rule-packs.yaml` with explicit migration error** | Medium |
