@@ -9,9 +9,11 @@
 # Two categories:
 #
 #   STRICT      must be byte-identical between ac and aa. Any difference
-#               is drift and fails the check. Covers: guard.py,
-#               session_bootstrap.py, generate_agent_configs.py,
-#               pre-push-smoke.sh, remote-smoke.sh, .claude/settings.json,
+#               is drift and fails the check. Covers: _python (Python
+#               wrapper that finds a real interpreter and avoids the
+#               Windows Store shim), guard.py, session_bootstrap.py,
+#               generate_agent_configs.py, pre-push-smoke.sh,
+#               remote-smoke.sh, .claude/settings.json,
 #               .githooks/pre-push, .github/workflows/real-agent-smoke.yml,
 #               .github/workflows/validate.yml,
 #               .claude/commands/*.md for each of the 4 shipped skills,
@@ -63,6 +65,7 @@ fail() {
 # ---- STRICT: byte-identical top-level files ----
 printf '\n== strict byte-identical ==\n'
 strict_files=(
+  scripts/_python
   scripts/guard.py
   scripts/session_bootstrap.py
   scripts/generate_agent_configs.py
