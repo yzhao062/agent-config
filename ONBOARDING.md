@@ -1,14 +1,15 @@
-# Onboarding — agent-config + anywhere-agents + agent-style
+# Onboarding — agent-config + anywhere-agents + agent-style + agent-pack
 
 One-page index for a new maintainer machine or future-you coming back after a gap. Read this file first; it points at the right deeper docs for whatever task you are starting.
 
 ## New machine in 3 steps
 
 ```bash
-# 1. Clone all three repos side by side under ~/PycharmProjects/
+# 1. Clone all four repos side by side under ~/PycharmProjects/
 git clone https://github.com/yzhao062/agent-config.git     ~/PycharmProjects/agent-config
 git clone https://github.com/yzhao062/anywhere-agents.git  ~/PycharmProjects/anywhere-agents
 git clone https://github.com/yzhao062/agent-style.git      ~/PycharmProjects/agent-style
+git clone https://github.com/yzhao062/agent-pack.git       ~/PycharmProjects/agent-pack
 ```
 
 ```
@@ -29,16 +30,18 @@ First prompt after `claude` starts:
 
 From there the agent has enough context to work on either repo.
 
-## The three-repo landscape
+## The four-repo landscape
 
-**Shorthand**: `ac` = `agent-config`, `aa` = `anywhere-agents`, `as` = `agent-style`. All three forms appear interchangeably in maintainer prompts and docs; either form refers to the same repo as the full name.
+**Shorthand**: `ac` = `agent-config`, `aa` = `anywhere-agents`, `as` = `agent-style`, `agent-pack` keeps its full name (no two-letter shorthand yet). All forms appear interchangeably in maintainer prompts and docs; either form refers to the same repo as the full name.
 
-The three repos are linked by **two distinct relationships**; do not confuse them:
+The four repos are linked by **three distinct relationships**; do not confuse them:
 
 - **`ac` ↔ `aa` — mirror (shared core).**
-  `agent-config` (private) is the canonical source for shared components (bootstrap scripts, shared skills, guard hook, `AGENTS.md` baseline) PLUS personal content (USC-specific rules, `reference-skills/`, research docs, maintainer runbooks). `anywhere-agents` (public) is the sanitized public release — only the shared components + packaging (PyPI + npm + RTD site). Shared-core files mirror byte-identically (modulo branding). Not a fork, not a submodule — manual backport from `ac` → `aa` on every release cut; physical isolation is the primary leak defense. "What gets copied vs stays private" table lives in `docs/anywhere-agents.md`.
-- **`as` ↔ `ac` / `aa` — reference only.**
-  `agent-style` (public) is a standalone project: a literature-backed English technical-prose writing ruleset for AI agents, shipped via PyPI + npm + GitHub. It is NOT a mirror of anything in `ac` or `aa`. The only cross-reference is editorial: each `as` field-observed rule (RULE-A..I) cites `ac/aa`'s `AGENTS.md` "Writing Defaults" section as an adjacent in-practice anchor, not as a source authority. No files are copied between `as` and the other two; the three release flows are independent.
+  `agent-config` (private working dir, public on GitHub but personal-use-only) is the canonical source for shared components (bootstrap scripts, shared skills, guard hook, `AGENTS.md` baseline) PLUS maintainer-only docs (`docs/pack-architecture.md`, `docs/vision.md`, `docs/anywhere-agents.md`, `archive/`). `anywhere-agents` (public consumer) is the sanitized public release — shared components + packaging (PyPI + npm + RTD site). Shared-core files mirror byte-identically (modulo branding). Not a fork, not a submodule — manual backport from `ac` → `aa` on every release cut; physical isolation is the primary leak defense. "What gets copied vs stays private" table lives in `docs/anywhere-agents.md`.
+- **`as` ↔ `ac` / `aa` — reference only (default rule pack).**
+  `agent-style` (public) is a standalone project: a literature-backed English technical-prose writing ruleset for AI agents, shipped via PyPI + npm + GitHub. It is NOT a mirror of anything in `ac` or `aa`. The only cross-reference is editorial: each `as` field-observed rule (RULE-A..I) cites `ac/aa`'s `AGENTS.md` "Writing Defaults" section as an adjacent in-practice anchor, not as a source authority. `aa` consumers receive `as` content composed into their `AGENTS.md` because `aa`'s `bootstrap/packs.yaml` registers `agent-style` as a default-on rule pack and points at `as` source. No file copy between repos; three release flows are independent.
+- **`agent-pack` ↔ `ac` / `aa` — third-party reference + personal extension layer.**
+  `agent-pack` (public) is a separate repo declaring three packs in the v2 manifest format: `profile` (maintainer identity, passive), `paper-workflow` (Overleaf merge protocol + paper venue conventions, passive), `acad-skills` (3 academic-writing skills, active). It serves two purposes: (a) **personal extension layer** — content that used to live only in `ac/AGENTS.md` § "User Profile" and § "Submodule Workflow" migrates here so new projects bootstrap from `aa + agent-pack` rather than from `ac` directly; (b) **third-party reference example** — fork-friendly demonstration of v2 manifest authoring for anyone who wants to ship their own pack. Doubles as the v0.5.0 remote-fetch acceptance test (when `anywhere-agents pack add <agent-pack-url> --ref v0.1.0` works without forking aa, v0.5.0 is release-ready). No file copy between repos; independent release flow.
 
 ## Direction of travel: gradually retiring `ac`
 
@@ -66,6 +69,8 @@ What this means in practice:
 | Consumer project not picking up upstream | Open Claude Code there once — bootstrap self-updates automatically. Or force refresh via `MIGRATIONS.md` block. |
 | Switching an existing ac-bootstrapped consumer project to aa | `docs/ac-to-aa-migration.md` — decision matrix, migration mechanics (Path 1 change-upstream / Path 2 nuke-and-reinstall), pre/post checks, rollback, forward direction on skill-pack composition |
 | Adding a new skill | `skills/implement-review/SKILL.md` shows the skill structure; `skills/my-router/` for routing integration |
+| Authoring a new pack (rule pack or skill pack) | `../anywhere-agents/docs/rule-pack-composition.md` § "Rule-pack anatomy"; `../agent-pack/` as the reference example, fork as a starting point |
+| Bootstrapping a new personal project (paper, proposal, side dev) | Bootstrap from `aa` (`pipx run anywhere-agents`), then add `profile` and optionally `paper-workflow` from `agent-pack` to project `agent-config.yaml` per `../agent-pack/README.md` § "Consumer Setup" |
 
 ## Release cut — minimal cheat-sheet
 
@@ -136,6 +141,15 @@ Each step's exact commands are in `../anywhere-agents/RELEASING.md`.
 - `.github/workflows/adapter-{aider,gemini,agents-sdk}-smoke.yml` — per-adapter runtime regression workflows. `workflow_dispatch` only. 3 fixed prompts × runner, gated on draft-length and violation-count thresholds. Costs ~$0.10 (aider Sonnet), $0 (gemini Flash free tier), ~$0.01 (agents-sdk nano)
 - `scripts/verify-fresh-install.py` — cross-platform end-to-end install smoke (Windows + Linux aarch64)
 
+### `agent-pack` (public, third-party reference + personal extension layer)
+
+- `pack.yaml` — self-describing v2 manifest declaring 3 packs (`profile`, `paper-workflow`, `acad-skills`); mirrors the schema used by `aa-core-skills` so v0.5.0 remote-fetch tooling reads it without special handling
+- `docs/rule-pack.md` — `profile` pack body (maintainer identity, public projects, communication preferences, tools, conventions); CC-BY-4.0
+- `docs/paper-workflow.md` — `paper-workflow` pack body (Overleaf submodule etiquette, merge-conflict resolution, NSF/NIH framework defaults); CC-BY-4.0
+- `skills/{bibref-filler,dual-pass-workflow,figure-prompt-builder}/` — active skill content for the `acad-skills` pack; remote installation queued for `anywhere-agents` v0.5.0
+- `scripts/validate.py` — v2 schema validator (allowed `update_policy`, allowed `kind`, file mapping path existence); CI runs on every push
+- `README.md` — Consumer Setup with v0.4.0 vs v0.5.0 honest split (v0.4.0: copy bodies into `AGENTS.local.md` or fork aa's bundled manifest; v0.5.0: native `anywhere-agents pack add <url> --ref <tag>`)
+
 ### Consumer projects (your daily projects under `~/PycharmProjects/*`)
 
 - `.agent-config/bootstrap.ps1` + `.sh` — self-updating bootstrap scripts (since 0.1.5)
@@ -150,9 +164,9 @@ Ask Claude Code in natural language: "I am starting work on X. What should I kno
 ## When to update this file
 
 Update when:
-- The two-repo relationship changes (convergence, split, migration to a different platform)
+- The repo family relationships change (convergence, split, new sibling repo, migration to a different platform)
 - The release workflow gains or loses a major step
 - A new shared-component category is added
-- A change in daily workflow big enough that future-you would forget (0.1.9 per-project flag migration was a good candidate; typo fixes are not)
+- A change in daily workflow big enough that future-you would forget (0.1.9 per-project flag migration was a good candidate; agent-pack as a separate personal extension layer in 2026-04 was another; typo fixes are not)
 
 Do NOT update for: small skill updates, bug-fix releases, documentation tweaks inside the deeper docs this file points at.
