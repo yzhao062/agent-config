@@ -64,6 +64,7 @@ def _build_fake_tree(base: pathlib.Path):
         (repo / ".github" / "workflows").mkdir(parents=True)
 
     strict_files = {
+        "scripts/_python": "#!/usr/bin/env bash\nexec python3 \"$@\"\n",
         "scripts/guard.py": "# guard stub\n",
         "scripts/session_bootstrap.py": "# session bootstrap stub\n",
         "scripts/generate_agent_configs.py": "# generator stub\n",
