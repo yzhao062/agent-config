@@ -4,7 +4,13 @@ Personal shared configuration for Codex and Claude Code. Not intended for genera
 
 ## Relationship with `anywhere-agents` (long-term co-maintenance)
 
-This repo is the **private canonical source** of shared agent configuration. Its **sanitized public downstream** lives at [`yzhao062/anywhere-agents`](https://github.com/yzhao062/anywhere-agents) and ships the subset safe for general audiences — no USC content, no `reference-skills/`, no personal identifiers.
+This repo is the **canonical source** of shared agent configuration. Its **sanitized public downstream** lives at [`yzhao062/anywhere-agents`](https://github.com/yzhao062/anywhere-agents) and ships the subset safe for general audiences — no USC-internal content, no `reference-skills/`, no archived planning artifacts.
+
+**Sibling repos in the same family**:
+
+- [`yzhao062/anywhere-agents`](https://github.com/yzhao062/anywhere-agents): the public consumer and STRICT-parity mirror of ac for everything except maintainer-only docs (`docs/pack-architecture.md`, `docs/vision.md`, `docs/anywhere-agents.md`, `archive/`). PyPI / npm distribution lives here.
+- [`yzhao062/agent-style`](https://github.com/yzhao062/agent-style): the writing rule pack composed into every consumer's `AGENTS.md` by default. 21 rules (12 classic + 9 LLM-observed) with BAD -> GOOD examples per rule.
+- [`yzhao062/agent-pack`](https://github.com/yzhao062/agent-pack): public reference example for third-party pack authors. Declares 3 packs (`profile` passive, `paper-workflow` passive, `acad-skills` active) using the v2 manifest schema. Doubles as the v0.5.0 remote-fetch acceptance test for `anywhere-agents`. Personal context that used to live only in this repo's `AGENTS.md` section "User Profile" and section "Submodule Workflow" is migrating here so new projects can bootstrap from `aa + agent-pack` rather than from ac directly.
 
 > The two repos co-evolve. Most meaningful changes to shared components (bootstrap, `implement-review`, `my-router`, guard hook, writing defaults, Git safety rules, session checks) should land here first, then be **backported** into `anywhere-agents` on the next public release cut. Skipping the backport lets the public release drift — users stop getting improvements that the author is already using daily.
 

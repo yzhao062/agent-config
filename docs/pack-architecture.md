@@ -764,6 +764,14 @@ If a further axis is spotted at any later release-planning round, schema change 
 | aa v0.6.0 | Noise audit | Demotion criterion is `false-positive-risk` × `impact-if-allowed` (not trigger-rate alone); composer noise budget; per-guard env vars | Medium |
 | aa v1.0.0 | Full decoupling | `guard.py` extraction, STRICT list shrinks, default-on ab, **hard-fail on legacy `rule_packs:` / `rule-packs.yaml` with explicit migration error** | Medium |
 
+## Reference example: `agent-pack` repo
+
+[`yzhao062/agent-pack`](https://github.com/yzhao062/agent-pack) is the canonical third-party reference for the v2 manifest format. It declares 3 packs (`profile` passive, `paper-workflow` passive, `acad-skills` active with `kind: skill` entries for 3 skills) and ships the matching content at conventional paths: `docs/rule-pack.md`, `docs/paper-workflow.md`, and `skills/{bibref-filler,dual-pass-workflow,figure-prompt-builder}/`. Its `pack.yaml` uses the same v2 `active[].kind` plus `files[].from/to` structure as `aa-core-skills`, with remote `source` metadata added for third-party fetches, so consumers and v0.5.0 remote-fetch tooling can read it without special handling.
+
+The repo is also the **v0.5.0 acceptance test**: when remote-fetch + auth-chain wiring lands, `anywhere-agents pack add https://github.com/yzhao062/agent-pack --ref v0.1.0` should install all 3 packs cleanly without any agent-pack changes. If installation requires a manifest tweak in agent-pack, the v0.5.0 design has drifted from this contract.
+
+In v0.4.0, agent-pack documents the loadability gap honestly: stock `compose_rule_packs.py` rejects pack names not in aa's bundled manifest, so consumers reuse agent-pack content today by either (a) copying passive bodies into project `AGENTS.local.md`, or (b) registering pack names in a controlled bootstrap manifest (a fork of aa). The README's "Consumer Setup" section spells the v0.4.0-vs-v0.5.0 split out explicitly; pack-architecture.md should retain that boundary in any future revision.
+
 ## References
 
 - `docs/vision.md` — strategy doc and scope gates (Step 2/3 adoption tests, kill criteria). Frozen after 2026-04-22 pass. Consulted before expanding this contract.
@@ -774,3 +782,4 @@ If a further axis is spotted at any later release-planning round, schema change 
 - `scripts/check-parity.sh` — STRICT list implementation. Updates in lockstep with the STRICT parity trajectory table.
 - `skills/implement-review/SKILL.md` — the plan-review-first loop used to validate this doc before implementation.
 - `archive/plans/PLAN-skill-pack-composition.md` — archived source plan (gitignored under `/archive/`); superseded by this file per the Status line. Kept for design archaeology.
+- [`yzhao062/agent-pack`](https://github.com/yzhao062/agent-pack) — canonical third-party reference repo for the v2 manifest format; also the v0.5.0 remote-fetch acceptance test. See "Reference example" section above.
