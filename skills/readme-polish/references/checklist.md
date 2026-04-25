@@ -24,13 +24,24 @@ Run this grid against a candidate README before editing. Mark each row `✓` (pr
 | Example invocation right after install | "Run this to verify it works." |
 | Direct-from-agent phrasing (if applicable) | `> [!TIP]` callout: "tell your agent to install it." |
 
-## What you get / Features
+## What you get / Features (or Why You'd Use This)
 
 | Item | Notes |
 |------|-------|
-| 5-8 emoji-prefixed one-liner bullets | Each bullet = emoji + bold name + em-dash + takeaway. |
-| No multi-sentence prose bullets | If a feature needs more than one sentence, link to a follow-up section or collapsible. |
+| Emoji-prefixed bullets *or* bold-lead paragraphs (matched to content shape) | 5-8 emoji bullets when items are feature claims; 3-5 `**Bold lead.** Setup. Without X, problem. With X, fix.` paragraphs when items are narrative scenarios. Pick one pattern per section. |
+| No multi-sentence prose bullets | If a feature needs more than one sentence, switch to bold-lead paragraphs for that section, or link to a follow-up section / collapsible. |
 | No overlap between feature bullets and hero image content | If the hero image already shows the 6 features, either cut the bullets or make them much shorter. |
+| "Coming next" boundary paragraph (if applicable) | One short paragraph at the end of the section naming what is queued for the next release. Keeps current vs roadmap separated. |
+
+## "What This Looks Like" examples block (optional)
+
+| Item | Notes |
+|------|-------|
+| 3-5 examples between How It Works and Install | Concrete proof of what the project looks like in operation. |
+| Each example uses a different visual format | Screenshot / file tree / themed Mermaid / HTML 2-col before-after / terminal mock. Variety is the point — three monospace blocks in a row read as a text wall. |
+| Captions are 1-2 sentences | Long captions defeat the "skim in 10 seconds" goal of the section. |
+| HTML 2-col `<table>` for rich before/after | Markdown tables cannot carry blockquotes, italic, or `<mark>` tags inside cells; HTML tables can. One per README is enough. |
+| Themed Mermaid (`%%{init: ...}%%`) when used | Default red / orange / blue clashes with most brand colors. Match the project palette. |
 
 ## Reference material (should be collapsed)
 
@@ -85,6 +96,37 @@ Run this grid against a candidate README before editing. Mark each row `✓` (pr
 | Tables are GitHub-flavored (pipes, not grid format) | Grid format does not render. |
 | Code blocks have language hints (` ```bash `, ` ```python `) | Syntax highlighting only fires with hints. |
 | Line lengths reasonable (under ~120 chars for prose) | Long lines are fine in code blocks. |
+| Title Case across all H2 and H3 (agent-style RULE-G) | Sentence case mixed with Title Case reads as machine-generated. |
+| No casual em-dash (agent-style RULE-B) | Appositives use commas, parens, or colons. En-dash in numeric ranges is fine. |
+
+## Visual identity (when a brand color is in play)
+
+| Item | Notes |
+|------|-------|
+| Mermaid blocks include `%%{init: ...}%%` themed to brand palette | Otherwise they render as cookie-cutter and clash with the rest of the page. |
+| README badges use the brand color via `?color=<hex>` | One color across all badges; do not mix Shield.io defaults with custom brand colors. |
+| MkDocs CSS overrides match brand color (light + slate) | If the project ships a Read the Docs site, both schemes need the brand color. |
+| Custom-colored elements pass WCAG AA contrast (≥ 4.5:1) | Run a contrast check (Codex / Copilot / a contrast tool) for both light and slate themes. The dark-theme link contrast is the most common failure mode. |
+
+## Reproducibility (when the README references rendered assets)
+
+| Item | Notes |
+|------|-------|
+| Source file (HTML, vhs tape) committed alongside the rendered output | Without the source, the asset becomes a static artifact no one can update. |
+| Render helper script committed (`docs/_render_*.py` / `_render_*.sh`) | One-shot reproducibility for future maintainers. |
+| Docker images pinned by content digest, not `:latest` | `vhs@sha256:...` not `vhs:latest`; otherwise the next render pulls a different image. |
+| Render command works on a clean clone | Confirm by re-running the helper script after the rewrite. |
+
+## Cross-surface parity (multi-surface projects)
+
+| Item | Notes |
+|------|-------|
+| Tagline matches across README, RTD landing, and bilingual variants | Drift between surfaces is a real maintenance cost. |
+| How It Works claims agree across surfaces | Especially version boundaries (current vs roadmap). |
+| Pack-CLI / install / What's Next paragraphs match | Codex / Copilot review handles this via "Cross-variant drift check" lens. |
+| Bilingual: technical terms preserved in source language | English `pack`, `composer`, `bootstrap` stay English in zh-CN; only natural-equivalent concepts translate. |
+| Bilingual: example bodies in source language, commentary translated | Don't translate banned-word examples that demonstrate language-specific patterns; translate the prose around them. |
+| Bilingual: informal pronoun (`你`, `tu`) for warmth | Formal pronoun reads as machine-translated. |
 
 ## Content accuracy (cannot be linted)
 
