@@ -13,7 +13,9 @@
 #               wrapper that finds a real interpreter and avoids the
 #               Windows Store shim), guard.py, session_bootstrap.py,
 #               generate_agent_configs.py, pre-push-smoke.sh,
-#               remote-smoke.sh, .claude/settings.json,
+#               remote-smoke.sh, check-parity.sh (this script - both
+#               sides carry an identical copy so the maintainer can run
+#               it from either repo), .claude/settings.json,
 #               .githooks/pre-push, .github/workflows/real-agent-smoke.yml,
 #               .github/workflows/validate.yml,
 #               .claude/commands/*.md for each of the 4 shipped skills,
@@ -71,6 +73,7 @@ strict_files=(
   scripts/generate_agent_configs.py
   scripts/pre-push-smoke.sh
   scripts/remote-smoke.sh
+  scripts/check-parity.sh
   .claude/settings.json
   .githooks/pre-push
   .github/workflows/real-agent-smoke.yml
