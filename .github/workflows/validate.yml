@@ -61,6 +61,10 @@ jobs:
   vendor-sync-check:
     name: Vendor Sync Check
     runs-on: ubuntu-latest
+    # Skip in ac mirror where scripts/vendor-packs.py does not exist; this
+    # job is aa-specific (vendors scripts/packs/* into the PyPI wheel).
+    # The STRICT-parity mirror keeps the workflow byte-identical between
+    # repos; the hashFiles guard makes the job a no-op in ac.
     steps:
       - name: Check out repository
         uses: actions/checkout@v5
@@ -71,12 +75,17 @@ jobs:
           python-version: "3.11"
 
       - name: Vendor sync check
+        if: hashFiles('scripts/vendor-packs.py') != ''
         run: |
           python scripts/vendor-packs.py check
 
   v0_5_token_smoke:
     name: v0.5.0 token-auth smoke + sentinel redaction check
     runs-on: ubuntu-latest
+    # Skip in ac mirror where scripts/packs/auth.py does not exist; this
+    # job is aa-specific (validates the v0.5.0 auth-chain primitive). The
+    # STRICT-parity mirror keeps the workflow byte-identical between
+    # repos; the hashFiles guard makes the job a no-op in ac.
     permissions:
       contents: read
     steps:
@@ -84,9 +93,11 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-      - run: pip install pyyaml
+      - if: hashFiles('scripts/packs/auth.py') != ''
+        run: pip install pyyaml
 
       - name: Token method smoke with real Actions token
+        if: hashFiles('scripts/packs/auth.py') != ''
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
@@ -104,6 +115,7 @@ jobs:
           PY
 
       - name: Sentinel redaction smoke (rejected URL path)
+        if: hashFiles('scripts/packs/auth.py') != ''
         env:
           ANYWHERE_AGENTS_SENTINEL: anywhere-agents-sentinel-${{ github.run_id }}
         run: |
