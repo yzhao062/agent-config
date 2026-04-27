@@ -50,15 +50,16 @@ Switch to aa when the project is:
 - A fresh project. Bootstrap from aa directly; skip the ac path.
 - Any project where the sanitized public AGENTS.md is sufficient.
 
-Suggested decision matrix:
+Suggested decision matrix (post-v0.5.0):
 
 | Project type | Decision | Driver |
 |---|---|---|
-| Paper repo (USC, NSF, Overleaf) | Stay on ac | Needs ac-only skills (`ac/skills/*` ac-only subset + `ac/reference-skills/*`) + USC/Overleaf AGENTS.md sections |
-| Dev repo (PyOD, general coding, infra tooling) | Switch to aa | No private dep; gains aa-first features (rule-pack composer today) |
+| Paper repo (USC, NSF, Overleaf) | aa + private pack via auth chain | v0.5.0 direct-URL packs replace the ac-only skill load path; the 4-method auth chain handles private repos |
+| Private pack (single-maintainer skills, USC templates) | aa with SSH / gh CLI / PAT auth (one-line install) | `anywhere-agents pack add <url> --ref <tag>` resolves auth automatically; no manual checkout |
+| Dev repo (PyOD, general coding, infra tooling) | Switch to aa | No private dep; gains aa-first features (rule-pack composer + direct-URL packs) |
 | Fresh project | Bootstrap from aa directly | Zero legacy; skip ac entirely |
-| Submodule-coupled shared repo | Stay on ac | Co-PI expects private skills + AGENTS.md content |
-| Teaching / admin / committee docs | Usually stay on ac | Templates typically live in ac-only skills (`ac/skills/` ac-only subset or `ac/reference-skills/`) |
+| Submodule-coupled shared repo | Stay on ac unless co-PI agrees | Co-PI consent gates the upstream switch; v0.5.0 capability is technical, not social |
+| Teaching / admin / committee docs | Repackage as pack, then aa | Templates that previously lived in `ac/skills/` ac-only subset or `ac/reference-skills/` can ship as a private pack served from your own GitHub repo |
 | Unclear | Stay on ac | Switching later is cheap; losing private content and rediscovering it is not |
 
 ## Rollout cadence (opinionated, optional)
@@ -229,13 +230,26 @@ Treat aa-first rule-pack composition as a by-design divergence, but do NOT ignor
 
 No scheduled end-of-life for ac. Retirement is about shrinking the public-facing role, not about shutting ac down.
 
-### Forward direction: first-class private packs in aa
+### Forward direction: direct-URL packs in aa (v0.5.0)
 
-The "stay on ac for paper / proposal repos" row in the decision matrix exists because aa has no general mechanism yet for a consumer to mount their own private content alongside the shipped packs. The long-term design ([`docs/pack-architecture.md`](pack-architecture.md)) extends aa's manifest into a unified two-axis model: passive vs active (today's rule-pack vs skill-pack collapse into one abstraction) and public vs private (with an SSH / gh CLI / `GITHUB_TOKEN` auth chain). A consumer `agent-config.yaml` can then list private packs via direct source URLs.
+aa v0.5.0 (2026-04-26) shipped direct-URL pack consumption. A consumer's `agent-config.yaml` can now list any GitHub repo as a pack source via `source.url` and `source.ref`; the 4-method auth chain (SSH agent, `gh` CLI token, `GITHUB_TOKEN` env, anonymous fallback) negotiates access on every fetch. Public URLs succeed on the anonymous method; private URLs succeed on whichever authenticated method the host has configured. No manifest fork is required.
 
-Tentative release trajectory: aa v0.4.0 introduces the unified manifest BC-preservingly; aa v0.5.0 activates the auth chain and unlocks paper-repo migration. Once v0.5.0 ships, the "Paper repo → stay on ac" decision matrix row collapses to "Paper repo → aa + one private pack", and ac's remaining role narrows to personal planning docs and truly private text that is not loaded into any consumer project.
+[`agent-pack`](https://github.com/yzhao062/agent-pack) v0.1.0 is the v0.5.0 acceptance test for this path. Adding it to a consumer is a one-line install:
 
-Until aa v0.5.0 ships, ac's current `skills/` + `reference-skills/` layout remains the practical path for those projects. Do not anticipate the collapse in this guide's decision matrix — keep "stay on ac" as today's answer for paper repos until the private-pack composer is released and tested.
+```bash
+anywhere-agents pack add https://github.com/yzhao062/agent-pack --ref v0.1.0
+```
+
+Private repos behave the same way. SSH transport (`git@github.com:owner/private.git`) succeeds when `ssh-add -L` lists a usable key. If SSH is unavailable, gh CLI takes over and succeeds when `gh auth status` reports a logged-in account with the right scope. As a third option, `GITHUB_TOKEN` succeeds when the env var holds a personal-access token with `repo` scope. See [`docs/pack-architecture.md`](pack-architecture.md) for the full chain in the order listed.
+
+Practical effect on the decision matrix:
+
+| Project type | Pre-v0.5.0 decision | v0.5.0+ decision |
+|---|---|---|
+| Paper repo (USC, NSF, Overleaf) | Stay on ac | aa + private pack via auth chain |
+| Private pack (single-maintainer skills, USC templates) | Manual checkout + repo-local `skills/` | aa with SSH / gh CLI / PAT auth (one-line install) |
+
+ac retains the rows that did not depend on a private-pack mechanism: `reference-skills/` content that is not yet repackaged as a v2 pack, and AGENTS.md private sections (USC / Overleaf / PyCharm-specific rules) that aa's sanitized mirror still strips. Repackaging a private `reference-skills/<name>/` directory as a pack consumable from aa is straightforward once v0.5.0 is in use; the skill content does not change, only the load path.
 
 ## FAQ
 

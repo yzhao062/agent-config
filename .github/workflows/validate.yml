@@ -57,3 +57,80 @@ jobs:
 
       - name: Run validation tests
         run: python -B -m unittest discover -s tests -p "test_*.py" -v
+
+  vendor-sync-check:
+    name: Vendor Sync Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Vendor sync check
+        run: |
+          python scripts/vendor-packs.py check
+
+  v0_5_token_smoke:
+    name: v0.5.0 token-auth smoke + sentinel redaction check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - run: pip install -e .[dev]
+
+      - name: Token method smoke with real Actions token
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from scripts.packs import auth
+          archive = auth.fetch_with_method(
+              "https://github.com/yzhao062/agent-pack",
+              "v0.1.0",
+              "github_token",
+              dest=Path("token-smoke-clone"),
+          )
+          assert (archive.archive_dir / "pack.yaml").exists(), \
+              "token-auth path failed to fetch agent-pack"
+          PY
+
+      - name: Sentinel redaction smoke (rejected URL path)
+        env:
+          ANYWHERE_AGENTS_SENTINEL: anywhere-agents-sentinel-${{ github.run_id }}
+        run: |
+          python -m unittest \
+            tests.test_packs_auth_chain.TestRedactUrlUserinfo \
+            tests.test_packs_auth_chain.TestRedactSecretText \
+            tests.test_packs_auth_chain.TestRejectCredentialURLRedaction \
+            -v
+
+      - name: Compose smoke
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          ANYWHERE_AGENTS_UPDATE: apply
+        run: |
+          mkdir -p test-fixture/.agent-config
+          cat > test-fixture/agent-config.yaml <<EOF
+          packs:
+            - name: profile
+              source:
+                url: https://github.com/yzhao062/agent-pack
+                ref: v0.1.0
+          EOF
+          cd test-fixture
+          python ../scripts/compose_packs.py
+          # TODO(v0.6.0): wire the ANYWHERE_AGENTS_CMDLOG harness so a
+          # real cmd-log writer can cover token leak end-to-end. v0.5.0
+          # ships the redaction primitives (auth.redact_url_userinfo +
+          # auth.redact_secret_text) and unit tests
+          # (tests/test_packs_auth_chain.TestRedact*) as the only
+          # token-leak guard.

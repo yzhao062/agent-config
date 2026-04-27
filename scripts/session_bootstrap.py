@@ -149,6 +149,53 @@ def update_version_cache() -> None:
             pass
 
 
+def _maybe_print_pending_updates(project_root) -> None:
+    """Read ``<project-root>/.agent-config/pending-updates.json`` (if present)
+    and print a compact one-line notice to stdout.
+
+    v0.5.0 Phase 8 Task 8.4: when ``compose_packs.main`` defers an
+    upstream pack update (drift under ``update_policy=prompt`` plus a
+    non-TTY ``ANYWHERE_AGENTS_UPDATE=skip``, or an interactive ``n``),
+    it writes the pending list to ``pending-updates.json``. The next
+    SessionStart hook surfaces a one-line notice so the user sees the
+    deferred work without opening the file. The notice carries BOTH
+    apply commands (Linux/macOS bash + Windows pwsh) on one line so a
+    consumer on either platform sees the relevant invocation.
+
+    Stays silent when:
+
+    - the file is absent (the normal post-clean-run state);
+    - the JSON is malformed (a bad write should not crash the hook);
+    - the ``packs`` list is empty (zero pending → nothing to surface).
+
+    All filesystem and parsing errors are swallowed; the hook never
+    raises. Output goes to stdout so Claude Code attaches it to the
+    session context exactly like the existing bootstrap line.
+    """
+    pending = os.path.join(
+        str(project_root), ".agent-config", "pending-updates.json"
+    )
+    if not os.path.exists(pending):
+        return
+    try:
+        with open(pending, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return
+    packs = data.get("packs") if isinstance(data, dict) else None
+    if not isinstance(packs, list) or not packs:
+        return
+    names = ", ".join(str(p.get("name", "?")) for p in packs)
+    count = len(packs)
+    plural = "" if count == 1 else "s"
+    print(
+        f"anywhere-agents: {count} pack update{plural} pending - {names} "
+        f"- run `bash .agent-config/bootstrap.sh` (Linux/macOS) or "
+        f"`pwsh -File .agent-config/bootstrap.ps1` (Windows) "
+        f"interactively to apply."
+    )
+
+
 def main() -> int:
     cwd = os.getcwd()
 
@@ -226,6 +273,12 @@ def main() -> int:
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode == 0:
         print("anywhere-agents: bootstrap refreshed")
+        # v0.5.0 Phase 8 Task 8.4: surface deferred pack updates from a
+        # prior compose run. Runs only on success — a failed bootstrap
+        # already prints its own diagnostic; piling on a pending notice
+        # would obscure the actionable error.
+        if consumer_root is not None:
+            _maybe_print_pending_updates(consumer_root)
         return 0
 
     print(

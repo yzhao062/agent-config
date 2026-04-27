@@ -94,6 +94,13 @@ Full runbook is `../anywhere-agents/RELEASING.md`. Outline, in order (each step 
      '
      ```
    - **Local end-to-end install tests (Claude-Code-driven).** For releases that touch `bootstrap.sh` / `bootstrap.ps1`, the rule-pack composer (`scripts/compose_rule_packs.py`), or the manifest (`bootstrap/rule-packs.yaml`): ask Claude Code in the active session to drive consumer-install smoke tests end-to-end on **BOTH target platforms** (Windows this machine AND Spark Ubuntu), not only the pytest discover above. The agent has local execution on the maintainer's Windows host and SSH access to Spark, so it can create scratch consumer dirs, fetch the bootstrap from `raw.githubusercontent.com`, run it via Git Bash + PowerShell on Windows and bash on Spark, then verify the composed `AGENTS.md` contains `rule-pack:agent-style:begin` under default-on and matches upstream byte-for-byte under `rule_packs: []` opt-out. This catches shim / Git-Bash-path / PowerShell-execution-policy / pip-install-user-path issues the in-repo pytest suite does not exercise. Ask for it by name: "run the consumer-install end-to-end on Windows bash + PowerShell + Spark Ubuntu against the v<X.Y.Z> candidate".
+   - **Multi-agent smoke step.** For matrix verification across hosts, set `AGENT_CONFIG_HOST` to switch the composer between Claude Code and Codex selection rows:
+
+     ```bash
+     AGENT_CONFIG_HOST=codex python scripts/compose_packs.py
+     ```
+
+     The composer reads `pack.yaml` rows whose `hosts:` field contains the selected host. Rows that omit `hosts:` apply to every host. Run this once with `AGENT_CONFIG_HOST=claude-code` and once with `AGENT_CONFIG_HOST=codex` against the release candidate, and confirm the composed outputs differ only in the host-specific entries.
 2. **Pre-tag real-agent smoke** on the candidate checkout: `bash scripts/pre-push-smoke.sh` (the pre-push git hook runs it automatically on affected pushes; this explicit run gates the release-candidate commit regardless of hook bypass).
 3. **Bump versions and changelog** before the release commit:
    - `packages/pypi/pyproject.toml`
@@ -106,6 +113,28 @@ Full runbook is `../anywhere-agents/RELEASING.md`. Outline, in order (each step 
 7. **Post-release cleanup**: close addressed issues, reset `[Unreleased]` in `CHANGELOG.md`, delete the release-notes scratch file and any `PLAN-*.md`.
 
 Each step's exact commands are in `../anywhere-agents/RELEASING.md`.
+
+## Private-source acceptance procedure
+
+To verify the v0.5.0 auth chain works in your local environment, fetch a private repo you own via SSH:
+
+```bash
+python -c "
+from scripts.packs import auth
+import pathlib
+archive = auth.fetch_with_method(
+    'git@github.com:owner/private-test.git',
+    'main',
+    'ssh',
+    dest=pathlib.Path('.scratch'),
+)
+print(archive.archive_dir)
+"
+```
+
+A clean SSH path returns an archive directory under `.scratch/`. If `ssh-add -L` does not list a key, the SSH method falls through to gh CLI; verify with `gh auth status`. The fall-through chain is documented in `docs/pack-architecture.md`.
+
+Replace `owner/private-test` with one of your own private repos; the test is shape-only and does not depend on a specific repo body. Run the command from the `anywhere-agents` checkout root so the `scripts.packs` import resolves.
 
 ## Key files at a glance
 
@@ -146,7 +175,7 @@ Each step's exact commands are in `../anywhere-agents/RELEASING.md`.
 - `pack.yaml` — self-describing v2 manifest declaring 3 packs (`profile`, `paper-workflow`, `acad-skills`); mirrors the schema used by `aa-core-skills` so v0.5.0 remote-fetch tooling reads it without special handling
 - `docs/rule-pack.md` — `profile` pack body (maintainer identity, public projects, communication preferences, tools, conventions); CC-BY-4.0
 - `docs/paper-workflow.md` — `paper-workflow` pack body (Overleaf submodule etiquette, merge-conflict resolution, NSF/NIH framework defaults); CC-BY-4.0
-- `skills/{bibref-filler,dual-pass-workflow,figure-prompt-builder}/` — active skill content for the `acad-skills` pack; remote installation queued for `anywhere-agents` v0.5.0
+- `skills/{bibref-filler,dual-pass-workflow,figure-prompt-builder}/` — active skill content for the `acad-skills` pack; remote installation via `anywhere-agents` v0.5.0+ direct-URL pack consumption
 - `scripts/validate.py` — v2 schema validator (allowed `update_policy`, allowed `kind`, file mapping path existence); CI runs on every push
 - `README.md` — Consumer Setup with v0.4.0 vs v0.5.0 honest split (v0.4.0: copy bodies into `AGENTS.local.md` or fork aa's bundled manifest; v0.5.0: native `anywhere-agents pack add <url> --ref <tag>`)
 
