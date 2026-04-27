@@ -50,7 +50,8 @@ def _build_fake_tree(base: pathlib.Path):
     STRICT files get identical content on both sides; BY-DESIGN files get
     different content. The real check-parity.sh is copied into
     ``ac/scripts/`` so the script's AC_ROOT resolution lands on the fake
-    tree rather than the real repo.
+    tree rather than the real repo, and into ``aa/scripts/`` so the
+    STRICT byte-equality check (which includes the script itself) passes.
     """
     ac = base / "ac"
     aa = base / "aa"
@@ -106,7 +107,9 @@ def _build_fake_tree(base: pathlib.Path):
     (ac / "skills/my-router/SKILL.md").write_text("# ac router (NSF flavor)\n")
     (aa / "skills/my-router/SKILL.md").write_text("# aa router (generic)\n")
 
-    (ac / "scripts/check-parity.sh").write_text(SCRIPT.read_text(encoding="utf-8"))
+    script_text = SCRIPT.read_text(encoding="utf-8")
+    (ac / "scripts/check-parity.sh").write_text(script_text)
+    (aa / "scripts/check-parity.sh").write_text(script_text)
     return ac, aa
 
 
