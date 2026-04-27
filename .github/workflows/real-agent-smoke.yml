@@ -88,14 +88,11 @@ jobs:
       AGENT_CONFIG_HOST: ${{ matrix.agent }}
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.11"
-      - run: pip install -e .[dev]
       # End-to-end multi-host Compose smoke deferred to v0.5.1: needs a
       # full bundled-bootstrap fixture. The --host flag is unit-tested
       # via tests/test_compose_packs_v0_5.TestDetectHost; the v0.5.0
       # auth chain is validated by validate.yml's v0_5_token_smoke job.
+      # No setup-python or pip install needed while this matrix is a no-op.
       - name: Multi-host compose smoke (deferred to v0.5.1)
         run: echo "Deferred"
 
