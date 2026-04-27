@@ -98,17 +98,24 @@ jobs:
           ANYWHERE_AGENTS_UPDATE: apply
         shell: bash
         run: |
-          mkdir -p smoke-${{ matrix.agent }}/.agent-config
-          cat > smoke-${{ matrix.agent }}/agent-config.yaml <<EOF
+          FIX="smoke-${{ matrix.agent }}"
+          mkdir -p "$FIX/.agent-config/repo/bootstrap"
+          cat > "$FIX/.agent-config/repo/bootstrap/packs.yaml" <<EOF
+          version: 2
+          packs: []
+          EOF
+          cat > "$FIX/.agent-config/AGENTS.md" <<EOF
+          # upstream
+          EOF
+          cat > "$FIX/agent-config.yaml" <<EOF
           packs:
             - name: profile
               source:
                 url: https://github.com/yzhao062/agent-pack
                 ref: v0.1.0
           EOF
-          cd smoke-${{ matrix.agent }}
-          python ../scripts/compose_packs.py --host ${{ matrix.agent }}
-          test -f AGENTS.md
+          python scripts/compose_packs.py --root "$PWD/$FIX" --host ${{ matrix.agent }}
+          test -f "$FIX/AGENTS.md"
 
   codex-smoke:
     name: Codex sees AGENTS.md
