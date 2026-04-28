@@ -6,7 +6,7 @@
 > `<student>` for student accounts, `192.168.1.X` for example LAN IPs.
 > Substitute your own values when applying these instructions.
 
-## Current state (as of 2026-04-13)
+## Current state (as of 2026-04-28)
 
 ### Completed
 - Order received: 2 units (this document currently covers unit A)
@@ -20,6 +20,8 @@
 - Miniforge3 installed at `~/miniforge3` with conda 26.1.1 / mamba 2.5.0
 - `py312` conda environment created (Python 3.12.13), auto-activated via `~/.bashrc`
 - PyTorch 2.11.0+cu128 installed in `py312` (aarch64 wheels from pytorch.org/whl/cu128), GPU access verified: `torch.cuda.is_available()` → True, device = NVIDIA GB10, compute capability 12.1 (Blackwell), real matmul test passed
+- 2026-04-28: Hardened against runaway-memory crash after the 04-26 → 04-28 OOM-cascade incident; `systemd-oomd` enabled, `user.slice` capped at `MemoryMax=120G` with `ManagedOOMMemoryPressure=kill` at 80% PSI. See section 14.
+- 2026-04-28: NOPASSWD sudo configured for the admin user (`/etc/sudoers.d/<admin>-nopasswd`) to enable agent automation; see Pattern A in section 18.
 
 ### In progress
 - Tailscale authentication: next command is `sudo tailscale up --ssh`
@@ -56,7 +58,7 @@
   Workarounds:
   - Break into single-line commands — one command per shell prompt
   - Use `nano ~/.ssh/authorized_keys` and paste inside the editor
-  - Use a Spark-side Claude Code instance to write the file natively (see section 17)
+  - Use a Spark-side Claude Code instance to write the file natively (see section 18)
   - Fix bracketed paste in bash: `echo 'set enable-bracketed-paste on' >> ~/.inputrc` on Spark (may or may not help depending on terminal)
   - Switch to Windows Terminal + native OpenSSH, which handles paste cleanly
 
@@ -143,7 +145,7 @@ Enter your admin password when prompted.
    nano ~/.ssh/authorized_keys   # paste the single key line inside nano, save with Ctrl+X Y Enter
    chmod 600 ~/.ssh/authorized_keys
    ```
-   **Method C: ask a Spark-side Claude Code session** (see section 17): give it the key and let it write the file natively, no shell paste involved.
+   **Method C: ask a Spark-side Claude Code session** (see section 18): give it the key and let it write the file natively, no shell paste involved.
 
 3. Test: `ssh spark-<XXXX>` should now log in without prompting
 4. Repeat for each unit
@@ -478,17 +480,104 @@ sudo systemctl isolate graphical.target
 ```
 Starts `gdm3`, `Xorg`, and GNOME on the spot. Reverts to text-mode at next reboot (because the default is still `multi-user.target`). Useful when you need a GUI session without changing the permanent default.
 
-## 14. Clustering the two units
+## 14. Reliability and OOM protection
+
+### Background: 2026-04-28 incident
+
+After ~48 hours of mixed CUDA workload, a Python process consumed all 128 GB of unified memory. The kernel's global OOM killer fired but ran into a cascade:
+- NVIDIA NVRM driver could not allocate IOVA mapping metadata, triggered Xid 31 GPU MMU fault.
+- `systemd-journald` reported `/dev/kmsg buffer overrun, some messages lost`; kernel logging fell behind.
+- WiFi disconnected (`DEAUTH_LEAVING`).
+- Kernel logged nothing for 1 h 47 m, leaving the system in an effective freeze.
+- Recovery required physical hard power-off.
+
+Root cause: on Grace Blackwell, GPU and CPU share LPDDR5X. CUDA "GPU memory" is system memory. A runaway CUDA allocation can exhaust the entire box, and once kernel global OOM cascades on a unified-memory ARM platform, recovery within the kernel is unreliable.
+
+### Defense: two-layer protection
+
+#### Layer 1: enable systemd-oomd
+
+Ships with Ubuntu 24.04 (DGX OS base) but is not enabled by default. Monitors PSI (pressure stall info) and kills cgroups before kernel-level pressure forces global OOM.
+
+```bash
+sudo systemctl enable --now systemd-oomd
+```
+
+#### Layer 2: cap user-slice memory
+
+Limit total memory across all per-user systemd slices. Leaves headroom for `system.slice` (sshd, NetworkManager, dockerd, tailscaled) so a runaway user process cannot starve infrastructure.
+
+```bash
+sudo mkdir -p /etc/systemd/system/user.slice.d
+sudo tee /etc/systemd/system/user.slice.d/oom-protection.conf > /dev/null <<EOF
+[Slice]
+MemoryMax=120G
+ManagedOOMMemoryPressure=kill
+ManagedOOMMemoryPressureLimit=80%
+EOF
+sudo systemctl daemon-reload
+```
+
+`MemoryMax=120G` is a hard cap on the sum of all `user-<UID>.slice` instances. Reserves 8 GB for system services (DGX OS at idle uses ~3 GB; even with Docker, Tailscale, and several SSH sessions, system load stays below 6 GB).
+
+`ManagedOOMMemoryPressure=kill` with `Limit=80%` lets `systemd-oomd` intervene before the hard limit. When sustained PSI inside `user.slice` exceeds 80%, oomd kills the offending cgroup, with the same outcome as cgroup OOM but quicker and with cleaner logs.
+
+`MemoryHigh` is intentionally **not set**, so workloads near the limit are not throttled by reclaim. The trade-off: workloads either run at full speed under 120 GB, or get killed at the limit. No intermediate slow zone.
+
+### Performance impact
+
+None at normal workload sizes:
+- The cgroup limit is enforced lazily; the kernel only intervenes when usage approaches the limit.
+- Workloads under 115 GB run with zero overhead.
+- `systemd-oomd` itself reads `/proc/pressure/*` every few seconds. CPU and memory overhead are negligible (single-digit MB RSS for the daemon).
+
+### Optional: software-level CUDA guard rail
+
+Cap the CUDA allocator from inside the workload as a courtesy soft-hint. This is not the hard backstop; Layers 1 and 2 are. But it can let a script fail gracefully instead of being killed.
+
+In `~/.bashrc`:
+```bash
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+```
+
+Or in PyTorch code:
+```python
+import torch
+torch.cuda.set_per_process_memory_fraction(0.85)
+```
+
+### Verify
+
+```bash
+systemctl show user.slice -p MemoryMax,ManagedOOMMemoryPressure,ManagedOOMMemoryPressureLimit
+# MemoryMax=128849018880 (= 120 GiB)
+# ManagedOOMMemoryPressure=kill
+# ManagedOOMMemoryPressureLimit=3435973836 (= 80% of 2^32)
+
+systemctl is-active systemd-oomd
+# active
+
+cat /sys/fs/cgroup/user.slice/memory.current   # live usage in bytes
+systemd-cgls user.slice                         # process tree under the slice
+```
+
+### What this does NOT protect against
+
+- **Kernel hangs unrelated to OOM** (driver bugs, hardware faults). Would need the hardware watchdog (`/etc/systemd/system.conf.d/watchdog.conf` with `RuntimeWatchdogSec=30s`). Not enabled here because long legitimate CPU spikes during training would trigger spurious reboots.
+- **Out-of-band access when sshd is up but the network is dead.** Tailscale (section 10) provides this fallback.
+- **Disk-exhaustion runaways.** A separate problem; see `quota` in section 11.
+
+## 15. Clustering the two units
 - NVIDIA ships a "Connect Two Sparks" flow for stacking
 - Uses ConnectX interfaces on the back for a direct high-speed link between the two machines
 - Separate from the office LAN; needed only for multi-node jobs
 - Guide: https://build.nvidia.com/spark/connect-two-sparks/stacked-sparks
 
-## 15. Other tools (optional)
+## 16. Other tools (optional)
 - **NVIDIA Sync**: Windows GUI device manager with first-party Tailscale integration. Nice if you want a clickable device list instead of `ssh`.
 - **Sunshine + Moonlight**: low-latency virtual desktop streaming if you ever need a GUI session on Spark (e.g., for Nsight Systems, or viewing TensorBoard in a browser without port forwarding).
 
-## 16. Fit assessment
+## 17. Fit assessment
 Strong fit:
 - Local prototyping and inference box: 128 GB unified memory holds quantized models up to ~200B params locally
 - CUDA-native stack ports directly to cluster or cloud
@@ -499,7 +588,7 @@ Not a fit:
 - Not a Windows or macOS daily driver (cannot run those OSes at all)
 - Two units justified only if workflow becomes "prototype on Spark, scale on cluster"; risk is under-use if most compute stays on university clusters or cloud
 
-## 17. Agent access patterns (SSH automation and native Claude Code)
+## 18. Agent access patterns (SSH automation and native Claude Code)
 
 This section covers how to give Claude Code, Codex, and other tools the ability to drive Spark without requiring human interaction for every command. Two complementary patterns:
 
@@ -574,6 +663,26 @@ Host spark
 ```
 Then `mkdir -p ~/.ssh/cm-*` so the socket directory exists. Useful when an agent runs many small commands in a row during a setup session.
 
+**Optional: passwordless sudo for the admin user**. With key-based SSH set up, `ssh spark <cmd>` works non-interactively for unprivileged commands. Anything requiring `sudo` still prompts for the admin password, which an agent cannot provide. Granting NOPASSWD removes that gate so an agent can run, e.g., `ssh spark 'sudo systemctl edit user.slice'` end-to-end without human intervention.
+
+```bash
+TMP=$(mktemp)
+echo '<admin> ALL=(ALL:ALL) NOPASSWD: ALL' > "$TMP"
+sudo visudo -c -f "$TMP" && \
+  sudo install -m 0440 -o root -g root "$TMP" /etc/sudoers.d/<admin>-nopasswd && \
+  rm "$TMP" && \
+  sudo -n true && echo "NOPASSWD OK"
+```
+
+The temporary-file plus `visudo -c` validation pattern guarantees an invalid sudoers fragment never lands in `/etc/sudoers.d/`. Mode `0440` and ownership `root:root` are required by `visudo`; it will refuse the file otherwise.
+
+**Security trade-off**: with NOPASSWD active, anyone who obtains the corresponding SSH private key has root immediately. Mitigations:
+- Add a passphrase to the private key: `ssh-keygen -p -f ~/.ssh/id_ed25519`. Use ssh-agent to cache; the agent prompts once per session, not per command.
+- Limit NOPASSWD to specific user accounts (here: admin only), not the whole `sudo` group. Other admins still type their password.
+- Keep this off the collaborator account.
+
+**Revoke**: `sudo rm /etc/sudoers.d/<admin>-nopasswd`.
+
 ### Pattern B: Native Claude Code on Spark
 
 **Why**: SSH from the daily driver works, but every tool call has SSH overhead. For a workflow with many small file operations (navigating a large codebase, running many short commands, editing many files), that latency compounds. A Claude Code instance running **on Spark itself** uses Spark's local shell and filesystem directly — tool calls take single-digit milliseconds instead of hundreds.
@@ -646,7 +755,7 @@ claude
 
 **Both are valid and complementary.** Daily-driver agent for cross-machine orchestration, Spark-native agent for in-depth work on Spark. You can even let them coordinate through shared files (e.g., daily-driver agent SSHes in, writes a task description to `/home/<admin>/task.md`; Spark-native agent picks it up and works on it). Overkill for most situations but possible.
 
-## 18. Primary references
+## 19. Primary references
 - DGX Spark User Guide (PDF): https://docs.nvidia.com/dgx/dgx-spark/dgx-spark.pdf
 - Initial Setup, First Boot: https://docs.nvidia.com/dgx/dgx-spark/first-boot.html
 - Set Up Local Network Access: https://build.nvidia.com/spark/connect-to-your-spark
