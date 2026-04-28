@@ -693,6 +693,22 @@ If any case cannot be expressed in the schema, extend the schema before implemen
 25. GitHub URL normalization: `git@github.com:owner/repo.git` source with no working SSH agent but `gh auth status OK` succeeds via gh CLI after SSH preflight fails quickly under `BatchMode=yes`. Non-`github.com` hosts (GitHub Enterprise, other remotes) do NOT get normalization; URL shape continues to gate the auth method (v0.5.0).
 26. Python/PyYAML fallback: consumers without Python 3 + PyYAML see verbatim upstream `AGENTS.md` on bootstrap; composer does not run; no pack content mounted. Preserves v0.3.0 BC path byte-for-byte (v0.3.0 contract, preserved through v1.0.0).
 
+**Install-lifecycle integration suite** (v0.5.5 deliverable, gate before v0.6.0 noise-audit):
+
+The 26 release-tied scenarios above are checklist items, run by hand against a release candidate. v0.5.0 through v0.5.3 each shipped with at least one regression in the AC → AA → AA+AP migration path that a checklist run would have caught but did not, because by-hand smoke is non-deterministic and is skipped under release pressure. v0.5.4 closes the four migration gaps that surfaced in production; the underlying gap in coverage remains.
+
+Land in v0.5.5 a `tests/integration/test_install_lifecycle.py` pytest module, marked `@pytest.mark.integration` so it stays opt-in (the existing `--ignore=tests/integration` flag in the default test command excludes it). Three baseline scenarios, parametrized through a shared fixture:
+
+1. **fresh_no_user**: empty tempdir, no `~/.config/anywhere-agents/config.yaml` present, run `anywhere-agents`. Asserts: rc=0; bundled defaults deploy (`agent-style` + `aa-core-skills`); no `agent-config.yaml` written; post-bootstrap reconcile call short-circuits per Fix #4.
+2. **fresh_with_user**: empty tempdir, pre-seeded user config with one third-party pack, run `anywhere-agents`. Asserts: rc=0; bundled defaults deploy; post-bootstrap reconcile fires; project `agent-config.yaml` written with the third-party entry; `pack-lock.json` records all entries.
+3. **upgrade_from_prev**: tempdir pre-populated by running the previous-release CLI (loaded from a session-scoped `git worktree add v<prev>` fixture), then re-run with the current source. Asserts: rc=0 both runs; no AC migration triggered (no `commands.bak-*`); drift gate adopts pre-existing pack-output files; final state matches `fresh_with_user`.
+
+Fixture: a session-scoped `prev_release_worktree` that runs `git worktree add /tmp/aa-v<prev>-worktree v<prev>` once, picking `<prev>` as the most-recently-shipped non-current tag. Each scenario invokes the CLI via `subprocess.run([python, "-c", "from anywhere_agents.cli import main; sys.exit(main([]))"], env={"PYTHONPATH": worktree/packages/pypi})`. Cleanup uses Windows-friendly `shutil.rmtree(onerror=_force_remove)` that clears the read-only attribute on git pack files (same pattern as `_migrate_legacy_ac` after v0.5.4).
+
+CI: a dedicated `integration-lifecycle` job runs nightly against `main` and on every release-candidate tag push. Default PR runs do not invoke it (network plus 30-second per-scenario cost). Failure blocks release sign-off but does not block PR merge to `main`.
+
+Non-goals for v0.5.5: no synthetic composer mock (the bug class that surfaces in v0.5.x lives in the real-network path); no Docker harness; no parallelism (each scenario runs serially to avoid worktree contention).
+
 **Release-runbook integration** (per `ONBOARDING.md` cheat-sheet):
 
 - Every release touching `bootstrap.{sh,ps1}`, `compose_packs.py`, `compose_rule_packs.py`, `bootstrap/*.yaml`, or the active-item dispatch must run the Claude-Code-driven end-to-end install smoke on Windows bash + PowerShell + Spark Ubuntu against the release candidate (existing gate).
