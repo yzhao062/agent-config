@@ -535,6 +535,41 @@ Two related capabilities land together: bootstrap-active consumption of inline `
 
 **ac-to-aa-migration.md update**: the "Forward direction" section (already updated in the v0.4.0 cycle to point at `docs/pack-architecture.md`) gets its decision matrix updated; "Paper repo → aa + private pack" replaces "stay on ac".
 
+### aa v0.5.1 → v0.5.6 — operational hardening
+
+The v0.5.0 direct-URL release exposed a chain of operational gaps in the AC → AA + AP migration that surfaced only when the CLI ran against real legacy projects, not against the test fixture suite. v0.5.1 through v0.5.5 each closed a specific gap; v0.5.6 corrected an architectural mistake that all five prior versions had inherited.
+
+- **v0.5.1** — `pack verify [--fix]` CLI plus banner pack-deploy check. The banner reads `.agent-config/pack-lock.json` and surfaces gap-count and update-count half-clauses on session start.
+- **v0.5.2** — bootstrap auto-runs `pack verify --fix --yes` after the compose step. `pack verify --fix` invokes the composer subprocess after writing config rows, collapsing the prior verify-then-bootstrap dance into one command.
+- **v0.5.3** — drift-gate adopt-on-match for pre-existing pack outputs (the composer adopts on-disk files into the lock when content matches expected pack output, avoiding spurious deploy on already-correct state); Phase 1d auto-watch mirror in the `implement-review` skill.
+- **v0.5.4** — closes four AC → AA + AP migration gaps in one ship: composer bundled fallback for missing upstream `pack.yaml` (some `agent-style` versions never shipped one); `pack verify --fix` reconciles bundled-default packs (not just user-level entries); `commands/` AC-side moved aside to `commands.bak-<timestamp>/` on migration; user-config self-heal dedup.
+- **v0.5.5** — composer resolver migrates from the legacy 3-layer to the 4-layer `config_mod.resolved_for_project` with `force_defaults=True`, so bundled defaults always merge into the resolved selection regardless of project-config presence (the v0.5.4 lock-truncation bug was in this branch). Windows cache cleanup hardened: `os.chmod` retry on read-only `.git/objects/pack/*.idx`, `\\?\` long-path syntax for paths above 260 characters, and `_archive_root` recovery for nested `aa-clone-*` directories left by prior failed cleanup.
+- **v0.5.6** — bundles the composer + bundled-default content into the PyPI wheel under `anywhere_agents/composer/`. Closes the v0.5.5 failure mode where the wheel CLI shipped resolver and verify-display fixes but the actual subprocess invocation still ran the user's old composer at `.agent-config/repo/scripts/compose_packs.py`.
+
+#### v0.5.6 architectural change: thick-wheel composer
+
+Prior to v0.5.6 the CLI was a thin shim. `_invoke_composer` invoked `<project>/.agent-config/repo/scripts/compose_packs.py` — the composer cloned by `bootstrap/bootstrap.{sh,ps1}` at last bootstrap. Composer fixes shipped in `scripts/compose_packs.py` reached consumers only when they re-bootstrapped. The wheel-shipped CLI saw the new code; the runtime composer did not. v0.5.5 lock-truncation symptoms persisted on legacy projects despite a green test suite for exactly this reason.
+
+v0.5.6 reverses the layout. The wheel ships its own composer at `anywhere_agents/composer/scripts/compose_packs.py`, plus its own bundled manifest (`composer/bootstrap/packs.yaml`), bundled active-pack source content (`composer/skills/{ci-mockup-figure,implement-review,my-router,readme-polish}/`), and bundled command pointers (`composer/.claude/commands/{4 names}.md`). Two CLI changes deliver this:
+
+- `_bundled_composer_path()` returns the wheel-bundled composer path when `Path(__file__).resolve().parent / "composer" / "scripts" / "compose_packs.py"` exists.
+- `_invoke_composer` keeps the project-local "bootstrap first" gate (a project without `.agent-config/repo/scripts/compose_packs.py` still returns rc=2 with `Run bootstrap first`) but switches the executed binary to `_bundled_composer_path() or project_composer`. Bundled wins whenever the wheel ships one.
+
+`compose_packs.py` adds two helpers so the bundled composer reads its own bundled-default content instead of the project-local clone:
+
+- `_composer_source_root()` returns `Path(__file__).resolve().parent.parent` (the directory that owns the running composer script).
+- `_is_packaged_composer()` returns True when that source root is named `composer` and its parent is `anywhere_agents`. The two real layouts are unambiguous: wheel install → True (`<site-packages>/anywhere_agents/composer/`), project bootstrap → False (`<project>/.agent-config/repo/`), source-repo dev run → False (`<repo>/`).
+
+When `_is_packaged_composer()` is True, `_resolve_manifest_path` prefers `composer/bootstrap/packs.yaml` over the project's stale `.agent-config/repo/bootstrap/packs.yaml`, and `_build_ctx` reads bundled active-pack file sources from `_composer_source_root()` instead of `<project>/.agent-config/repo/`.
+
+The bundled composer is an execution-path replacement, not a bootstrap replacement. `bootstrap/bootstrap.{sh,ps1}` continues to clone the source repo into `.agent-config/repo/`; that clone provides the project signal (without it, the CLI fails fast) and the source for remote-fetched packs (the auth chain still pulls from public/private remotes per `agent-config.yaml`).
+
+**STRICT parity (new aa-internal mirror)**: `scripts/compose_packs.py`, `scripts/compose_rule_packs.py`, `scripts/packs/*.py`, `bootstrap/packs.yaml`, `skills/{4 shipped names}/`, and `.claude/commands/{4 shipped names}.md` now have a wheel-bundled mirror at `packages/pypi/anywhere_agents/composer/`. The mirror must be byte-identical to the source tree (excluding `__pycache__/`). Drift produces a wheel that disagrees with the bootstrap clone — exactly the v0.5.6 fix is meant to prevent. As of v0.5.6 this is a manual release-gate check (run `diff -rq` between source and mirror trees before tagging); a follow-up release (v0.5.7 or v0.6.0) lands the aa-internal STRICT block in `scripts/check-parity.sh`.
+
+**Consumer-facing change**: `pipx install --force` to v0.5.6+ delivers composer fixes to existing bootstrapped projects without re-bootstrap. Bootstrap from scratch is unchanged.
+
+**Lesson learned**: shipping a fix in `scripts/compose_packs.py` alone does not deliver it to existing consumers. v0.5.0 through v0.5.5 each shipped fixes that the test suite confirmed and the legacy-project runtime did not see. The post-code smoke contract therefore extends with: validate every composer fix by `pipx install --force <new-wheel>` against an existing legacy project (an actual project, not a synthetic fixture), then run `pack verify --fix` and inspect the lock. If the lock state matches expectation, the fix is delivered; otherwise the wheel is the source of the disagreement, not the source tree. This check is now item 27 in the post-code smoke list below.
+
 ### ab (`agent-behave`) v0.1.0 — First multi-component pack
 
 - Standalone repo, PyPI-published, parallel release flow to `agent-style` (same 12-section runbook pattern).
@@ -548,8 +583,16 @@ Two related capabilities land together: bootstrap-active consumption of inline `
 - Walk existing guards; demote `decision: deny` to `decision: ask` where the combination `false-positive-risk: high + impact-if-allowed: low|medium` holds. Trigger rate alone is not the criterion: a high-frequency, precise-match, harmful-action check may stay `deny` if false positives are rare and the impact of allowing is high (e.g., destructive git). Known demotion candidates: writing-style hook (high FP, low impact allowed), compound-cd hook (high FP, medium impact allowed).
 - `compose_packs.py` enforces a noise budget at install time using the full criterion above. Warns (or refuses with explicit override) when a combined install produces more than N `high-FP + low/medium-impact + deny` entries; users can override per pack via `decision-override: deny` in `agent-config.yaml`.
 - Per-guard escape hatch env vars: `AGENT_STYLE_HOOK=off`, `AGENT_BEHAVE_HOOK=off`, etc. The blanket `AGENT_CONFIG_GATES=off` stays as the emergency switch.
+- **Update-UX revisit (open scope; specifics decided in v0.6.0 plan-review).** v0.5.6 closed the wheel-delivers-fix gap, but the day-to-day pack-update flow is still split across multiple commands with partially-documented policy semantics. v0.5.x shipped the primitives (`update_policy: {locked, prompt, auto}`, `pack update`, `pack verify --fix`, `latest_known_head` drift detection in the banner) and deliberately deferred the UX layer that ties them together. Items to settle in v0.6.0:
+  - Should `pack verify --fix` apply `prompt`-policy drift inline, or stay as the "compose to current lock" path while `pack update` remains the only apply route? Current behavior is a partial mix that is not documented in the quickstart.
+  - Should the banner's `ℹ N pack update(s) available` line gain a single follow-up command (e.g., `pack update --all` or `pack verify --fix --apply-drift`)?
+  - Should the bundled-default `update_policy: locked` change for one or both of `agent-style` / `aa-core-skills`? Locked is correct for `aa-core-skills` (active code, hooks, skill content). For `agent-style` (passive text only) the wheel already ships a pinned ref, so user-side `prompt` may add redundant drift noise without protecting anything the wheel does not already pin.
+  - Should `pipx upgrade anywhere-agents` (or an equivalent self-update check) run as a banner item or session-start hint, or stay strictly out of consumer-facing commands? The "wheel upgrade is a separate maintainer action" boundary is the conservative default; the v0.6.0 review tests whether that holds when the typical user is the maintainer's three-legacy-project + new-project set rather than a public consumer.
+  - Should `update_policy: auto` remain accepted on active entries, and if so what UX guardrail should explain or constrain it? v0.5.0 removed the parse-time rejection (see `scripts/packs/schema.py` and `tests/test_packs_schema.py::test_active_entry_accepts_auto_policy`), but the Decisions / Round 1 section of this doc and the v0.4.0 churn-semantics paragraph still describe `auto` as passive-only. v0.6.0 should reconcile the docs, tests, and safety story: either keep active `auto` with explicit trust semantics and updated docs, or reintroduce a deliberate rejection with matching tests and migration notes.
 
-**Consumer-facing change**: visible. Users who previously saw silent `deny` on compound-cd / banned-word writes will now see `ask` prompts. CHANGELOG highlights.
+  Out of scope for v0.5.x because the v0.5.0 → v0.5.6 chain was already operational hardening of the install path, and bundling a UX overhaul into the same window would have lost the "one visible concern per release" discipline that the Round 1 decisions established.
+
+**Consumer-facing change**: visible. Users who previously saw silent `deny` on compound-cd / banned-word writes will now see `ask` prompts. CHANGELOG highlights. Update-UX changes (if any land in v0.6.0) are also CHANGELOG-visible.
 
 **Budget gate scope**: after demotions, `aa`'s own defaults have no `high-FP + deny` entries left, so the budget gate mainly serves third-party packs. It still exists as the guardrail that prevents a bundled pack install from accidentally stacking several noisy `deny` hooks.
 
@@ -577,8 +620,9 @@ Summary of which maintainer docs change per release:
 | as v0.4.0 | None (no bootstrap touch) | None | None |
 | aa v0.4.x default switch | None | None | Add "Pinning the full pack" subsection under opt-out |
 | aa v0.5.0 | **New entry required** (auth-chain plumbing in bootstrap) | Update "Claude-Code-driven end-to-end install tests" to cover private-source packs on Windows + Spark | Rewrite "Forward direction" section, replace PLAN-skill-pack-composition.md reference with pointer to this doc, collapse "Paper repo → stay on ac" matrix row |
+| aa v0.5.1 → v0.5.6 | None (no bootstrap script change) | Document manual aa-internal mirror gate; extend post-code smoke contract with item 27 (`pipx install --force` validation against an existing legacy project). aa-internal STRICT block in `scripts/check-parity.sh` deferred to v0.5.7 / v0.6.0. | None — but `docs/anywhere-agents-quickstart.md` lands as the maintainer-internal install / verify cheat sheet for v0.5.6+ |
 | ab v0.1.0 | None | None | Optional: add `agent-behave` to the examples of ab-available packs |
-| aa v0.6.0 | None unless `guard.py` hook wiring changes in bootstrap | Document per-guard escape env vars in "Mechanical Enforcement" | Update FAQ if consumer-visible prompt behavior changes |
+| aa v0.6.0 | None unless `guard.py` hook wiring changes in bootstrap, **or** the update-UX revisit lands a banner-side self-update hint that needs seed-refresh | Document per-guard escape env vars in "Mechanical Enforcement"; if the update-UX revisit lands, document the decided `pack verify --fix` vs `pack update` split | Update FAQ if consumer-visible prompt behavior changes; update `docs/anywhere-agents-quickstart.md` § "Common gotchas" with the decided update-flow semantics |
 | aa v1.0.0 | **New entry required** if `bootstrap.{sh,ps1}` changes for default-pack set | **STRICT list changes**: drop `guard.py` (or rename entry to `banner-guard.py`). Update the mirror table in `docs/anywhere-agents.md`. | Major rewrite: decision matrix collapses further; "what ac keeps" section updates to reflect guard.py extraction |
 
 ## Consumer migration surface
@@ -612,6 +656,19 @@ Snapshot of the STRICT list and how it evolves:
 | `skills/{implement-review, ci-mockup-figure, readme-polish}` | STRICT | STRICT | STRICT | STRICT | STRICT |
 
 `check-parity.sh` updates in lockstep with each row change. The script's `STRICT=()` array lives in `scripts/check-parity.sh`; the edit is a single-line per dropped / added entry.
+
+**aa-internal STRICT mirror** (introduced in v0.5.6): the table above tracks ac ↔ aa parity. v0.5.6 adds a separate axis — aa source ↔ aa wheel-bundled composer — that must stay byte-identical inside the `anywhere-agents` repo. As of v0.5.6 this is a manual release-gate check; a follow-up release adds an aa-internal STRICT block to `scripts/check-parity.sh`.
+
+| Source | Wheel-bundled mirror | Enforcement |
+|---|---|---|
+| `scripts/compose_packs.py` | `packages/pypi/anywhere_agents/composer/scripts/compose_packs.py` | Manual v0.5.6 gate; script guard pending |
+| `scripts/compose_rule_packs.py` | `packages/pypi/anywhere_agents/composer/scripts/compose_rule_packs.py` | Manual v0.5.6 gate; script guard pending |
+| `scripts/packs/*.py` (recursive) | `packages/pypi/anywhere_agents/composer/scripts/packs/` (recursive) | Manual v0.5.6 gate; script guard pending, exclude `__pycache__/` |
+| `bootstrap/packs.yaml` | `packages/pypi/anywhere_agents/composer/bootstrap/packs.yaml` | Manual v0.5.6 gate; script guard pending |
+| `skills/{implement-review,my-router,ci-mockup-figure,readme-polish}` (recursive) | `packages/pypi/anywhere_agents/composer/skills/<name>/` (recursive) | Manual v0.5.6 gate; script guard pending |
+| `.claude/commands/{4 names}.md` | `packages/pypi/anywhere_agents/composer/.claude/commands/<name>.md` | Manual v0.5.6 gate; script guard pending |
+
+The aa-internal block extends `scripts/check-parity.sh`; it is independent of the cross-repo STRICT block above. Drift produces a wheel composer that disagrees with the bootstrap clone, which is exactly the v0.5.6 architecture is meant to prevent. v0.5.6 day-zero shipped with one drifted file (`skills/implement-review/SKILL.md`, single-phrase substitution caught by review and resolved in commit `6d156fe`); the parity guard prevents future single-character drift from recurring silently.
 
 ## Regression and failure analysis
 
@@ -692,6 +749,7 @@ If any case cannot be expressed in the schema, extend the schema before implemen
 24. Noninteractive fetch env: with no SSH key and no `gh auth status` and no `GITHUB_TOKEN`, private-pack fetch fails within `ConnectTimeout=10` window (does not hang) and produces composite auth-failure error listing all attempted methods (v0.5.0).
 25. GitHub URL normalization: `git@github.com:owner/repo.git` source with no working SSH agent but `gh auth status OK` succeeds via gh CLI after SSH preflight fails quickly under `BatchMode=yes`. Non-`github.com` hosts (GitHub Enterprise, other remotes) do NOT get normalization; URL shape continues to gate the auth method (v0.5.0).
 26. Python/PyYAML fallback: consumers without Python 3 + PyYAML see verbatim upstream `AGENTS.md` on bootstrap; composer does not run; no pack content mounted. Preserves v0.3.0 BC path byte-for-byte (v0.3.0 contract, preserved through v1.0.0).
+27. **Wheel-delivers-composer-fix smoke** (v0.5.6+, gates every release that touches `scripts/compose_packs.py` or the `composer/` mirror): build the wheel; `pipx install --force <wheel>` on a maintainer test project whose `.agent-config/repo/` was bootstrapped at the previous release; run `pack verify --fix`; inspect `.agent-config/pack-lock.json`. Pass when the lock state matches the intent of the fix. Fail when it matches the previous-release behavior — that means the wheel did not deliver the composer fix to the existing project, which is the v0.5.0 → v0.5.5 failure pattern. Item 27 catches the class of bug that test-suite-only validation missed five times in a row.
 
 **Install-lifecycle integration suite** (v0.5.5 deliverable, gate before v0.6.0 noise-audit):
 
@@ -778,6 +836,7 @@ If a further axis is spotted at any later release-planning round, schema change 
 | as v0.4.0 | Slim variants | `rule-pack-field.md`, `rule-pack-lite.md`, release-time drift check | None |
 | aa v0.4.x | Default switch | `DEFAULT_SELECTIONS → agent-style-field`, CHANGELOG note | Medium |
 | aa v0.5.0 | Direct-URL packs (public + private) | Bootstrap-active consumption of inline `source:` in `agent-config.yaml` for both `rule_packs:` and `packs:` (closes v0.4.0 schema-vs-consumption gap; `yzhao062/agent-pack` loadable end-to-end), SSH / gh / token auth chain, parser accepts private entries, pack-lock integrity applies to private, MIGRATIONS.md seed-refresh entry | None (new capability only) |
+| aa v0.5.1 → v0.5.6 | Operational hardening; thick-wheel composer at v0.5.6 | `pack verify [--fix]` CLI + banner pack-deploy check; bootstrap auto-fix; drift-gate adopt-on-match; AC migration helpers; `force_defaults` 4-layer resolver; Windows cache hardening; **wheel-bundled composer + bundled-default content under `anywhere_agents/composer/`** (v0.5.6); new aa-internal STRICT mirror | Low — `pipx install --force` to v0.5.6+ now delivers composer fixes to existing bootstrapped projects without re-bootstrap |
 | ab v0.1.0 | `agent-behave` product | First 3-slot pack | None (opt-in) |
 | aa v0.6.0 | Noise audit | Demotion criterion is `false-positive-risk` × `impact-if-allowed` (not trigger-rate alone); composer noise budget; per-guard env vars | Medium |
 | aa v1.0.0 | Full decoupling | `guard.py` extraction, STRICT list shrinks, default-on ab, **hard-fail on legacy `rule_packs:` / `rule-packs.yaml` with explicit migration error** | Medium |
