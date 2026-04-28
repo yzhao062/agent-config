@@ -594,6 +594,8 @@ The bundled composer is an execution-path replacement, not a bootstrap replaceme
 
   Out of scope for v0.5.x because the v0.5.0 → v0.5.6 chain was already operational hardening of the install path, and bundling a UX overhaul into the same window would have lost the "one visible concern per release" discipline that the Round 1 decisions established.
 
+- **Rule-pack size budget (cross-repo, blocked on agent-style v0.3.3).** Real consumer `CLAUDE.md` files reach 120-140k chars and trigger Claude Code's 40k size warning, with the agent-style rule pack alone contributing ~65% of the total. agent-style v0.3.3 will ship a `docs/rule-pack-compact.md` alongside the full file (issue tracker: yzhao062/agent-style#6). Once that lands, aa v0.6.0 flips `bootstrap/packs.yaml` so the agent-style entry's `from:` field points at the compact file. Consumers who want the full inline content override the `from:` field per-project in their own `agent-config.yaml`. The change is one line in `bootstrap/packs.yaml`; no `style: compact|full` schema knob is added.
+
 **Consumer-facing change**: visible. Users who previously saw silent `deny` on compound-cd / banned-word writes will now see `ask` prompts. CHANGELOG highlights. Update-UX changes (if any land in v0.6.0) are also CHANGELOG-visible.
 
 **Budget gate scope**: after demotions, `aa`'s own defaults have no `high-FP + deny` entries left, so the budget gate mainly serves third-party packs. It still exists as the guardrail that prevents a bundled pack install from accidentally stacking several noisy `deny` hooks.
