@@ -36,10 +36,34 @@ Signals that the round-trip pays off:
 1. Write the plan to a scratch file `PLAN-<identifier>.md` in the most natural location for the task (repo root for code, paper-repo root for Overleaf-style docs, a local scratch directory beside the deliverable for tasks that do not live in git). If the plan lands inside a git worktree, add it to `.git/info/exclude` so `git add -A` does not accidentally stage it; outside git, keep it as a clearly named scratch file outside the final deliverable and delete it after review.
 2. Content varies by task but at minimum include: purpose, non-goals, structure, regression or failure analysis, validation plan, open questions. Keep it terse -- 1 to 3 pages.
 3. Send the plan through a plan-review prompt (not the staged-change template). Make clear this is a pre-execution design review and that the plan file path or pasted contents are what the reviewer should read; instruct the reviewer to critique the design rather than to run `git diff --cached`. Use the normal "Save your complete review to Review-<AgentName>.md" save-contract from Phase 1c.
-4. Iterate until the review has no High findings and no new design blockers.
-5. Then execute (code, draft, revise, deploy).
-6. Run the normal review cycle on the staged output. It is typically smaller because the architecture was already validated.
-7. After the work ships or is submitted, delete the PLAN file.
+4. **Reviewer must answer the scope-challenge questions** (see "Adversarial scope challenge" below) before any in-scope correctness review.
+5. Iterate until the review has no High findings and no new design blockers.
+6. Then execute (code, draft, revise, deploy).
+7. Run the normal review cycle on the staged output. It is typically smaller because the architecture was already validated.
+8. After the work ships or is submitted, delete the PLAN file.
+
+### Adversarial scope challenge (mandatory in plan-review)
+
+Plan-review **must** be adversarial about plan purpose and shape, **not** about low-probability edge cases. The single biggest plan-review failure mode in this maintainer's history was not "the plan had a bug" — it was "the plan's scope was over-conservative, deferring user value across an extra release cycle worth of process tax." Examples:
+
+- Conservative scope (`v0.5.7 = ref bump only; defer compact to v0.6.0`) → the user's real projects would have stayed on large `AGENTS.md` files for another release cycle. The apparent product ask was a one-line bundled manifest flip, but existing-consumer delivery also required bundled-default drift detection in aa plus real-project upgrade tests. The scope challenge should force reviewers to price both parts: user value now, and the smallest code path that actually delivers it.
+- Conservative deferrals also defer the validation that proves the next-step works in real consumers, so the next release inherits the same uncertainty plus a longer review chain.
+
+The plan-review prompt must instruct the reviewer to take an explicit position on:
+
+1. **Why this exact scope?** What user pain (or user opportunity) does THIS scope close? Could a strictly smaller scope close most of it? Could a marginally larger scope close all of it for low marginal cost?
+2. **Are deferrals justified?** Every "out of scope / deferred to vNext" carries process tax: another full plan-review + implement + execution-review + CI + publish cycle. Quantify the deferral. If the deferred axis is 1 line of code and the user pain is real, the deferral is probably wrong.
+3. **Is this plan the simplest path?** Are there simpler approaches the plan didn't consider — including doing nothing if the user pain is hypothetical?
+
+Plan-review must **not** default to "no blocker, ready to implement" on the first round when scope is multi-axis or when the plan defers a user-facing axis. The reviewer must either raise a scope challenge OR explicitly state why the scope is calibrated. Skipping the explicit position on these three questions counts as an incomplete review.
+
+Anti-patterns the reviewer must NOT pursue:
+
+- **Edge-case fishing**: "what if user has unusual config Y?" — only matters when realistic probability × impact > review cost.
+- **Process ritual**: "should this also do Z?" without grounding in user pain or opportunity.
+- **Adversarial-for-its-own-sake**: rejecting plans whose scope IS calibrated, or proposing scope expansion that adds cost without proportional user benefit.
+
+The Phase 1c prompt template `Scope-challenge focus:` line below carries this contract into every plan-review send.
 
 ### Illustrative examples (not exhaustive; the category is less important than the pattern)
 
@@ -147,6 +171,7 @@ Run `git diff --cached` to see the diff. Files changed: <file list>.
 Summary: <one to three sentences>
 Lens: <content type> — <abbreviated criteria, sub-lens, or agency-specific lens name>
 Focus: <additional focus if any, or omit line>
+Scope-challenge focus (mandatory; reviewer must take an explicit position): (a) Why exactly this scope — what user pain or opportunity does it close, could a smaller scope close most of it, could a marginally larger scope close all of it for low cost? (b) Is each "out of scope / deferred to vNext" worth its process tax (extra plan-review + implement + execution-review + CI + publish cycle) versus inclusion now? (c) Is this plan the simplest path? Be adversarial about purpose and shape; do NOT fish for low-probability edge cases.
 <When the staged diff spans two or more variant targets:>
 Variant targets:
 - TARGET A: <path or pattern>

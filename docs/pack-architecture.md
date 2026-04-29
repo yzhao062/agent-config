@@ -564,11 +564,27 @@ When `_is_packaged_composer()` is True, `_resolve_manifest_path` prefers `compos
 
 The bundled composer is an execution-path replacement, not a bootstrap replacement. `bootstrap/bootstrap.{sh,ps1}` continues to clone the source repo into `.agent-config/repo/`; that clone provides the project signal (without it, the CLI fails fast) and the source for remote-fetched packs (the auth chain still pulls from public/private remotes per `agent-config.yaml`).
 
-**STRICT parity (new aa-internal mirror)**: `scripts/compose_packs.py`, `scripts/compose_rule_packs.py`, `scripts/packs/*.py`, `bootstrap/packs.yaml`, `skills/{4 shipped names}/`, and `.claude/commands/{4 shipped names}.md` now have a wheel-bundled mirror at `packages/pypi/anywhere_agents/composer/`. The mirror must be byte-identical to the source tree (excluding `__pycache__/`). Drift produces a wheel that disagrees with the bootstrap clone — exactly the v0.5.6 fix is meant to prevent. As of v0.5.6 this is a manual release-gate check (run `diff -rq` between source and mirror trees before tagging); a follow-up release (v0.5.7 or v0.6.0) lands the aa-internal STRICT block in `scripts/check-parity.sh`.
+**STRICT parity (new aa-internal mirror)**: `scripts/compose_packs.py`, `scripts/compose_rule_packs.py`, `scripts/packs/*.py`, `bootstrap/packs.yaml`, `skills/{4 shipped names}/`, and `.claude/commands/{4 shipped names}.md` now have a wheel-bundled mirror at `packages/pypi/anywhere_agents/composer/`. The mirror must be byte-identical to the source tree (excluding `__pycache__/`). Drift produces a wheel that disagrees with the bootstrap clone — exactly the v0.5.6 fix is meant to prevent. As of v0.5.7 this is still a manual release-gate check (run `diff -rq` between source and mirror trees before tagging); v0.6.0 lands the aa-internal STRICT block in `scripts/check-parity.sh`.
 
 **Consumer-facing change**: `pipx install --force` to v0.5.6+ delivers composer fixes to existing bootstrapped projects without re-bootstrap. Bootstrap from scratch is unchanged.
 
 **Lesson learned**: shipping a fix in `scripts/compose_packs.py` alone does not deliver it to existing consumers. v0.5.0 through v0.5.5 each shipped fixes that the test suite confirmed and the legacy-project runtime did not see. The post-code smoke contract therefore extends with: validate every composer fix by `pipx install --force <new-wheel>` against an existing legacy project (an actual project, not a synthetic fixture), then run `pack verify --fix` and inspect the lock. If the lock state matches expectation, the fix is delivered; otherwise the wheel is the source of the disagreement, not the source tree. This check is now item 27 in the post-code smoke list below.
+
+### aa v0.5.7 — Compact rule-pack rollout
+
+Three coupled changes deliver agent-style v0.3.5's compact rule-pack to existing aa v0.5.6 consumers via two commands (`pipx install --force anywhere-agents==0.5.7 && anywhere-agents pack verify --fix`):
+
+- **Bundled default flip.** `bootstrap/packs.yaml` (and the wheel-bundled mirror) bumps `agent-style` `ref: v0.3.2 → v0.3.5` and `passive.files[].from: docs/rule-pack.md → docs/rule-pack-compact.md`. agent-style v0.3.5 ships a 20.6 KB `docs/rule-pack-compact.md` alongside the original ~89 KB `docs/rule-pack.md`; the compact file is a directive + BAD/GOOD-only render of the same 21 rules. Real consumer measurement: `usc-admin` `AGENTS.md` 139 KB → 70 KB (49.5% reduction).
+- **Bundled-default drift detection (`pack verify --fix`).** v0.5.6's thick-wheel composer reports "nothing to repair" when the lock's stored `(ref, source_path)` matches on-disk output even though the wheel-bundled manifest has advanced. v0.5.7 adds a new `_VERIFY_STATE_BUNDLED_DRIFT` state in `cli.py` and a detection helper that compares wheel-bundled `(ref, source_paths)` against lock entries; drifted bundled defaults route through composer in `--fix`. Test-isolation gate on bootstrap-clone presence; lock-source_path leniency only fires path-drift when the lock has source_path entries.
+- **RELEASING.md procedural hardening.** Mandatory pre-publish `npx markdown-link-check` against staged compact-file rendering; commit-bound CI gate (`gh run list --commit "$release_sha"`, then `gh run watch <run_id> --exit-status`) before `git push --tags` and `python -m twine upload`. Same pattern landed in `agent-style/RELEASING.md` after the v0.3.4 dead-link incident. Lesson: registry pushes are immutable, so the gate must be procedural and pre-tag, not post-publish detection.
+
+**Verify-stable, bootstrap-migrates asymmetry.** `pack verify --fix` leaves a project with `name: agent-style` and an older `ref` alone when its deployed output still matches the lock (`_has_explicit_default_override` short-circuits drift detection on entries with any `source` / `ref` / `passive` / `active` / `update_policy` keys). A full composer / bootstrap run, however, re-derives the pack definition from the bundled manifest and writes compact output even when the consumer row carries an old full-body `passive.files[].from`. Consumers requiring the old full-body bundled default stay on aa v0.5.6 until same-ref source-path switching lands in v0.6.0. CHANGELOG and `docs/rule-pack-composition.md` document this caveat.
+
+**Real-project reproduction (random, 2026-04-28).** Three of four maintainer projects (`usc-slides`, `usc-email`, `usc-admin`) migrated cleanly via the two-command upgrade. `random` did not: its `agent-config.yaml` already carried `name: agent-style` + `source: { url: ..., ref: v0.3.2 }` from a prior aa-self-reconciliation pass (`_user_only_rule_pack_entry` / `_project_only_user_pack_entry` auto-write on `pack verify --fix --yes`). The BC guard saw `source` present and short-circuited drift detection. Manually deleting the synthetic entry and re-running `pack verify --fix` migrated `random` cleanly. This is the strongest single piece of evidence for the v0.6.0 BC-guard refinement entry below.
+
+**STRICT parity**: aa-internal mirror updated for `bootstrap/packs.yaml`. `cli.py` drift-detection logic is aa-only (not mirrored to ac). Mirror integrity verified manually before tagging. The aa-internal STRICT block for `scripts/check-parity.sh` stays deferred to v0.6.0.
+
+**Consumer-facing change**: visible. Two-command upgrade migrates 3-of-4 typical projects from full to compact `AGENTS.md`. Projects with auto-reconciled minimal entries do not migrate until the v0.6.0 BC-guard refinement; the v0.5.7 CHANGELOG flags the broader verify/bootstrap asymmetry, while this doc records the random-specific follow-up.
 
 ### ab (`agent-behave`) v0.1.0 — First multi-component pack
 
@@ -578,11 +594,10 @@ The bundled composer is an execution-path replacement, not a bootstrap replaceme
 
 **`ac` / `aa` impact**: none at this release — `aa`'s built-in `guard.py` still handles git / gh / compound-cd checks. `ab` is an opt-in addition, not a replacement.
 
-### aa v0.6.0 — Noise audit
+### aa v0.6.0 — Update-flow coherence
 
-- Walk existing guards; demote `decision: deny` to `decision: ask` where the combination `false-positive-risk: high + impact-if-allowed: low|medium` holds. Trigger rate alone is not the criterion: a high-frequency, precise-match, harmful-action check may stay `deny` if false positives are rare and the impact of allowing is high (e.g., destructive git). Known demotion candidates: writing-style hook (high FP, low impact allowed), compound-cd hook (high FP, medium impact allowed).
-- `compose_packs.py` enforces a noise budget at install time using the full criterion above. Warns (or refuses with explicit override) when a combined install produces more than N `high-FP + low/medium-impact + deny` entries; users can override per pack via `decision-override: deny` in `agent-config.yaml`.
-- Per-guard escape hatch env vars: `AGENT_STYLE_HOOK=off`, `AGENT_BEHAVE_HOOK=off`, etc. The blanket `AGENT_CONFIG_GATES=off` stays as the emergency switch.
+The v0.5.x chain shipped the install / upgrade primitives (`pack verify`, `pack verify --fix`, `pack update`, `_VERIFY_STATE_BUNDLED_DRIFT`, `latest_known_head`) and the wheel-bundled composer that delivers them. v0.5.7 closed the bundled-default migration path for projects with no prior auto-reconciliation residue. v0.6.0 unifies the day-to-day update flow and closes the residual bundled-default migration cases. Concrete user-pain reproductions: `usc-slides` (Q1 below) and `random` (BC-guard refinement below).
+
 - **Update-UX revisit (open scope; specifics decided in v0.6.0 plan-review).** v0.5.6 closed the wheel-delivers-fix gap, but the day-to-day pack-update flow is still split across multiple commands with partially-documented policy semantics. v0.5.x shipped the primitives (`update_policy: {locked, prompt, auto}`, `pack update`, `pack verify --fix`, `latest_known_head` drift detection in the banner) and deliberately deferred the UX layer that ties them together. Items to settle in v0.6.0:
   - Should `pack verify --fix` apply `prompt`-policy drift inline, or stay as the "compose to current lock" path while `pack update` remains the only apply route? Current behavior is a partial mix that is not documented in the quickstart.
   - Should the banner's `ℹ N pack update(s) available` line gain a single follow-up command (e.g., `pack update --all` or `pack verify --fix --apply-drift`)?
@@ -594,13 +609,29 @@ The bundled composer is an execution-path replacement, not a bootstrap replaceme
 
   Out of scope for v0.5.x because the v0.5.0 → v0.5.6 chain was already operational hardening of the install path, and bundling a UX overhaul into the same window would have lost the "one visible concern per release" discipline that the Round 1 decisions established.
 
-- **Rule-pack size budget (cross-repo, blocked on agent-style v0.3.3).** Real consumer `CLAUDE.md` files reach 120-140k chars and trigger Claude Code's 40k size warning, with the agent-style rule pack alone contributing ~65% of the total. agent-style v0.3.3 will ship a `docs/rule-pack-compact.md` alongside the full file (issue tracker: yzhao062/agent-style#6). Once that lands, aa v0.6.0 flips `bootstrap/packs.yaml` so the agent-style entry's `from:` field points at the compact file. Consumers who want the full inline content override the `from:` field per-project in their own `agent-config.yaml`. The change is one line in `bootstrap/packs.yaml`; no `style: compact|full` schema knob is added.
+- **Rule-pack size budget — shipped in v0.5.7.** The compact-file flip + drift-detection landed in v0.5.7 (one-line bundled `from:` change plus `_VERIFY_STATE_BUNDLED_DRIFT` in `cli.py`). See the v0.5.7 section above for the full description and the `random` reproduction that motivates the BC-guard refinement below.
 
-**Consumer-facing change**: visible. Users who previously saw silent `deny` on compound-cd / banned-word writes will now see `ask` prompts. CHANGELOG highlights. Update-UX changes (if any land in v0.6.0) are also CHANGELOG-visible.
+- **Reconciliation-aware BC guard refinement (carried over from v0.5.7).** v0.5.7's `_has_explicit_default_override` treats any `agent-config.yaml` entry with `source` / `ref` / `passive` / `active` / `update_policy` keys as a user-explicit pin and skips bundled-default drift detection. This is too coarse: aa's own auto-reconciliation (`_user_only_rule_pack_entry` / `_project_only_user_pack_entry`, invoked on `pack verify --fix --yes`) writes minimal `{name, source: {url, ref}}` entries that look identical to user pins. Result: a project whose entry was auto-written by aa in a prior session does not migrate to the new bundled default — concretely the `random` reproduction in the v0.5.7 section. v0.6.0 refines the guard so it only protects entries whose shape is genuinely user-authored: presence of `passive` or `active` keys (real shape override), or `ref` / `update_policy` deviating from the bundled default (deliberate pin). Entries byte-equivalent to what aa's reconciliation would produce are no longer treated as opaque pins. CHANGELOG flags the behavior change. Same-ref source-path switching (the v0.5.7 caveat about consumers requiring the old full-body bundled default) is a sibling concern in the same code path; v0.6.0 plan-review decides whether to bundle them.
+
+- **aa-internal STRICT block for `scripts/check-parity.sh` (deferred from v0.5.6 / v0.5.7) — release-hardening, not user-facing.** The wheel-bundled mirror at `packages/pypi/anywhere_agents/composer/` is currently a manual release-gate check (`diff -rq`). v0.6.0 lands the script-level enforcement: extends `scripts/check-parity.sh` with an aa-internal STRICT block covering `compose_packs.py`, `compose_rule_packs.py`, `scripts/packs/*.py`, `bootstrap/packs.yaml`, the four shipped skills, and the four `.claude/commands/*.md` pointers (excluding `__pycache__/`). Drift fails the pre-push gate the same way cross-repo STRICT does today. This is internal infrastructure; it does not define the user-facing scope of v0.6.0.
+
+**Consumer-facing change**: visible. Update-UX decisions land as CHANGELOG-visible behavior (e.g., `pack verify --fix` applying `prompt`-policy drift inline, banner follow-up command if Q2 lands, bundled-default policy change if Q3 lands). The `random`-style failure mode (auto-reconciled minimal entry blocks bundled-default migration) is fixed for future bundled-default bumps; CHANGELOG explicitly notes the behavior change.
+
+**STRICT parity**: aa-internal STRICT block extends `scripts/check-parity.sh` for the wheel-bundled mirror. Cross-repo `guard.py` STRICT membership is unchanged in this release; noise-audit demotions ship in v0.7.0.
+
+### aa v0.7.0 — Noise audit
+
+- Walk existing guards; demote `decision: deny` to `decision: ask` where the combination `false-positive-risk: high + impact-if-allowed: low|medium` holds. Trigger rate alone is not the criterion: a high-frequency, precise-match, harmful-action check may stay `deny` if false positives are rare and the impact of allowing is high (e.g., destructive git). Known demotion candidates: writing-style hook (high FP, low impact allowed), compound-cd hook (high FP, medium impact allowed).
+- `compose_packs.py` enforces a noise budget at install time using the full criterion above. Warns (or refuses with explicit override) when a combined install produces more than N `high-FP + low/medium-impact + deny` entries; users can override per pack via `decision-override: deny` in `agent-config.yaml`.
+- Per-guard escape hatch env vars: `AGENT_STYLE_HOOK=off`, `AGENT_BEHAVE_HOOK=off`, etc. The blanket `AGENT_CONFIG_GATES=off` stays as the emergency switch.
+
+**Consumer-facing change**: visible. Users who previously saw silent `deny` on compound-cd / banned-word writes will now see `ask` prompts. CHANGELOG highlights.
 
 **Budget gate scope**: after demotions, `aa`'s own defaults have no `high-FP + deny` entries left, so the budget gate mainly serves third-party packs. It still exists as the guardrail that prevents a bundled pack install from accidentally stacking several noisy `deny` hooks.
 
 **STRICT parity**: `guard.py` is STRICT byte-identical between ac and aa. Noise-audit changes land in both. `check-parity.sh` continues to enforce byte-identical until v1.0 extraction.
+
+**Why split from v0.6.0**: v0.6.0 has concrete user-pain reproductions (`random` BC-guard, `usc-slides` Q1) and is gated on closing the upgrade-flow loop. The noise audit is independent code surface (`guard.py` + composer install gates) with no concrete trigger today. Combining both in one release would couple two visible consumer changes (deny→ask demotions + update-flow decisions) and lose the "one visible concern per release" discipline.
 
 ### aa v1.0.0 — Full decoupling
 
@@ -624,9 +655,11 @@ Summary of which maintainer docs change per release:
 | as v0.4.0 | None (no bootstrap touch) | None | None |
 | aa v0.4.x default switch | None | None | Add "Pinning the full pack" subsection under opt-out |
 | aa v0.5.0 | **New entry required** (auth-chain plumbing in bootstrap) | Update "Claude-Code-driven end-to-end install tests" to cover private-source packs on Windows + Spark | Rewrite "Forward direction" section, replace PLAN-skill-pack-composition.md reference with pointer to this doc, collapse "Paper repo → stay on ac" matrix row |
-| aa v0.5.1 → v0.5.6 | None (no bootstrap script change) | Document manual aa-internal mirror gate; extend post-code smoke contract with item 27 (`pipx install --force` validation against an existing legacy project). aa-internal STRICT block in `scripts/check-parity.sh` deferred to v0.5.7 / v0.6.0. | None — but `docs/anywhere-agents-quickstart.md` lands as the maintainer-internal install / verify cheat sheet for v0.5.6+ |
+| aa v0.5.1 → v0.5.6 | None (no bootstrap script change) | Document manual aa-internal mirror gate; extend post-code smoke contract with item 27 (`pipx install --force` validation against an existing legacy project). aa-internal STRICT block in `scripts/check-parity.sh` deferred to v0.6.0. | None — but `docs/anywhere-agents-quickstart.md` lands as the maintainer-internal install / verify cheat sheet for v0.5.6+ |
+| aa v0.5.7 | None (no bootstrap script change) | Update bundled-default drift section if `_VERIFY_STATE_BUNDLED_DRIFT` semantics change in maintainance; pre-publish RELEASING gate (link-check + commit-bound CI watch) carried over from agent-style/RELEASING.md | Update `docs/anywhere-agents-quickstart.md` § "Common gotchas" with the verify-stable / bootstrap-migrates asymmetry caveat and the auto-reconciliation BC-guard limitation (random reproduction); document the two-command upgrade flow |
 | ab v0.1.0 | None | None | Optional: add `agent-behave` to the examples of ab-available packs |
-| aa v0.6.0 | None unless `guard.py` hook wiring changes in bootstrap, **or** the update-UX revisit lands a banner-side self-update hint that needs seed-refresh | Document per-guard escape env vars in "Mechanical Enforcement"; if the update-UX revisit lands, document the decided `pack verify --fix` vs `pack update` split | Update FAQ if consumer-visible prompt behavior changes; update `docs/anywhere-agents-quickstart.md` § "Common gotchas" with the decided update-flow semantics |
+| aa v0.6.0 | None unless the update-UX revisit lands a banner-side self-update hint that needs seed-refresh | Document the decided `pack verify --fix` vs `pack update` split; document the reconciliation-aware BC-guard refinement; document the new aa-internal STRICT block in `check-parity.sh` | Update FAQ if consumer-visible prompt behavior changes; update `docs/anywhere-agents-quickstart.md` § "Common gotchas" with the decided update-flow semantics and the BC-guard behavior change |
+| aa v0.7.0 | None unless `guard.py` hook wiring changes in bootstrap | Document per-guard escape env vars in "Mechanical Enforcement"; document the noise-audit demotion criterion and noise-budget threshold | Update FAQ for consumer-visible prompt behavior changes (deny→ask) |
 | aa v1.0.0 | **New entry required** if `bootstrap.{sh,ps1}` changes for default-pack set | **STRICT list changes**: drop `guard.py` (or rename entry to `banner-guard.py`). Update the mirror table in `docs/anywhere-agents.md`. | Major rewrite: decision matrix collapses further; "what ac keeps" section updates to reflect guard.py extraction |
 
 ## Consumer migration surface
@@ -647,7 +680,7 @@ Snapshot of the STRICT list and how it evolves:
 
 | File | v0.3.x | v0.4.0 | v0.5.0 | v0.6.0 | v1.0.0 |
 |---|---|---|---|---|---|
-| `scripts/guard.py` | STRICT | STRICT | STRICT | STRICT (demotions land in both) | **DROPPED** (extracted to ab) |
+| `scripts/guard.py` | STRICT | STRICT | STRICT | STRICT (v0.6.0 unchanged; v0.7.0 demotions land in both) | **DROPPED** (extracted to ab) |
 | `scripts/session_bootstrap.py` | STRICT | STRICT | STRICT | STRICT | STRICT |
 | `scripts/generate_agent_configs.py` | STRICT | STRICT | STRICT | STRICT | STRICT |
 | `scripts/compose_rule_packs.py` | — | STRICT (mirrored during delegation) | may drop once `compose_packs.py` is sole entry | dropped | dropped |
@@ -695,9 +728,9 @@ The aa-internal block extends `scripts/check-parity.sh`; it is independent of th
 
 **False-positive / noise risk**:
 
-1. `trigger-rate: high + decision: ask` is less blocking than today's `deny` but still visible. Users who preferred silent deny may see more prompts. Mitigation: noise audit is a separate release (v0.6.0); users pin `decision-override: deny` per-pack in `agent-config.yaml` if they want the old behavior.
+1. `trigger-rate: high + decision: ask` is less blocking than today's `deny` but still visible. Users who preferred silent deny may see more prompts. Mitigation: noise audit is a separate release (v0.7.0); users pin `decision-override: deny` per-pack in `agent-config.yaml` if they want the old behavior.
 2. Composing 3+ packs each with their own hooks doubles or triples PreToolUse latency. Mitigation: composer flags at install time when combined hook count exceeds a threshold (say 5).
-3. Writing-style gate false positives on meta-discussion documents (style guides, CHANGELOGs that quote banned words). Mitigation: `ask` instead of `deny` from v0.6.0 reduces the blast radius; per-file-name whitelist in manifest (e.g., `exempt: [STYLE.md, CHANGELOG.md]`) is a possible extension.
+3. Writing-style gate false positives on meta-discussion documents (style guides, CHANGELOGs that quote banned words). Mitigation: `ask` instead of `deny` from v0.7.0 reduces the blast radius; per-file-name whitelist in manifest (e.g., `exempt: [STYLE.md, CHANGELOG.md]`) is a possible extension.
 
 **BC policy**:
 
@@ -741,7 +774,7 @@ If any case cannot be expressed in the schema, extend the schema before implemen
 12. Fresh v0.5.0 install with a private-source pack (test fixture) + valid SSH → skill materialized in `.claude/skills/<name>/`, pack-lock records resolved commit; invalid SSH → clear error, no silent anonymous fallback to a public repo of the same path.
 13. Fresh v0.5.0 install in a submodule with its own `.agent-config/upstream` → private pack loads per-submodule without leaking into the outer repo.
 14. v0.5.0 rollback: `packs: [X]` installed, then flip upstream back to `ac` → uninstall-all runs before re-bootstrap, resulting in no `X`-owned hooks / skills / permissions remaining.
-15. v0.6.0: previously-denied writing-style match now surfaces `ask` prompt; user confirm → write succeeds; user deny → write rejected with no side effects.
+15. v0.7.0: previously-denied writing-style match now surfaces `ask` prompt; user confirm → write succeeds; user deny → write rejected with no side effects.
 16. v1.0.0: fresh install + `packs: [agent-behave]` → git / gh / compound-cd guards active at same severity as today's v0.3.x aa-bundled `guard.py`. Legacy `rule_packs: []` in `agent-config.yaml` → composer hard-fails with explicit migration error, prints the `packs: []` rewrite, does not compose any default packs. `AGENT_CONFIG_PACKS=-agent-style` env var does not bypass the legacy-key hard-fail (migration error takes priority).
 17. User-level config absent: no user-level file → bootstrap behavior byte-identical to project-level-only mode (v0.4.0 through v1.0.0).
 18. User-level config path resolution: POSIX `$XDG_CONFIG_HOME` honored when set; fallback to `$HOME/.config/anywhere-agents/config.yaml` when unset or empty; Windows `%APPDATA%\anywhere-agents\config.yaml`; missing both `$HOME` and `%APPDATA%` produces actionable error from CLI `pack add` / `pack remove` and stderr-only warning from composer (v0.4.0).
@@ -755,7 +788,7 @@ If any case cannot be expressed in the schema, extend the schema before implemen
 26. Python/PyYAML fallback: consumers without Python 3 + PyYAML see verbatim upstream `AGENTS.md` on bootstrap; composer does not run; no pack content mounted. Preserves v0.3.0 BC path byte-for-byte (v0.3.0 contract, preserved through v1.0.0).
 27. **Wheel-delivers-composer-fix smoke** (v0.5.6+, gates every release that touches `scripts/compose_packs.py` or the `composer/` mirror): build the wheel; `pipx install --force <wheel>` on a maintainer test project whose `.agent-config/repo/` was bootstrapped at the previous release; run `pack verify --fix`; inspect `.agent-config/pack-lock.json`. Pass when the lock state matches the intent of the fix. Fail when it matches the previous-release behavior — that means the wheel did not deliver the composer fix to the existing project, which is the v0.5.0 → v0.5.5 failure pattern. Item 27 catches the class of bug that test-suite-only validation missed five times in a row.
 
-**Install-lifecycle integration suite** (v0.5.5 deliverable, gate before v0.6.0 noise-audit):
+**Install-lifecycle integration suite** (v0.5.5 deliverable, gate before v0.7.0 noise-audit):
 
 The 26 release-tied scenarios above are checklist items, run by hand against a release candidate. v0.5.0 through v0.5.3 each shipped with at least one regression in the AC → AA → AA+AP migration path that a checklist run would have caught but did not, because by-hand smoke is non-deterministic and is skipped under release pressure. v0.5.4 closes the four migration gaps that surfaced in production; the underlying gap in coverage remains.
 
@@ -788,7 +821,7 @@ Promoted from Open Questions across plan-review rounds; recorded here as fixed d
 - **Permission merge and uninstall semantics** (was #3): add-only install with ownership tracked in sidecar state files (project-local and user-level, split by ownership boundary). Uninstall drops exact JSON-value matches from the permissions array, gated on `owners:` set becoming empty. Rollback (switching upstream) calls uninstall-all before re-bootstrapping.
 - **Default switch timing** (was #5): `DEFAULT_SELECTIONS → agent-style-field` lands in a v0.4.x follow-up, not at v0.4.0 ship. Keeps v0.4.0 consumer-invisible and one visible concern per release.
 - **Active-kind dispatch** (was #6): the schema uses an explicit `kind:` field (`hook | skill | permission | command`). The composer branches on `kind:`, not on inferred paths. `target:` path no longer carries hidden semantics.
-- **`guard.py` extraction timing** (was #10): stays at v1.0.0. Folding it into v0.6.0 would couple two visible consumer changes (noise demotions + deploy-pattern change) in one release; keep them separate.
+- **`guard.py` extraction timing** (was #10): stays at v1.0.0. Folding it into v0.7.0 would couple two visible consumer changes (noise demotions + deploy-pattern change) in one release; keep them separate.
 
 **Round 4 decisions** (internal-consistency and follow-on specs):
 
@@ -808,7 +841,7 @@ Promoted from Open Questions across plan-review rounds; recorded here as fixed d
 **Round 2 decisions**:
 
 - **Compression layering** (was #4): passive text compression (lite vs full) is expressed by manifest entries pointing at different `source.path:` values (`agent-style` vs `agent-style-field` vs `agent-style-lite`). No `variant:` field needed. Decision closed.
-- **Noise budget threshold** (was #7): v0.6.0 threshold is `> 0` — any combined install that produces at least one `false-positive-risk: high` + `impact-if-allowed: low|medium` + `decision: deny` entry from a third-party pack triggers the composer warning and requires explicit consumer `decision-override: deny` in `agent-config.yaml` to proceed. First-party packs post-v0.6.0 produce zero such entries by design, so the gate mainly serves third-party stacking.
+- **Noise budget threshold** (was #7): v0.7.0 threshold is `> 0` — any combined install that produces at least one `false-positive-risk: high` + `impact-if-allowed: low|medium` + `decision: deny` entry from a third-party pack triggers the composer warning and requires explicit consumer `decision-override: deny` in `agent-config.yaml` to proceed. First-party packs post-v0.7.0 produce zero such entries by design, so the gate mainly serves third-party stacking.
 - **Pack-local command pointers** (was #8): command pointers moved to pack manifests in v0.4.0 (not deferred to v0.5.0). `kind: skill` entries auto-emit their `.claude/commands/<name>.md` pointer; `kind: command` entries ship standalone pointers. The four aa-shipped skill pointers became pack-emitted outputs and dropped from the STRICT parity list in v0.4.0. `docs/anywhere-agents.md` mirror table updates in sync.
 - **Env var semantics** (was #9): rename `AGENT_CONFIG_RULE_PACKS` → `AGENT_CONFIG_PACKS` (v0.4.0, with deprecation warning on the old name through v0.6.x, hard-fail at v1.0). Add subtract syntax: prefix `-` subtracts a pack from the resolved selection (`AGENT_CONFIG_PACKS=-agent-style` per-session opt-out without editing `agent-config.yaml`). v1.0 hard-fail on legacy `rule_packs:` in `agent-config.yaml` takes **priority over** any env var override — env vars cannot silently bypass an explicit migration error.
 - **Host-mismatch semantics** (Round 2 new): `required: true | false` per active entry, default `true`. Unsupported host + `required: true` = fail closed with explicit `host-mismatch` error; unsupported host + `required: false` = skip with info log, rest of pack installs. See the "Per-entry required field" subsection of the manifest.
@@ -842,7 +875,8 @@ If a further axis is spotted at any later release-planning round, schema change 
 | aa v0.5.0 | Direct-URL packs (public + private) | Bootstrap-active consumption of inline `source:` in `agent-config.yaml` for both `rule_packs:` and `packs:` (closes v0.4.0 schema-vs-consumption gap; `yzhao062/agent-pack` loadable end-to-end), SSH / gh / token auth chain, parser accepts private entries, pack-lock integrity applies to private, MIGRATIONS.md seed-refresh entry | None (new capability only) |
 | aa v0.5.1 → v0.5.6 | Operational hardening; thick-wheel composer at v0.5.6 | `pack verify [--fix]` CLI + banner pack-deploy check; bootstrap auto-fix; drift-gate adopt-on-match; AC migration helpers; `force_defaults` 4-layer resolver; Windows cache hardening; **wheel-bundled composer + bundled-default content under `anywhere_agents/composer/`** (v0.5.6); new aa-internal STRICT mirror | Low — `pipx install --force` to v0.5.6+ now delivers composer fixes to existing bootstrapped projects without re-bootstrap |
 | ab v0.1.0 | `agent-behave` product | First 3-slot pack | None (opt-in) |
-| aa v0.6.0 | Noise audit | Demotion criterion is `false-positive-risk` × `impact-if-allowed` (not trigger-rate alone); composer noise budget; per-guard env vars | Medium |
+| aa v0.6.0 | Update-flow coherence | `pack verify --fix` vs `pack update` split decision; banner follow-up command (Q2); bundled-default policy (Q3); reconciliation-aware BC-guard refinement; aa-internal STRICT block in `check-parity.sh` | Visible (Q1+Q3 user-facing); `random` reproduction motivates BC-guard refinement |
+| aa v0.7.0 | Noise audit | Demotion criterion is `false-positive-risk` × `impact-if-allowed` (not trigger-rate alone); composer noise budget; per-guard env vars | Medium |
 | aa v1.0.0 | Full decoupling | `guard.py` extraction, STRICT list shrinks, default-on ab, **hard-fail on legacy `rule_packs:` / `rule-packs.yaml` with explicit migration error** | Medium |
 
 ## Reference example: `agent-pack` repo
