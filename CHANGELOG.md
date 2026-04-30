@@ -4,6 +4,12 @@ All notable changes to the shared agent configuration are documented here.
 Consuming projects pull the latest on every bootstrap run; this log helps
 track what changed between runs.
 
+## 2026-04-29
+
+### Changed
+- Updated recommended Codex defaults from `gpt-5.4` to `gpt-5.5` to match the maintainer's shipped configuration.
+- Added `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=80` to shared user settings so bootstrapped Claude Code sessions compact later while retaining a context buffer.
+
 ## 2026-04-11
 
 ### Changed
