@@ -1,6 +1,6 @@
 # anywhere-agents: Public Release Plan
 
-> **Post-v1.0 update (2026-04-16):** The 0.1.0 release replaced the original "no CLI beyond shell bootstrap" policy. npm and PyPI now ship **thin CLI shims** (~100 LOC each) that download and run the shell bootstrap. Install logic stays single-source in the shell scripts; the CLIs exist purely as agent-friendly entry points so users can tell their AI agent _"install anywhere-agents"_ and have it pick the right package. The bullets below that still say "placeholder packages" and "no CLI" are historical context; the current policy is documented in the release workflow in `docs/anywhere-agents.md` and in the 0.1.0 CHANGELOG entry of the public repo.
+> **Post-v1.0 update (2026-04-16):** The 0.1.0 release replaced the original "no CLI beyond shell bootstrap" policy. npm and PyPI now ship **thin CLI shims** (~100 LOC each) that download and run the shell bootstrap. Install logic stays single-source in the shell scripts; the CLIs exist purely as agent-friendly entry points so users can tell their AI agent _"install anywhere-agents"_ and have it pick the right package. The bullets below that still say "placeholder packages" and "no CLI" are historical context; the current policy is documented in the release workflow in `../../anywhere-agents.md` and in the 0.1.0 CHANGELOG entry of the public repo.
 
 ## What This Is
 

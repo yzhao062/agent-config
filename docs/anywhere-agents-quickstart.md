@@ -2,7 +2,7 @@
 
 Maintainer-internal cheat sheet for installing `anywhere-agents` and operating it on consumer projects. Not a public-facing user guide; commands assume Windows + Miniforge py312 (the Ubuntu Spark workstation uses the POSIX equivalents).
 
-**Minimum recommended version: v0.5.6.** Earlier v0.5.x releases shipped composer fixes that the wheel CLI did not actually deliver to projects bootstrapped against an older clone. v0.5.6 bundles the composer into the wheel; a `pipx install --force` from v0.5.6+ delivers composer fixes without a re-bootstrap. See `docs/pack-architecture.md` § "aa v0.5.1 → v0.5.6 — operational hardening".
+**Minimum recommended version: v0.5.6.** Earlier v0.5.x releases shipped composer fixes that the wheel CLI did not actually deliver to projects bootstrapped against an older clone. v0.5.6 bundles the composer into the wheel; a `pipx install --force` from v0.5.6+ delivers composer fixes without a re-bootstrap. See `../pack-architecture.md` § "aa v0.5.1 → v0.5.6 — operational hardening".
 
 ## Install or upgrade
 
@@ -92,7 +92,7 @@ type .agent-config\pack-lock.json                  # capture state before any fu
 anywhere-agents                                    # re-runs bootstrap; refreshes .agent-config/repo/ and re-composes
 ```
 
-Avoid `anywhere-agents pack verify --fix` in a retry loop on a broken state. The composer is deterministic; a second run on the same input produces the same output. If the lock count is wrong on the first run after upgrade, capture state and read `docs/pack-architecture.md` § "Regression and failure analysis" before re-running.
+Avoid `anywhere-agents pack verify --fix` in a retry loop on a broken state. The composer is deterministic; a second run on the same input produces the same output. If the lock count is wrong on the first run after upgrade, capture state and read `../pack-architecture.md` § "Regression and failure analysis" before re-running.
 
 ## Common gotchas
 

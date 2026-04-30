@@ -98,7 +98,7 @@ done
 # path in bootstrap, but STRICT byte-identity is no longer enforced
 # here per pack-architecture.md § "STRICT parity trajectory" (v0.4.0
 # row drops these four entries). See
-# docs/anywhere-agents.md mirror-policy table for the updated status.
+# anywhere-agents.md mirror-policy table for the updated status.
 
 # ---- STRICT: shared skills (recursive; my-router excluded - BY-DESIGN) ----
 printf '\n== shared skills (recursive byte-identical) ==\n'

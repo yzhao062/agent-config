@@ -26,7 +26,7 @@ claude
 
 First prompt after `claude` starts:
 
-> Read `docs/anywhere-agents.md`, `../anywhere-agents/RELEASING.md`, and `../anywhere-agents/CHANGELOG.md`. Summarize the two-repo split, the current version, and the release flow.
+> Read `anywhere-agents.md`, `../anywhere-agents/RELEASING.md`, and `../anywhere-agents/CHANGELOG.md`. Summarize the two-repo split, the current version, and the release flow.
 
 From there the agent has enough context to work on either repo.
 
@@ -37,7 +37,7 @@ From there the agent has enough context to work on either repo.
 The four repos are linked by **three distinct relationships**; do not confuse them:
 
 - **`ac` ↔ `aa` — mirror (shared core).**
-  `agent-config` (private working dir, public on GitHub but personal-use-only) is the canonical source for shared components (bootstrap scripts, shared skills, guard hook, `AGENTS.md` baseline) PLUS maintainer-only docs (`docs/pack-architecture.md`, `docs/vision.md`, `docs/anywhere-agents.md`, `archive/`). `anywhere-agents` (public consumer) is the sanitized public release — shared components + packaging (PyPI + npm + RTD site). Shared-core files mirror byte-identically (modulo branding). Not a fork, not a submodule — manual backport from `ac` → `aa` on every release cut; physical isolation is the primary leak defense. "What gets copied vs stays private" table lives in `docs/anywhere-agents.md`.
+  `agent-config` (private working dir, public on GitHub but personal-use-only) is the canonical source for shared components (bootstrap scripts, shared skills, guard hook, `AGENTS.md` baseline) PLUS maintainer-only docs (`pack-architecture.md`, `vision.md`, `anywhere-agents.md`, `archive/`). `anywhere-agents` (public consumer) is the sanitized public release — shared components + packaging (PyPI + npm + RTD site). Shared-core files mirror byte-identically (modulo branding). Not a fork, not a submodule — manual backport from `ac` → `aa` on every release cut; physical isolation is the primary leak defense. "What gets copied vs stays private" table lives in `anywhere-agents.md`.
 - **`as` ↔ `ac` / `aa` — reference only (default rule pack).**
   `agent-style` (public) is a standalone project: a literature-backed English technical-prose writing ruleset for AI agents, shipped via PyPI + npm + GitHub. It is NOT a mirror of anything in `ac` or `aa`. The only cross-reference is editorial: each `as` field-observed rule (RULE-A..I) cites `ac/aa`'s `AGENTS.md` "Writing Defaults" section as an adjacent in-practice anchor, not as a source authority. `aa` consumers receive `as` content composed into their `AGENTS.md` because `aa`'s `bootstrap/packs.yaml` registers `agent-style` as a default-on rule pack and points at `as` source. No file copy between repos; three release flows are independent.
 - **`agent-pack` ↔ `ac` / `aa` — third-party reference + personal extension layer.**
@@ -61,13 +61,13 @@ What this means in practice:
 | Setting up a new machine | This file |
 | Release cut on `aa` (bump version, publish to PyPI/npm/GitHub) | `../anywhere-agents/RELEASING.md` + the cheat-sheet section below |
 | Release cut on `as` (bump version, publish PyPI + npm + GitHub release) | `../agent-style/RELEASING.md` — same 12-section pattern as `aa`, independent version stream |
-| Cross-repo shared-core change (guard.py / session_bootstrap.py / AGENTS.md) on `ac`/`aa` | `docs/anywhere-agents.md` — the "what gets copied" table |
+| Cross-repo shared-core change (guard.py / session_bootstrap.py / AGENTS.md) on `ac`/`aa` | `anywhere-agents.md` — the "what gets copied" table |
 | Adding or editing a rule in `as` | `../agent-style/README.md` "Curation and method" details section; canonical rules need a cited source, field-observed rules are the maintainer's call |
-| Bootstrap misbehaving on a consumer project / stuck on old version | `MIGRATIONS.md` |
+| Bootstrap misbehaving on a consumer project / stuck on old version | `docs/migrations.md` § "Bootstrap-cache seed refresh" |
 | Complex task (hook redesign, paper outline, proposal structure) | `skills/implement-review/SKILL.md` "When to plan-review first" |
 | Banner gate or writing-style gate blocking something unexpected | `AGENTS.md` "Mechanical Enforcement" section; escape via `AGENT_CONFIG_GATES=off` |
-| Consumer project not picking up upstream | Open Claude Code there once — bootstrap self-updates automatically. Or force refresh via `MIGRATIONS.md` block. |
-| Switching an existing ac-bootstrapped consumer project to aa | `docs/ac-to-aa-migration.md` — decision matrix, migration mechanics (Path 1 change-upstream / Path 2 nuke-and-reinstall), pre/post checks, rollback, forward direction on skill-pack composition |
+| Consumer project not picking up upstream | Open Claude Code there once — bootstrap self-updates automatically. Or force refresh via the seed-refresh block in `docs/migrations.md`. |
+| Switching an existing ac-bootstrapped consumer project to aa | `docs/migrations.md` § "Consumer project: ac → aa upstream switch" — Path 1 change-upstream, Path 2 nuke-and-reinstall, verification, rollback |
 | Adding a new skill | `skills/implement-review/SKILL.md` shows the skill structure; `skills/my-router/` for routing integration |
 | Authoring a new pack (rule pack or skill pack) | `../anywhere-agents/docs/rule-pack-composition.md` § "Rule-pack anatomy"; `../agent-pack/` as the reference example, fork as a starting point |
 | Bootstrapping a new personal project (paper, proposal, side dev) | Bootstrap from `aa` (`pipx run anywhere-agents`), then add `profile` and optionally `paper-workflow` from `agent-pack` to project `agent-config.yaml` per `../agent-pack/README.md` § "Consumer Setup" |
@@ -132,7 +132,7 @@ print(archive.archive_dir)
 "
 ```
 
-A clean SSH path returns an archive directory under `.scratch/`. If `ssh-add -L` does not list a key, the SSH method falls through to gh CLI; verify with `gh auth status`. The fall-through chain is documented in `docs/pack-architecture.md`.
+A clean SSH path returns an archive directory under `.scratch/`. If `ssh-add -L` does not list a key, the SSH method falls through to gh CLI; verify with `gh auth status`. The fall-through chain is documented in `pack-architecture.md`.
 
 Replace `owner/private-test` with one of your own private repos; the test is shape-only and does not depend on a specific repo body. Run the command from the `anywhere-agents` checkout root so the `scripts.packs` import resolves.
 
@@ -141,8 +141,8 @@ Replace `owner/private-test` with one of your own private repos; the test is sha
 ### `agent-config` (private, this repo)
 
 - `AGENTS.md` — canonical maintainer rules; auto-loaded as `CLAUDE.md` by Claude Code on every session start
-- `docs/anywhere-agents.md` — two-repo relationship, "what gets copied" table, release workflow with sanitization rules
-- `MIGRATIONS.md` — one-shot bootstrap upgrade procedures for consumer projects stuck on old versions
+- `anywhere-agents.md` — two-repo relationship, "what gets copied" table, release workflow with sanitization rules
+- `docs/migrations.md` — two operational sections: bootstrap-cache seed refresh (machine-level) and consumer project ac → aa upstream switch (project-level)
 - `scripts/guard.py` + `scripts/session_bootstrap.py` — shared-core hooks; byte-identical with `anywhere-agents` copies
 - `skills/implement-review/SKILL.md` — the review-loop workflow including Phase 0 plan-first
 - `reference-skills/` — research-specific skills that never copy to public (NSF, USC, CS paper review, etc.)

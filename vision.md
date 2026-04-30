@@ -2,7 +2,7 @@
 
 Status: draft, evolving. This is a working vision document, not a spec. It captures the ongoing design discussion across `agent-config` (ac), `anywhere-agents` (aa), and `agent-style` (as), so future sessions can pick up the thread without reconstructing it from scratch. Sections may disagree with each other as thinking evolves; that is expected at this stage.
 
-**Shorthand** (consistent with `docs/anywhere-agents.md`): ac = `agent-config`, aa = `anywhere-agents`, as = `agent-style`.
+**Shorthand** (consistent with `anywhere-agents.md`): ac = `agent-config`, aa = `anywhere-agents`, as = `agent-style`.
 
 ## Where we are today
 
@@ -46,6 +46,31 @@ The architecture distinguishes two composition layers, but only the rule-pack la
 - **Skill pack** (on-demand, invoked via the Skill tool): no external formal contract yet. aa ships four internal skills (`implement-review`, `my-router`, `ci-mockup-figure`, `readme-polish`); `as` also ships a `style-review` skill. No skill-pack equivalent of `rule-pack-composition.md` exists, because naming a contract for a sample of one tends to either over-fit or over-generalize. Defer until a second-author skill pack appears.
 
 **Ecosystem claim is still contingent.** One rule pack (`as`) and zero external skill packs do not yet make an ecosystem. Until a second author or external pack appears for either layer, the project remains a reusable configuration distribution pattern with one reference implementation each, not a plugin ecosystem. The staging kill criteria below make this contingency explicit.
+
+## Skill bundle stash: the `2nd-eye` idea (parked, 2026-04-29)
+
+A concrete instance of the deferred skill-pack layer above. Captured so the design conversation does not need to be replayed.
+
+**Members** (three skills already exist in ac / aa / `yzhao062.github.io`):
+
+- `implement-review`: pre-ship review loop (currently STRICT mirror in ac + aa).
+- `readme-polish`: README quality audit (currently in aa only).
+- `impact-audit`: external coverage / media reception audit (currently `news-search` in `yzhao062.github.io/skills/`; rename pending).
+
+**Common theme**: bringing systematic outside-in perspective to one's own work, at three lifecycle moments: pre-ship, at first contact, and post-ship. Tagline: "a second pair of eyes for your code, your README, and how the world receives your work."
+
+**Audience**: researcher-engineers. People who simultaneously ship code, publish papers, and care about external reception: CS / ML / engineering academics (faculty, postdocs, senior PhD students), industry researchers with public OSS, and the EB-1A / academic-immigration cohort needing press-coverage evidence. Pure OSS maintainers and pure humanities or social-science academics only hit 2 of 3, so they are secondary, not primary.
+
+**Repo strategy**: one bundled repo named `2nd-eye` (or similar), one `pack.yaml` with three sub-pack entries, one CHANGELOG, one release runbook. Follows the `agent-pack` precedent (multiple sub-packs in one repo), not `agent-style` (single artifact). Rationale: each killer skill is component-scale (about 50 to 100 KB); one-repo-per-skill would 3x the maintenance cost with little findability gain. Distribution: aa's seed `packs:` includes `2nd-eye` by default; consumers can `pack remove` per sub-skill.
+
+**Open before execution**:
+
+- Final repo name (`2nd-eye` favored; alternatives: `outside-eye`, `reception`, `going-public`).
+- Final rename of `news-search` (`impact-audit` favored; alternatives: `impact-evidence`, `impact-summary`, `reception-audit`).
+- aa-side migration path so existing consumers do not break when the four currently-bundled aa skills move to the new repo (likely a v0.6.x or v0.7.0 release with an explicit migration step).
+- README positioning that surfaces the EB-1A / tenure / broader-impact use cases for `impact-audit` (academic-search keywords pay off).
+
+**Picked up when**: aa v0.5.7 settles in real consumers, v0.6.0 update-UX work is shaped, and an unblocked window opens for the extract + create-repo work. No deadline.
 
 ## The biggest current gap: portable memory
 

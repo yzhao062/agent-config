@@ -171,7 +171,7 @@ class CheckParityBehavior(unittest.TestCase):
         # not aa-core source requiring byte-identical parity), drift in
         # these files must NOT fail the parity check. Guards against a
         # regression that re-adds them to STRICT. See
-        # docs/pack-architecture.md § "STRICT parity trajectory".
+        # pack-architecture.md § "STRICT parity trajectory".
         with tempfile.TemporaryDirectory() as d:
             ac, aa = _build_fake_tree(pathlib.Path(d))
             (aa / ".claude/commands/my-router.md").write_text("drifted pointer\n")

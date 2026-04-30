@@ -1,6 +1,6 @@
 # agent-config and anywhere-agents: how the two repos relate
 
-This document explains how the **private daily-driver (`yzhao062/agent-config`)** and the **public release (`yzhao062/anywhere-agents`)** fit together. If you are reading this inside `agent-config`, it is the canonical source. If you are looking for the release plan itself, see [`docs/specs/open-source-framework.md`](./specs/open-source-framework.md).
+This document explains how the **private daily-driver (`yzhao062/agent-config`)** and the **public release (`yzhao062/anywhere-agents`)** fit together. If you are reading this inside `agent-config`, it is the canonical source. If you are looking for the release plan itself, see [`docs/specs/open-source-framework.md`](docs/specs/open-source-framework.md).
 
 ## The two-repo split
 
@@ -87,7 +87,7 @@ When cutting a new `anywhere-agents` release:
    Classify each hit as (a) intentional public claim (e.g., "USC" in the maintainer credential), (b) hyphenation example (`co-PI`), (c) leak — must fix. Fix all (c).
 4. **Run the generator locally** before committing the sanitized `AGENTS.md`: `python scripts/generate_agent_configs.py --root .`. This refreshes `CLAUDE.md` and `agents/codex.md` so the committed artifacts match the committed `AGENTS.md`. Tests fail if they drift.
 5. **Run tests locally** on the `anywhere-agents` checkout (`python -B -m unittest discover -s tests`) and verify the bootstrap smoke tests pass. Also run `python -m mkdocs build --strict --clean` to verify the Read the Docs site builds with no broken links (this catches include-link regressions before they reach RTD).
-6. **Run the pre-tag real-agent smoke** on the release-candidate checkout: `bash scripts/pre-push-smoke.sh`. This script validates the commit you are about to tag — regenerates `CLAUDE.md` / `agents/codex.md` and diffs against committed versions, then runs `claude -p` and `codex exec` in the repo root and asserts each response lists every skill under `skills/`. Unlike `scripts/remote-smoke.sh` (which validates the published package), `pre-push-smoke.sh` gates the candidate. CLIs are optional — missing agents are skipped gracefully. The pre-push git hook already runs this automatically on affected pushes (enable with `git config core.hooksPath .githooks`); this explicit pre-tag run catches the case where hook was bypassed. On the DGX release-gate box via SSH: `ssh spark 'bash -s' < scripts/pre-push-smoke.sh` (see [`docs/dgx-spark-setup.md`](./dgx-spark-setup.md) sections 8 and 17 for the canonical SSH alias setup). CI runs `.github/workflows/real-agent-smoke.yml` on release publish and manual dispatch as a complementary check.
+6. **Run the pre-tag real-agent smoke** on the release-candidate checkout: `bash scripts/pre-push-smoke.sh`. This script validates the commit you are about to tag — regenerates `CLAUDE.md` / `agents/codex.md` and diffs against committed versions, then runs `claude -p` and `codex exec` in the repo root and asserts each response lists every skill under `skills/`. Unlike `scripts/remote-smoke.sh` (which validates the published package), `pre-push-smoke.sh` gates the candidate. CLIs are optional — missing agents are skipped gracefully. The pre-push git hook already runs this automatically on affected pushes (enable with `git config core.hooksPath .githooks`); this explicit pre-tag run catches the case where hook was bypassed. On the DGX release-gate box via SSH: `ssh spark 'bash -s' < scripts/pre-push-smoke.sh` (see [`docs/dgx-spark-setup.md`](docs/dgx-spark-setup.md) sections 8 and 17 for the canonical SSH alias setup). CI runs `.github/workflows/real-agent-smoke.yml` on release publish and manual dispatch as a complementary check.
 7. **Regenerate the hero image** if any claim or panel content changed: edit `docs/hero.html`, run
    ```bash
    "C:/Program Files/Google/Chrome/Application/chrome.exe" --headless=new --disable-gpu \
@@ -107,7 +107,7 @@ When cutting a new `anywhere-agents` release:
 
 ## What this document is not
 
-- It is not the release plan. The release plan lives at [`docs/specs/open-source-framework.md`](./specs/open-source-framework.md).
+- It is not the release plan. The release plan lives at [`docs/specs/open-source-framework.md`](docs/specs/open-source-framework.md).
 - It is not user-facing documentation. `anywhere-agents/README.md` and `anywhere-agents/CONTRIBUTING.md` cover user-facing content.
 - It is not a substitute for the leak sweep. Read it before every release; the sweep is still mandatory.
 

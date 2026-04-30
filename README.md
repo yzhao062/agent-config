@@ -8,7 +8,7 @@ This repo is the **canonical source** of shared agent configuration. Its **sanit
 
 **Sibling repos in the same family**:
 
-- [`yzhao062/anywhere-agents`](https://github.com/yzhao062/anywhere-agents): the public consumer and STRICT-parity mirror of ac for everything except maintainer-only docs (`docs/pack-architecture.md`, `docs/vision.md`, `docs/anywhere-agents.md`, `archive/`). PyPI / npm distribution lives here.
+- [`yzhao062/anywhere-agents`](https://github.com/yzhao062/anywhere-agents): the public consumer and STRICT-parity mirror of ac for everything except maintainer-only docs (`pack-architecture.md`, `vision.md`, `anywhere-agents.md`, `archive/`). PyPI / npm distribution lives here.
 - [`yzhao062/agent-style`](https://github.com/yzhao062/agent-style): the writing rule pack composed into every consumer's `AGENTS.md` by default. 21 rules (12 classic + 9 LLM-observed) with BAD -> GOOD examples per rule.
 - [`yzhao062/agent-pack`](https://github.com/yzhao062/agent-pack): public reference example for third-party pack authors. Declares 3 packs (`profile` passive, `paper-workflow` passive, `acad-skills` active) using the v2 manifest schema. Doubles as the v0.5.0 remote-fetch acceptance test for `anywhere-agents`. Personal context that used to live only in this repo's `AGENTS.md` section "User Profile" and section "Submodule Workflow" is migrating here so new projects can bootstrap from `aa + agent-pack` rather than from ac directly.
 
@@ -16,11 +16,11 @@ This repo is the **canonical source** of shared agent configuration. Its **sanit
 
 Read before touching either repo:
 
-- [`docs/anywhere-agents.md`](docs/anywhere-agents.md) — canonical source rule, "what gets copied" table, 11-step release workflow, package/asset ownership.
+- [`anywhere-agents.md`](anywhere-agents.md) — canonical source rule, "what gets copied" table, 11-step release workflow, package/asset ownership.
 - [`docs/specs/open-source-framework.md`](docs/specs/open-source-framework.md) — the historical release plan plus the dated post-v1.0 update (npm/PyPI CLI policy).
 - [`yzhao062/anywhere-agents/RELEASING.md`](https://github.com/yzhao062/anywhere-agents/blob/main/RELEASING.md) — the public-facing release steps (tag → build → publish to PyPI + npm → verify). Use this after the backport is staged.
 
-**Every release of `anywhere-agents` is paired with a doc update here.** If you change the two-repo policy (what gets copied, canonical-source rule, release workflow), update `docs/anywhere-agents.md` in the same commit.
+**Every release of `anywhere-agents` is paired with a doc update here.** If you change the two-repo policy (what gets copied, canonical-source rule, release workflow), update `anywhere-agents.md` in the same commit.
 
 ## What This Repo Does
 
@@ -126,7 +126,6 @@ AGENTS.md                          # Shared agent config (entry point)
 CLAUDE.md                          # Generated from AGENTS.md for Claude Code
 agents/codex.md                    # Generated from AGENTS.md for Codex
 ONBOARDING.md                      # Maintainer one-page index (agent-config + anywhere-agents workflow)
-MIGRATIONS.md                      # One-shot bootstrap-script upgrade procedures
 bootstrap/
   bootstrap.ps1                    # Windows bootstrap logic
   bootstrap.sh                     # Unix bootstrap logic
@@ -192,8 +191,11 @@ tests/                             # Validation tests (run in CI on Ubuntu, Wind
   test_guard.py                    # Guard hook tests
   test_session_bootstrap.py        # SessionStart hook tests
   test_generator.py                # AGENTS.md -> per-agent generator tests
+anywhere-agents.md                 # Two-repo relationship, "what gets copied" table, release workflow
+pack-architecture.md               # Pack composition architecture and release trajectory
+vision.md                          # Ecosystem vision and parked design ideas
 docs/
-  anywhere-agents.md               # Two-repo relationship, "what gets copied" table, release workflow
+  migrations.md                    # Bootstrap-cache seed refresh + ac to aa upstream switch runbooks
   claude-code-tips.md              # Workflows and best practices
   claude-code-reference.md         # Keyboard shortcuts, slash commands, vim mode
   claude-code-extras.md            # Buddy/companion, plugins
