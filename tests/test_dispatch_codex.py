@@ -33,6 +33,21 @@ DISPATCH_SH = SCRIPTS_DIR / "dispatch-codex.sh"
 DISPATCH_PS1 = SCRIPTS_DIR / "dispatch-codex.ps1"
 
 
+def _temp_dir():
+    """tempfile.TemporaryDirectory with ignore_cleanup_errors on Py3.10+.
+
+    On Windows the spawned stall-watch subprocess may still hold a handle
+    on a state-dir file when the test's `with` block exits, which raises
+    PermissionError during rmtree. `ignore_cleanup_errors=True` (added in
+    Python 3.10) silently swallows that. Older Pythons (the CI matrix
+    includes Ubuntu py3.9) get plain TemporaryDirectory; on Linux the
+    cleanup race does not exist because Linux does not lock open files.
+    """
+    if sys.version_info >= (3, 10):
+        return tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+    return tempfile.TemporaryDirectory()
+
+
 MOCK_CODEX_PY = r'''"""Mock codex stub for dispatch-codex tests.
 
 Behavior driven by env vars (all optional):
@@ -194,7 +209,7 @@ class _DispatchContractMixin:
     # --- contract assertions ---------------------------------------------
 
     def test_state_dir_first_line(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
+        with _temp_dir() as td:
             tmpdir = Path(td)
             codex, prompt, log_dir = self._fresh_fixture(tmpdir)
             result = self._run_dispatch(
@@ -213,7 +228,7 @@ class _DispatchContractMixin:
 
     def test_state_dir_naming(self) -> None:
         # Format: implement-review-codex-<8hex>-round<N>-<pid>-<16hex>
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
+        with _temp_dir() as td:
             tmpdir = Path(td)
             codex, prompt, log_dir = self._fresh_fixture(tmpdir)
             result = self._run_dispatch(
@@ -227,7 +242,7 @@ class _DispatchContractMixin:
             )
 
     def test_state_dir_contains_pre_mtime_and_timestamp_and_tail(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
+        with _temp_dir() as td:
             tmpdir = Path(td)
             codex, prompt, log_dir = self._fresh_fixture(tmpdir)
 
@@ -277,7 +292,7 @@ class _DispatchContractMixin:
                           "tail must capture codex stderr (via 2>&1)")
 
     def test_pre_mtime_zero_when_review_file_missing(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
+        with _temp_dir() as td:
             tmpdir = Path(td)
             codex, prompt, log_dir = self._fresh_fixture(tmpdir)
             # No Review-Whatever.md created
@@ -294,7 +309,7 @@ class _DispatchContractMixin:
                              f"{pre_mtime!r}")
 
     def test_prompt_sent_via_stdin(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
+        with _temp_dir() as td:
             tmpdir = Path(td)
             codex, prompt, log_dir = self._fresh_fixture(tmpdir)
             result = self._run_dispatch(
@@ -309,7 +324,7 @@ class _DispatchContractMixin:
 
     def test_codex_invoked_exec_dash_not_review(self) -> None:
         """codex must be called as `exec -`, never `exec review ...`."""
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
+        with _temp_dir() as td:
             tmpdir = Path(td)
             codex, prompt, log_dir = self._fresh_fixture(tmpdir)
             result = self._run_dispatch(
@@ -327,7 +342,7 @@ class _DispatchContractMixin:
                              f"'review' positional must not appear: {args}")
 
     def test_exit_code_zero_propagation(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
+        with _temp_dir() as td:
             tmpdir = Path(td)
             codex, prompt, log_dir = self._fresh_fixture(tmpdir)
             result = self._run_dispatch(
@@ -337,7 +352,7 @@ class _DispatchContractMixin:
             self.assertEqual(result.returncode, 0)
 
     def test_exit_code_nonzero_propagation(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
+        with _temp_dir() as td:
             tmpdir = Path(td)
             codex, prompt, log_dir = self._fresh_fixture(tmpdir)
             result = self._run_dispatch(
@@ -351,7 +366,7 @@ class _DispatchContractMixin:
             )
 
     def test_unique_state_dirs_across_consecutive_runs(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
+        with _temp_dir() as td:
             tmpdir = Path(td)
             codex, prompt, log_dir = self._fresh_fixture(tmpdir)
             r1 = self._run_dispatch(
@@ -368,7 +383,7 @@ class _DispatchContractMixin:
                                 "consecutive dispatches must produce unique state-dirs")
 
     def test_missing_prompt_file_exits_two(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
+        with _temp_dir() as td:
             tmpdir = Path(td)
             codex, _, log_dir = self._fresh_fixture(tmpdir)
             missing = tmpdir / "does-not-exist.txt"
@@ -381,7 +396,7 @@ class _DispatchContractMixin:
             )
 
     def test_invalid_round_exits_two(self) -> None:
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
+        with _temp_dir() as td:
             tmpdir = Path(td)
             codex, prompt, log_dir = self._fresh_fixture(tmpdir)
             result = self._run_dispatch(
@@ -481,7 +496,7 @@ class DispatchStallIntegrationTests(unittest.TestCase):
 
     def test_stall_warning_survives_dispatch_completion(self) -> None:
         import stat
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
+        with _temp_dir() as td:
             tmpdir = Path(td)
             log_dir = tmpdir / "mock-log"
             log_dir.mkdir()
@@ -553,7 +568,7 @@ class DispatchStallIntegrationTests(unittest.TestCase):
         observe BOTH so a Codex run that emits progress only on stderr is
         not falsely flagged as stalled.
         """
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
+        with _temp_dir() as td:
             tmpdir = Path(td)
 
             mock_py = tmpdir / "mock_codex_stderr.py"

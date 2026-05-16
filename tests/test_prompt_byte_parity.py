@@ -30,6 +30,16 @@ SCRIPTS_DIR = ROOT / "skills" / "implement-review" / "scripts"
 DISPATCH_SH = SCRIPTS_DIR / "dispatch-codex.sh"
 DISPATCH_PS1 = SCRIPTS_DIR / "dispatch-codex.ps1"
 
+
+def _temp_dir():
+    """TemporaryDirectory with ignore_cleanup_errors on Py3.10+ (Py3.9 fallback).
+
+    See tests/test_dispatch_codex.py:_temp_dir for the rationale.
+    """
+    if sys.version_info >= (3, 10):
+        return tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+    return tempfile.TemporaryDirectory()
+
 BASH = shutil.which("bash")
 PS_SHELL = shutil.which("pwsh") or shutil.which("powershell")
 
@@ -150,7 +160,7 @@ class _PreservationMixin:
 
     def _round_trip(self, body_bytes: bytes) -> bytes:
         """Send `body_bytes` through dispatch via the mock codex; return what it received."""
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
+        with _temp_dir() as td:
             tmpdir = Path(td)
             log_dir = tmpdir / "log"
             log_dir.mkdir()
