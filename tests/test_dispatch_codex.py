@@ -421,7 +421,13 @@ class DispatchCodexBashTests(_DispatchContractMixin, unittest.TestCase):
     SHELL_KIND = "bash"
 
 
-@unittest.skipUnless(PS_SHELL, "pwsh/powershell not available")
+@unittest.skipUnless(
+    PS_SHELL and sys.platform.startswith("win"),
+    "PowerShell dispatch tests are Windows-only: dispatch-codex.ps1 calls "
+    "powershell.exe with -WindowStyle Hidden which is unsupported on "
+    "PowerShell 7 for Linux/macOS. Production users on those platforms run "
+    "dispatch-codex.sh instead.",
+)
 class DispatchCodexPowerShellTests(_DispatchContractMixin, unittest.TestCase):
     SHELL_KIND = "powershell"
 
@@ -461,7 +467,10 @@ while time.monotonic() < deadline:
 '''
 
 
-@unittest.skipUnless(PS_SHELL, "pwsh/powershell not available")
+@unittest.skipUnless(
+    PS_SHELL and sys.platform.startswith("win"),
+    "Stall integration tests use the PowerShell dispatch (Windows-only)",
+)
 class DispatchStallIntegrationTests(unittest.TestCase):
     """End-to-end check that closes Codex Round 1 Medium #3.
 

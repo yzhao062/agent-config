@@ -220,7 +220,12 @@ class BashByteParityTests(_PreservationMixin, unittest.TestCase):
     SHELL_KIND = "bash"
 
 
-@unittest.skipUnless(PS_SHELL, "pwsh/powershell not available")
+@unittest.skipUnless(
+    PS_SHELL and sys.platform.startswith("win"),
+    "PowerShell byte-parity tests are Windows-only: dispatch-codex.ps1 is "
+    "Windows-targeted (Start-Process -WindowStyle, powershell.exe, .cmd "
+    "shim). Linux/macOS users exercise dispatch-codex.sh.",
+)
 class PowerShellByteParityTests(_PreservationMixin, unittest.TestCase):
     SHELL_KIND = "powershell"
 

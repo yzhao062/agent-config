@@ -249,7 +249,12 @@ class StallWatchBashTests(_StallContractMixin, unittest.TestCase):
     SHELL_KIND = "bash"
 
 
-@unittest.skipUnless(PS_SHELL, "pwsh/powershell not available")
+@unittest.skipUnless(
+    PS_SHELL and sys.platform.startswith("win"),
+    "PowerShell stall-watch tests are Windows-only: stall-watch.ps1 is "
+    "invoked by dispatch-codex.ps1 which uses Windows-only Start-Process "
+    "options. Linux/macOS users run stall-watch.sh instead.",
+)
 class StallWatchPowerShellTests(_StallContractMixin, unittest.TestCase):
     SHELL_KIND = "powershell"
 
