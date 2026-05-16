@@ -446,6 +446,20 @@ class RepoValidationTests(unittest.TestCase):
                 f"{pointer_file.name}: local path must appear before fallback path",
             )
 
+    def test_implement_review_pointer_preserves_slash_arguments(self) -> None:
+        pointer_text = read_text(POINTER_DIR / "implement-review.md")
+        skill_text = read_text(SKILLS_DIR / "implement-review" / "SKILL.md")
+
+        self.assertIn("$ARGUMENTS", pointer_text)
+        self.assertIn("argument-hint:", pointer_text)
+        self.assertIn("auto-terminal", pointer_text)
+        self.assertIn("manual", pointer_text)
+        self.assertIn(
+            "Command arguments from the slash invocation: $ARGUMENTS",
+            skill_text,
+        )
+        self.assertIn("Manual override tokens still win", skill_text)
+
     def test_openai_wrappers_reference_matching_skill(self) -> None:
         for skill_dir in self.skills:
             wrapper_text = read_text(skill_dir / "agents" / "openai.yaml")

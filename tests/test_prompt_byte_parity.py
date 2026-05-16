@@ -154,6 +154,37 @@ class ByteParityContract(unittest.TestCase):
             "SKILL.md must explicitly forbid the truncation fallback",
         )
 
+    def test_skill_md_documents_embedded_diff_retry(self) -> None:
+        """Auto-terminal needs a tool-less retry when Codex shell spawn fails."""
+        self.assertIn("embedded-diff retry", self.skill_text)
+        self.assertIn("CreateProcessAsUserW failed: 1312", self.skill_text)
+        self.assertIn("Do NOT run `git diff` or any shell command", self.skill_text)
+
+    def test_skill_md_documents_sandbox_flag_as_primary(self) -> None:
+        """Auto-terminal's primary defense is `--sandbox danger-full-access`,
+        not the embedded-diff retry. The retry is a fallback for sandbox-
+        strict environments (CI). SKILL.md must document the sandbox flag
+        as primary AND state that it aligns the channel's trust model
+        with Terminal-relay AND mention the CODEX_DISPATCH_SANDBOX env
+        var as the override hook.
+        """
+        self.assertIn("--sandbox danger-full-access", self.skill_text,
+                      "SKILL.md must name the primary sandbox flag")
+        self.assertIn("CODEX_DISPATCH_SANDBOX", self.skill_text,
+                      "SKILL.md must document the CODEX_DISPATCH_SANDBOX override")
+        self.assertIn("trust model", self.skill_text.lower(),
+                      "SKILL.md must explain the Terminal-relay trust-model alignment")
+
+    def test_skill_md_documents_retry_medium_phase_2_5(self) -> None:
+        """Retry-channel Medium findings have an elevated false-positive
+        rate (diff-only visibility). SKILL.md must document that they
+        flow through Phase 2.5 verification, not just High findings.
+        """
+        self.assertIn("Medium-from-retry-channel", self.skill_text,
+                      "SKILL.md must name the retry-channel Medium-verify rule")
+        self.assertIn("diff-scoped", self.skill_text,
+                      "SKILL.md must label retry findings as diff-scoped")
+
 
 class _PreservationMixin:
     SHELL_KIND: str = ""
