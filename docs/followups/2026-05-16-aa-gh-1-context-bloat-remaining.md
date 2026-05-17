@@ -40,13 +40,13 @@ Rationale for the Pragmatic default: 1M-context Opus plus prompt cache makes 50 
 
 **Promoted from "orthogonal CI suggestion" to mandatory prerequisite.** Without it, Lever 1's "≤ 40 KB" acceptance gate is manually checkable but not enforced; the compact pass has no real red/green target and regressions land silently.
 
-**Mechanism**: a `bootstrap-size.yml` GH Actions workflow that bootstraps a synthetic minimal consumer on every PR against a fixed `agent-config.yaml`, then runs `wc -c .claude/CLAUDE.md` and fails when the size exceeds a configured ceiling. Same job exposes the byte count via a pytest or CI fixture so Phase 1 + Phase 2 can assert against it locally.
+**Mechanism**: a unittest fixture in `aa/tests/test_bootstrap_size.py` that seeds a tmp consumer with the upstream `aa/AGENTS.md` (baseline only; no passive packs), runs `scripts/generate_agent_configs.py` against it, and asserts each per-agent file's byte count stays under the configured hard ceiling. Loops over a `{path: ceiling_kb}` table so adding a new agent (extending `AGENTS` in the generator) requires only one new map entry; a subset assertion against `generate_agent_configs.AGENTS` enforces this at test discovery time so a missing ceiling fails loudly instead of silently dropping coverage. Discovered automatically by the existing `aa/.github/workflows/validate.yml` matrix (`{ubuntu, windows, macos} × py3.9-3.13`); no new workflow file needed.
 
 **Default ceilings**: 75 KB hard fail (catches gross regression); soft warn at 50 KB (Pragmatic tier); soft warn at 40 KB (Aggressive tier). Tier choice is a single env var per consumer fixture, so Aggressive paper-consumer fixtures and Pragmatic agent-style-only fixtures can coexist.
 
-**Effort**: 0.5 day. Reuse the existing real-agent-smoke runner infrastructure (tmp dir, fixed `agent-config.yaml`, `bash bootstrap/bootstrap.sh` invocation pattern).
+**Effort**: ~1.5 hours (revised from 0.5 day after implementation 2026-05-17). The existing `validate.yml` matrix discovers `tests/test_*.py` automatically, so no new workflow is needed; the fixture body is ~50 lines of unittest + tempfile + subprocess invocation of `generate_agent_configs.py`. Measured baselines (aa-only, no passive packs): AGENTS.md 35.5 KB, CLAUDE.md 31.6 KB, agents/codex.md 33.7 KB — CLAUDE.md has only 8.4 KB headroom to the 40 KB CC warning, which sharpens the case for Lever 1.
 
-**Acceptance**: the size-gate job reports the measured CLAUDE.md byte count, fails when a synthetic fixture exceeds its configured hard ceiling, and passes again after the injected growth is removed. Use either a low test-only ceiling or an injected addition large enough to cross the production 75 KB ceiling; keep the 50 KB and 40 KB tiers as warnings unless the selected fixture explicitly promotes one of them to a hard fail.
+**Acceptance**: the size-gate job reports the measured byte count of `AGENTS.md` and every per-agent file the generator produces (currently `CLAUDE.md` and `agents/codex.md`; a subset assertion against `generate_agent_configs.AGENTS` fails when the ceiling table is missing any generator output, so adding a new agent requires adding one map entry), fails when any synthetic fixture exceeds its configured hard ceiling, and passes again after the injected growth is removed. Use either a low test-only ceiling or an injected addition large enough to cross the production 75 KB ceiling; keep the 50 KB and 40 KB tiers as warnings applied uniformly to every measured file (Pragmatic and Aggressive respectively) unless the selected fixture explicitly promotes one of them to a hard fail.
 
 ## Lever 1: aa baseline compaction (Phase 1, highest leverage)
 
@@ -114,7 +114,7 @@ Relationship to Levers 1-3: orthogonal (Item B does not touch AGENTS.md content 
 
 | Phase | Work | Effort | Ships in | Acceptance gate |
 |---|---|---|---|---|
-| **0** | **Growth guard (size-gate CI fixture; mandatory prerequisite)** | **0.5 day** | **aa v0.6.x patch** | **size-gate fixture fails when configured hard ceiling is exceeded; reverting injected growth restores green; pytest fixture exposes byte count to Phase 1+2** |
+| **0** | **Growth guard (size-gate unittest fixture; mandatory prerequisite)** | **~1.5 hours** | **aa v0.6.x patch** | **size-gate fixture reports AGENTS.md plus generated per-agent byte counts, fails when any configured hard ceiling is exceeded, and passes after injected growth is removed** |
 | 1 | Lever 1 (aa baseline compact) | 2-3 days | aa v0.7.x | Phase 0 fixture asserts CLAUDE.md ≤ 40 KB on fresh `agent-style`-only consumer; real-agent smoke still green |
 | 2 | Lever 2 (agent-pack on-demand + fail-loud route-boundary telemetry) | 1-2 days | agent-pack v0.2.x + aa v0.7.x router rule | paper consumer: my-router loads paper-workflow on first .tex edit, OR emits blocking expected-but-not-loaded note when load fails; synthetic regression test pinning the blocking-note path |
 | 3 | Lever 3 (as tiny) | deferred | as v0.4.x (only if needed) | revisit triggers above |
