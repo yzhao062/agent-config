@@ -74,6 +74,17 @@ Rationale for the Pragmatic default: 1M-context Opus plus prompt cache makes 50 
 
 **Migration**: zero consumer action. Bootstrap is idempotent and runs every session, so consumers get the compact version on next session start automatically.
 
+**Status — Phase 1.A shipped 2026-05-17** (partial; ~-4 KB delivered vs the ~-20 KB target above). Three inline cuts landed: Pack deployment algorithm compressed (~3 → ~1.3 KB), Codex MCP Integration trimmed (~5 → ~2 KB), npm/winget historical caveat deleted (~0.3 KB). Measured outcome:
+
+- aa AGENTS.md: 35.5 → **31.6 KB** (-4.0 KB, -11%)
+- aa CLAUDE.md: 31.6 → **30.2 KB** (-1.4 KB; CC 40 KB headroom 8.4 → **9.8 KB**)
+- aa agents/codex.md: 33.7 → **30.2 KB** (-3.5 KB; MCP cut concentrates here)
+- ac AGENTS.md: 43.9 → **38.9 KB** (-4.0 KB)
+
+Commits: aa [`ba221f7`](https://github.com/yzhao062/anywhere-agents/commit/ba221f7), ac [`5638585`](https://github.com/yzhao062/agent-config/commit/5638585). Pre-push smoke 3/3 ✓ on both. CI Validate ✓ on both.
+
+Remaining Lever 1 scope (**Phase 1.B + 1.C**, dormant) covers the deeper compressions that would close the gap to the full ~16 KB target: Mechanical Enforcement escape-hatch prose, GHA deprecation context, How-to-populate item 2, Configuration Precedence prose (1.B); Session Start runtime branches consolidation, banned-word list reference (1.C, medium utility risk). Reactivate when ready.
+
 **Acceptance**: Phase 0's size-gate fixture asserts `CLAUDE.md ≤ 40 KB` on a fresh consumer bootstrapped with `agent-config.yaml` selecting only `agent-style`. Existing real-agent smoke (banner emission, guard gates) remains green. Spot-check the compacted aa against the ac source for any normative rule that was accidentally dropped.
 
 ## Lever 2: agent-pack passive → on-demand skill (Phase 2)
@@ -115,7 +126,8 @@ Relationship to Levers 1-3: orthogonal (Item B does not touch AGENTS.md content 
 | Phase | Work | Effort | Ships in | Acceptance gate |
 |---|---|---|---|---|
 | **0** | **Growth guard (size-gate unittest fixture; mandatory prerequisite)** | **~1.5 hours** | **aa v0.6.x patch** | **size-gate fixture reports AGENTS.md plus generated per-agent byte counts, fails when any configured hard ceiling is exceeded, and passes after injected growth is removed** |
-| 1 | Lever 1 (aa baseline compact) | 2-3 days | aa v0.7.x | Phase 0 fixture asserts CLAUDE.md ≤ 40 KB on fresh `agent-style`-only consumer; real-agent smoke still green |
+| **1.A** ✅ | **Lever 1 partial: Pack deployment compressed + Codex MCP trimmed + npm caveat deleted** | **~1.5 hours actual** | **shipped 2026-05-17 on main (aa `ba221f7`, ac `5638585`); next aa tag** | **delivered: aa AGENTS.md -4 KB / CLAUDE.md headroom 8.4 → 9.8 KB; pre-push smoke 3/3; CI Validate ✓ both repos** |
+| 1.B / 1.C | Lever 1 remaining: deeper compressions (Mechanical Enforcement escape-hatch, GHA deprecation, Session Start branches, banned-list reference) | dormant | reactivate when ready | full Lever 1 target ~16 KB aa baseline |
 | 2 | Lever 2 (agent-pack on-demand + fail-loud route-boundary telemetry) | 1-2 days | agent-pack v0.2.x + aa v0.7.x router rule | paper consumer: my-router loads paper-workflow on first .tex edit, OR emits blocking expected-but-not-loaded note when load fails; synthetic regression test pinning the blocking-note path |
 | 3 | Lever 3 (as tiny) | deferred | as v0.4.x (only if needed) | revisit triggers above |
 | 4 | Item B (guard.py extract) | multi-day | aa v1.0.0 | guard.py shipped as agent-behave pack; legacy `rule_packs:` key hard-fails with migration message |
