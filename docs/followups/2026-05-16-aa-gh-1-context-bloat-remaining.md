@@ -87,23 +87,31 @@ Remaining Lever 1 scope (**Phase 1.B + 1.C**, dormant) covers the deeper compres
 
 **Acceptance**: Phase 0's size-gate fixture asserts `CLAUDE.md ≤ 40 KB` on a fresh consumer bootstrapped with `agent-config.yaml` selecting only `agent-style`. Existing real-agent smoke (banner emission, guard gates) remains green. Spot-check the compacted aa against the ac source for any normative rule that was accidentally dropped.
 
-## Lever 2: agent-pack passive → on-demand skill (Phase 2)
+## Lever 2: agent-pack slim variants (Phase 2)
 
-**Mechanism**: agent-pack `profile` and `paper-workflow` currently install as passive packs (inserted unconditionally into AGENTS.md). Convert each to a skill loaded on-demand by `my-router`. The conversion has two halves: skill-ify the content, and add route-boundary detection.
+**Status — 2026-05-17 architectural correction**: the prior "passive → on-demand skill" design is **closed**. It conflicted with `pack-architecture.md` § "The two axes" (passive vs active is a behavior classification, not a sizing knob) and Round 2 "Compression layering" decision (`pack-architecture.md:914`), which prescribes slim variants (`source.path:` pointing at `pack-name-field.md` or `pack-name-lite.md`) as the canonical way to shrink passive content. The maintainer also explicitly prefers always-available passive load over context-window optimization (2026-05-17), reinforcing the same architectural direction. The Lever 2 below is the rewritten path.
 
-**Fail-loud route-boundary telemetry (primary mitigation; replaces the banner-only design from the prior draft)**: a banner-line "Loaded packs on-demand: \<list\>" only shows what DID load; it cannot show what FAILED to load when nothing matched. The actual silent-miss failure mode is invisible at SessionStart. Replace with a router contract:
+**Mechanism**: agent-pack ships slim variants of its two passive packs, analogous to `as v0.4.0` shipping `rule-pack-field.md` + `rule-pack-lite.md`. The consumer's `agent-config.yaml` picks which variant to load via `source.path:`. Passive load semantics are unchanged; only the byte size differs per variant.
 
-- **Paper-context indicators** (any one triggers expectation that `paper-workflow` should load): a `.tex` or `.bib` file in cwd or in an `@-mentioned` path; an Overleaf-tracked submodule appearing in `git submodule status`; a `paper/` or `proposal/` directory at the consumer root; a legacy `agent-config.yaml` entry that selected `paper-workflow` as a passive pack (sticky after migration).
-- **Maintainer-identity indicators** for `profile`: explicit maintainer or institutional mention in the first user turn, or a `profile.md`-style identity file in the consumer root.
-- **Router contract**: when any indicator fires, my-router MUST either successfully load the corresponding skill OR emit a blocking note: `paper-workflow expected (trigger: .tex file at <path>) but not loaded; manual load: @paper-workflow`. The note appears at the next agent turn boundary, not buried in a SessionStart banner.
-- **Manual fallback**: explicit `@paper-workflow` or `@profile` slash command always loads the skill regardless of router state.
-- **SessionStart banner stays** as secondary confirmation surface (lists what DID load), but is no longer the primary signal.
+**Slim variant targets** (measured 2026-05-17 against agent-pack):
 
-**Expected outcome**: -14.8 KB from baseline AGENTS.md in any project that consumes agent-pack. Stacks with Lever 1 to bring a paper-project consumer from ~52 KB down to ~37 KB (Aggressive tier for paper consumers too).
+| Pack | Full | -field (slim) | -lite (smallest) | Compaction risk |
+|---|---:|---:|---:|---|
+| `profile` (`docs/rule-pack.md`) | 6.8 KB | ~4 KB | ~2 KB | Low — drop "Active focus snapshot" (dated), compress "Decision-support stance" prose; -lite also drops most of "Public projects" bullets |
+| `paper-workflow` (`docs/paper-workflow.md`) | 8.0 KB | ~6 KB | ~3 KB | **Medium-high for -lite** — the Overleaf merge protocol prevents silent co-PI data loss; compressing risks losing exact `--theirs` / `--ours` rules. -field keeps full Overleaf section and trims Submodule Workflow verbose bullets only. Maintainer should weigh whether to ship -lite at all |
 
-**Effort**: 1-2 days for skill conversion + my-router route-boundary rules + telemetry. The added router-contract scope is small (the detection rules already exist informally; this lever formalizes them and adds the blocking note).
+**Expected outcome** (paper consumer at current 65.8 KB CLAUDE.md baseline):
 
-**Acceptance**: paper consumer bootstraps with no `paper-workflow` content in AGENTS.md; on first `.tex` edit, my-router loads paper-workflow OR (when the load fails / the skill is missing) emits the blocking expected-but-not-loaded note. Regression test: a synthetic consumer with `.tex` present but no my-router rule registered must emit the blocking note within the first agent turn.
+- `profile-field` only: -2.8 KB → ~63 KB CLAUDE.md
+- `profile-field` + `paper-workflow-field`: -4.8 KB → ~61 KB CLAUDE.md
+- `profile-lite` + `paper-workflow-field`: -6.8 KB → ~59 KB CLAUDE.md
+- `profile-lite` + `paper-workflow-lite`: -9.8 KB → ~56 KB CLAUDE.md (with the Overleaf merge degradation flagged above)
+
+**Effort**: ~1-2 hours for `-field` variant authoring + `agent-pack/pack.yaml` update. Optionally another 0.5 day to cut a tagged release (e.g., `agent-pack v0.2.0`) with CHANGELOG entry per the `as v0.4.0` precedent.
+
+**Acceptance**: agent-pack ships at least `profile-field.md` and `paper-workflow-field.md`; `pack.yaml` exposes them (additional pack entries OR variant `source.path:` options on the existing entries); a consumer with `agent-config.yaml` referencing the slim variants bootstraps to a smaller AGENTS.md without changing load semantics.
+
+**Risk**: low for `-field` variants (compress prose / drop dated content; normative rules unchanged). Medium-high for `paper-workflow-lite` specifically (Overleaf merge protocol is high-stakes detail; compressing risks silent data loss in real merges).
 
 ## Lever 3: tiny-tier as variant (deferred)
 
@@ -128,7 +136,7 @@ Relationship to Levers 1-3: orthogonal (Item B does not touch AGENTS.md content 
 | **0** | **Growth guard (size-gate unittest fixture; mandatory prerequisite)** | **~1.5 hours** | **aa v0.6.x patch** | **size-gate fixture reports AGENTS.md plus generated per-agent byte counts, fails when any configured hard ceiling is exceeded, and passes after injected growth is removed** |
 | **1.A** ✅ | **Lever 1 partial: Pack deployment compressed + Codex MCP trimmed + npm caveat deleted** | **~1.5 hours actual** | **shipped 2026-05-17 on main (aa `ba221f7`, ac `5638585`); next aa tag** | **delivered: aa AGENTS.md -4 KB / CLAUDE.md headroom 8.4 → 9.8 KB; pre-push smoke 3/3; CI Validate ✓ both repos** |
 | 1.B / 1.C | Lever 1 remaining: deeper compressions (Mechanical Enforcement escape-hatch, GHA deprecation, Session Start branches, banned-list reference) | dormant | reactivate when ready | full Lever 1 target ~16 KB aa baseline |
-| 2 | Lever 2 (agent-pack on-demand + fail-loud route-boundary telemetry) | 1-2 days | agent-pack v0.2.x + aa v0.7.x router rule | paper consumer: my-router loads paper-workflow on first .tex edit, OR emits blocking expected-but-not-loaded note when load fails; synthetic regression test pinning the blocking-note path |
+| 2 | Lever 2 (agent-pack slim variants per pack-architecture Round 2 decision; ships `-field` / `-lite` analogous to `as v0.4.0`) | ~1-2 hours (`-field` variants); +0.5 day if tagged release | agent-pack v0.2.x | consumer `agent-config.yaml` pins variant via `source.path:`; estimated -3 to -10 KB on paper consumers depending on chosen variants; passive load semantics preserved |
 | 3 | Lever 3 (as tiny) | deferred | as v0.4.x (only if needed) | revisit triggers above |
 | 4 | Item B (guard.py extract) | multi-day | aa v1.0.0 | guard.py shipped as agent-behave pack; legacy `rule_packs:` key hard-fails with migration message |
 

@@ -16,7 +16,7 @@ Cross-repo backlog for the maintainer's source repos (ac, aa, ap, as), tracked h
 | File | Workstream | Items | Next trigger |
 |---|---|---|---|
 | [aa-gh-5-pack-compose-staging-gc](2026-05-16-aa-gh-5-pack-compose-staging-gc.md) | composer / pack-lifecycle | Staging-dir GC after failed compose | aa v0.6.x patch |
-| [aa-gh-1-context-bloat-remaining](2026-05-16-aa-gh-1-context-bloat-remaining.md) | pack-architecture / AGENTS.md size budget | aa#1 effectively closed (5 of 6 shipped). File rewritten 2026-05-17 as optimization plan: Phase 0 growth-guard CI (mandatory) → Lever 1 aa compact (against aa/AGENTS.md, NOT ac) → Lever 2 agent-pack on-demand with fail-loud route-boundary telemetry → Lever 3 deferred → Item B v1.0.0 `guard.py` extract | **Phase 0 ✅ shipped (aa `38c57aa`); Phase 1.A ✅ shipped 2026-05-17 (aa `ba221f7`, ac `5638585`; -4 KB / CC headroom 8.4 → 9.8 KB); Phase 1.B/1.C dormant; Phase 2 / Item B future** |
+| [aa-gh-1-context-bloat-remaining](2026-05-16-aa-gh-1-context-bloat-remaining.md) | pack-architecture / AGENTS.md size budget | aa#1 effectively closed (5 of 6 shipped). File rewritten 2026-05-17 as optimization plan: Phase 0 growth-guard CI (mandatory) → Lever 1 aa compact (against aa/AGENTS.md, NOT ac) → Lever 2 **agent-pack slim variants** (rewritten 2026-05-17 from on-demand-skill design that conflicted with pack-architecture Round 2 decision) → Lever 3 deferred → Item B v1.0.0 `guard.py` extract | **Phase 0 ✅ shipped (aa `38c57aa`); Phase 1.A ✅ shipped 2026-05-17 (aa `ba221f7`, ac `5638585`; -4 KB / CC headroom 8.4 → 9.8 KB); Phase 1.B/1.C dormant; Phase 2 redirected to agent-pack `-field` / `-lite` variants per `pack-architecture.md:914`; Item B future** |
 
 ### `agent-pack` (ap)
 
