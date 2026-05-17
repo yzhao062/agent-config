@@ -80,6 +80,21 @@ def _build_fake_tree(base: pathlib.Path):
         (ac / rel).write_text(content)
         (aa / rel).write_text(content)
 
+    # Shared-contract test files added to STRICT in 2026-05-16 (closes
+    # the tests/ drift that broke aa CI on every shared-skill change).
+    strict_test_files = (
+        "tests/test_dispatch_codex.py",
+        "tests/test_health_check.py",
+        "tests/test_guard.py",
+        "tests/test_prompt_byte_parity.py",
+    )
+    for repo in (ac, aa):
+        (repo / "tests").mkdir(exist_ok=True)
+    for rel in strict_test_files:
+        content = f"# stub: {rel}\n"
+        (ac / rel).write_text(content)
+        (aa / rel).write_text(content)
+
     for skill in ("implement-review", "my-router", "ci-mockup-figure", "readme-polish"):
         rel = f".claude/commands/{skill}.md"
         content = f"# pointer: {skill}\n"

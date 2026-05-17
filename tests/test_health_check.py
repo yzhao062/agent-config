@@ -417,6 +417,87 @@ class HealthCheckPython(unittest.TestCase):
             "INFO codex_core::config: using sandbox policy: workspace-write\n"
         )
 
+    def test_check8_passes_on_backtick_quoted_pattern_strings(self) -> None:
+        """Inline backtick-quoted pattern strings in Codex reasoning text
+        must NOT trigger Check 8.
+
+        Regression: when /implement-review reviews the implement-review
+        skill itself (or any prompt that names the patterns), Codex's
+        stdout reasoning quotes the pattern strings with backticks for
+        technical clarity. Pre-fix this produced 12-152 FP markers across
+        4 confirmed runs (ac self-review r2/r3, random, NSF, Letter-).
+        Mitigation mirrors Check 7's `strip_code_spans` pass.
+        """
+        self._assert_check8_pass(
+            "Codex reasoning: I need to scan for `CreateProcessAsUserW failed: 1312`\n"
+            "and `windows sandbox: runner error` in the dispatch tail.\n"
+            "The pattern `rate limit` is also relevant for 429 surfaces.\n"
+        )
+
+    def test_check8_passes_on_fenced_block_with_pattern_strings(self) -> None:
+        """Triple-backtick fenced blocks (e.g., Codex echoing a SKILL.md
+        snippet that lists pattern strings) must be stripped before
+        scanning. Mirror of Check 7's fenced-block handling.
+        """
+        self._assert_check8_pass(
+            "Codex reasoning: I read the skill, which states:\n"
+            "```\n"
+            "Windows sandbox launch failures such as CreateProcessAsUserW failed: 1312\n"
+            "or windows sandbox: runner error, plus rate limit / quota exceeded.\n"
+            "```\n"
+            "End of skill quote.\n"
+        )
+
+    def test_check8_warn_emits_pattern_breakdown(self) -> None:
+        """When Check 8 WARNs, the line includes a `breakdown=` segment
+        with per-pattern counts sorted by frequency. This is what lets
+        downstream Claude recognize WSL-stub-bash 1312 burst (and other
+        known-noise shapes catalogued in SKILL.md FP-tuning) without
+        re-grepping the tail.
+        """
+        # Mix of patterns with distinct counts so order is deterministic.
+        # 3 windows sandbox + 2 rate limit + 1 http 429.
+        tail = (
+            "windows sandbox: runner error\n"
+            "windows sandbox: runner error\n"
+            "windows sandbox: runner error\n"
+            "rate limit\n"
+            "rate limit\n"
+            "HTTP/1.1 429 Too Many Requests\n"
+        )
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            review = td_path / "Review-Codex.md"
+            make_review(review)
+            state = make_state_dir(td_path, tail_content=tail)
+            result = run_health_py(state, review)
+            self.assertEqual(result.returncode, 0)
+            parsed = parse_output(result.stdout)
+            self.assertEqual(parsed["check-8"][0], "WARN")
+            self.assertIn("tool-failure-markers", parsed["check-8"][1])
+            self.assertIn("breakdown=", parsed["check-8"][1])
+            breakdown_segment = parsed["check-8"][1].split("breakdown=", 1)[1]
+            # Pull labels in order: each `label:N` token.
+            labels = [seg.split(":")[0] for seg in breakdown_segment.split()]
+            # Labels must be sorted by count descending. With this tail
+            # `windows` (3 hits) and `sandbox` (3 hits via two distinct
+            # patterns) precede `limit` (2 hits) which precedes `429`
+            # (1 hit).
+            for top_label in ("windows", "sandbox"):
+                self.assertLess(
+                    labels.index(top_label),
+                    labels.index("limit"),
+                    f"breakdown not sorted by count desc: {breakdown_segment!r}",
+                )
+            # Pattern `HTTP/\S* (?:429|5\d\d)` yields label `http`
+            # (longest word run in the pattern source) with 1 hit; must
+            # come after `limit` (2 hits).
+            self.assertLess(
+                labels.index("limit"),
+                labels.index("http"),
+                f"breakdown not sorted by count desc: {breakdown_segment!r}",
+            )
+
     def test_check8_warns_when_tail_missing(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             td_path = Path(td)

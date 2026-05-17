@@ -1,12 +1,12 @@
 # PLAN-implement-review-auto-followups (post-ship triage)
 
-**Status**: 5 follow-up items + 4 dismissed concerns captured. 2 items completed on 2026-05-16 (Item 3 Spark validation + Item 4 random / NSF dogfood). 3 items remain open with concrete triggers: Item 1 (Check 8 FP), Item 2 (aa test mirror), Item 5 (health-check arg doc).
+**Status**: 6 follow-up items + 4 dismissed concerns captured. All 6 items completed by end of day 2026-05-16: Item 3 (Spark validation) and Item 4 (random / NSF dogfood) closed earlier; Items 1 (Check 8 FP), 2 (aa test mirror), 5 (health-check arg doc) shipped as the Items-1+2+5 batch; Item 6 (WSL stub `bash` mitigation) surfaced during that batch's Round 1 review and bundled into the same commit.
 **Owner**: Yue (driver) + Claude (implementer when invoked).
 **Parent work**: [`2026-05-15-implement-review-auto-terminal.md`](2026-05-15-implement-review-auto-terminal.md) (Auto-terminal channel design) + ac `90fe721` (dispatcher hardening + guard auto-allow) + ac `7fa0559` (Codex sandbox 1312 bypass + retry doctrine).
 
 ## Why this file exists
 
-The 2026-05-16 ship closed the Codex-Windows-1312 problem end-to-end. Three review rounds + an embedded-diff retry dry-run validated `--sandbox danger-full-access` as the primary fix and turned the retry path into a sandbox-strict-environment fallback. The review loop surfaced four items correctly out of scope for that commit; consumer-project dogfood surfaced a fifth (Item 5). All five sit between "bug" and "future enhancement" — each open one has a concrete trigger. A separate "Functional concerns considered and dismissed" section captures four non-issues evaluated during the same loop, so the next round does not re-derive their resolution.
+The 2026-05-16 ship closed the Codex-Windows-1312 problem end-to-end. Three review rounds + an embedded-diff retry dry-run validated `--sandbox danger-full-access` as the primary fix and turned the retry path into a sandbox-strict-environment fallback. The review loop surfaced four items correctly out of scope for that commit; consumer-project dogfood surfaced a fifth (Item 5); the Items-1+2+5 batch's own Round 1 review surfaced a sixth (Item 6 -- a distinct 1312 class triggered by the WSL launcher stub when Codex tries `bash <script>` tool calls). All six are now closed. A separate "Functional concerns considered and dismissed" section captures four non-issues evaluated during the same loop, so the next round does not re-derive their resolution.
 
 ## Item 1 — Check 8 prompt-content false-positive
 
@@ -164,6 +164,49 @@ Before the next consumer-side dogfood round, OR bundled with the next substantiv
 ### Effort estimate
 
 30 minutes. One SKILL.md edit + one assertion in `tests/test_prompt_byte_parity.py` that pins the new doc text to the script's argparse contract.
+
+## Item 6 — WSL launcher stub interception of Codex's `bash` tool calls
+
+### Symptom
+
+Surfaced 2026-05-16 during Round 1 of the Items 1+2+5 batch review. The review prompt focused on staged `check-parity.sh` changes, so Codex (correctly) tried to verify by running `bash scripts/check-parity.sh`. On the maintainer's Windows host, PATH `bash` resolves to the WSL launcher stub (`C:\Windows\System32\bash.exe`, or the Microsoft Store WSL alias under `WindowsApps\`). The WSL stub requires elevation-token resolution that `CreateProcessAsUserW` cannot supply from Codex's spawn context, so the tool call failed. Result: 30 `CreateProcessAsUserW failed: 1312` errors in `<state-dir>/tail`, burst within 51 ms. Codex fell back to `C:\Program Files\Git\bin\bash.exe` explicitly and completed the review with substantive findings, but the noise polluted Check 8 and could mask real failures in a future run.
+
+### Root cause
+
+Distinct from the workspace-write sandbox 1312 bug that `--sandbox danger-full-access` handles. That fix made Codex skip its OWN sandbox restrictions for outer-level subprocess spawn. But the OS-level spawn primitive is still `CreateProcessAsUserW` (Codex's sandbox runner's spawn machinery on Windows), and `CreateProcessAsUserW` fails for any subprocess that itself needs elevation-token brokering -- the WSL stub is one such case (it brokers a syscall to the WSL service, requires session-token chain).
+
+So `--sandbox danger-full-access` is correct and unchanged; what surfaces here is a separate condition: the specific subprocess (WSL stub) cannot be spawned via the underlying Win32 API Codex uses.
+
+### Completed 2026-05-16: signal-layer fix, not runtime prevention
+
+Fixed in the same commit as Items 1+2+5, but the implementation is **NOT** a runtime PATH mitigation. Two PATH-prepend approaches were attempted and reverted in-flight:
+
+1. PowerShell `$env:PATH = "$gitBashBin;$env:PATH"` -- triggers Bitdefender's PATH-hijacking heuristic and blocks `dispatch-codex.ps1` from loading entirely. Verified live: `ParserError: This script contains malicious content and has been blocked by your antivirus software.`
+2. cmd helper injection `IF EXIST "C:\Program Files\Git\bin\bash.exe" SET "PATH=C:\Program Files\Git\bin;%PATH%"` injected before the `codex exec` line -- still triggers the same heuristic because the literal `SET "PATH=...;%PATH%"` string appears in the PowerShell source that constructs the cmd body.
+
+Both block the dispatcher entirely, which is strictly worse than the noise. The mitigation lives at the SIGNAL layer instead:
+
+- `skills/implement-review/scripts/health-check.py` Check 8 now emits a per-pattern breakdown alongside the marker total when WARN fires: `WARN check-8 N tool-failure-markers breakdown=createprocessasuserw:30 windows:24 sandbox:24 rate:13 429:11 ...`. Pattern labels derive from the longest word run in each `TOOL_FAILURE_PATTERNS` entry, lowercased, capped at 20 chars, sorted by count descending.
+- SKILL.md FP-tuning principle subsection catalogues the WSL-stub-bash 1312 shape (envelope co-occurrence of `createprocessasuserw` + `windows` + `sandbox` patterns; Substance heuristics pass; review-mtime fresh) as a known graceful-fallback noise pattern. Downstream Claude reads the breakdown, matches against the catalogue, and Proceeds without user escalation when the shape fits.
+- User-side resolution path (optional, out of skill scope): remove the WSL stub from PATH or reorder PATH so `C:\Program Files\Git\bin` precedes `C:\Windows\System32`. Subsequent Auto-terminal runs then emit 0 WSL-stub 1312 markers.
+
+### Why this is a real fix despite no runtime prevention
+
+The user-facing complaint was "Check 8 reports 91 markers, looks broken even when review succeeded". The signal-layer fix solves that exactly:
+
+- Before: `WARN N markers` (opaque), downstream Claude has to grep tail to classify
+- After: `WARN N markers breakdown=...` (transparent), downstream Claude matches against doctrine and proceeds in one read
+
+Codex's tool dispatch behavior is unchanged (still hits 1312 on WSL stub); the noise still appears in tail. But the signal that flows to the human and downstream agents is now actionable and correctly categorized.
+
+### Why bundled into the same commit
+
+Surfaced during Round 1 of the Items 1+2+5 review (live test of Item 1 backtick exclusion -- the Check 8 91-marker count looked like residual FP but was actually 30 real WSL-stub 1312s + remaining other patterns). Treating it as a separate followup would have left a confusing signal whenever a Windows + WSL-stub user reviews `.sh` files (which the next aa shared-skill change always involves). Bundling closes the doctrinal loop in one ship cycle.
+
+### Future improvements (not blocking)
+
+- Codex upstream issue: ask whether Codex can detect the WSL launcher stub via process-image inspection (e.g., `bash.exe` under `System32\` or `WindowsApps\` with a known PE timestamp signature) and fall back to alternative bash without surfacing the 1312 envelope at all. This would prevent the noise at source without consumer-side PATH manipulation.
+- AV-safe runtime PATH mitigation, if Codex declines the upstream fix: construct the cmd `SET PATH=...` line via string fragments that never appear adjacent in source (e.g., split `'PATH'` and `'%PATH%'` across multiple assigned variables before concatenation). Fragile and would need re-testing as Bitdefender signatures evolve.
 
 ## Functional concerns considered and dismissed
 

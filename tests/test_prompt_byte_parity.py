@@ -185,6 +185,36 @@ class ByteParityContract(unittest.TestCase):
         self.assertIn("diff-scoped", self.skill_text,
                       "SKILL.md must label retry findings as diff-scoped")
 
+    def test_skill_md_documents_full_health_check_arg_set(self) -> None:
+        """SKILL.md must show health-check's full required arg shape.
+
+        Regression: consumer-side Claude historically invoked
+        `health-check --state-dir <path>` alone (omitting `--round`),
+        causing argparse error before any check ran. The Phase 1c step
+        that names the call must inline all three required-or-recommended
+        flags so a fresh reader has an unambiguous, copy-pasteable
+        invocation.
+        """
+        # All three flags must appear together within a short window so
+        # they read as one command, not scattered across the doc.
+        window_size = 200
+        idx_state = self.skill_text.find("--state-dir <abs-path>")
+        self.assertGreater(
+            idx_state, -1,
+            "SKILL.md must show the health-check --state-dir invocation",
+        )
+        window = self.skill_text[idx_state : idx_state + window_size]
+        self.assertIn(
+            "--round", window,
+            "SKILL.md must show --round flag adjacent to --state-dir; "
+            "argparse rejects calls without --round",
+        )
+        self.assertIn(
+            "--review-file", window,
+            "SKILL.md must show --review-file flag adjacent to --state-dir "
+            "to make the invocation unambiguous for fresh readers",
+        )
+
 
 class _PreservationMixin:
     SHELL_KIND: str = ""
