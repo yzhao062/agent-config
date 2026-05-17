@@ -16,7 +16,7 @@ Cross-repo backlog for the maintainer's source repos (ac, aa, ap, as), tracked h
 | File | Workstream | Items | Next trigger |
 |---|---|---|---|
 | [aa-gh-5-pack-compose-staging-gc](2026-05-16-aa-gh-5-pack-compose-staging-gc.md) | composer / pack-lifecycle | Staging-dir GC after failed compose | aa v0.6.x patch |
-| [aa-gh-1-context-bloat-remaining](2026-05-16-aa-gh-1-context-bloat-remaining.md) | pack-architecture | 2 of 6: `agent-style-field` default switch + v1.0.0 `guard.py` extraction | agent-style slim pack ship (Item A); v1.0.0 (Item B) |
+| [aa-gh-1-context-bloat-remaining](2026-05-16-aa-gh-1-context-bloat-remaining.md) | pack-architecture / AGENTS.md size budget | aa#1 effectively closed (5 of 6 shipped). File rewritten 2026-05-17 as optimization plan: Phase 0 growth-guard CI (mandatory) → Lever 1 aa compact (against aa/AGENTS.md, NOT ac) → Lever 2 agent-pack on-demand with fail-loud route-boundary telemetry → Lever 3 deferred → Item B v1.0.0 `guard.py` extract | Phase 0 ships first (aa v0.6.x patch); Phase 1 aa compact pass under Pragmatic default (aa v0.7.x); override only if Defensive/Aggressive chosen before implementation |
 
 ### `agent-pack` (ap)
 
