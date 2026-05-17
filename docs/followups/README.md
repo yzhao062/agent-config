@@ -9,6 +9,7 @@ Cross-repo backlog for the maintainer's source repos (ac, aa, ap, as), tracked h
 | File | Workstream | Status |
 |---|---|---|
 | [implement-review-auto](2026-05-16-implement-review-auto-followups.md) | `implement-review` skill | Closed 2026-05-16 (6 items + 4 dismissed concerns); kept for historical reference |
+| [agent-fungibility-refactor-plan](2026-05-16-agent-fungibility-refactor-plan.md) | cross-vendor resilience (Claude / Codex) | Open: 9 phases (Phase 0 done local-only); Phase 0.5 promotes principle to AGENTS.md; ~6-9 days critical path |
 
 ### `anywhere-agents` (aa)
 
