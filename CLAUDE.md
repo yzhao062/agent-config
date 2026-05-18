@@ -73,7 +73,7 @@ Bootstrap also sets up user-level config: it copies `scripts/guard.py` to `~/.cl
 |---------|--------|-------------|
 | User profile, writing defaults, formatting rules, environment notes | `AGENTS.md` (this file) | `curl` raw file |
 | Per-agent rule files (`CLAUDE.md`, `agents/codex.md`) | Generated from `AGENTS.md` by `scripts/generate_agent_configs.py` | Regenerated locally on every bootstrap; hand-authored files preserved + warned |
-| Shared skills (`dual-pass-workflow`, `bibref-filler`, `figure-prompt-builder`, etc.) | `skills/` directory (committed only) | sparse `git clone` |
+| Shared skills (`bibref-filler`, `bibref-verify`, `ci-mockup-figure`, `dual-pass-workflow`, `figure-prompt-builder`, `implement-review`, `my-router`, `readme-polish`) | `skills/` directory (committed only) | sparse `git clone` |
 | Claude pointer commands for shared skills | `.claude/commands/` | sparse `git clone` plus non-destructive copy into the project `.claude/commands/` |
 | Claude project defaults (`permissions`, `attribution`, etc.) | `.claude/settings.json` | sparse `git clone` plus key-level merge into the project `.claude/settings.json` on every run |
 | User-level hooks (`guard.py`, `session_bootstrap.py`) + settings | `scripts/` + `user/settings.json` | Scripts copied to `~/.claude/hooks/`; settings merged into `~/.claude/settings.json` (shared permissions, PreToolUse guard, SessionStart bootstrap hook, `CLAUDE_CODE_EFFORT_LEVEL=max`) |
