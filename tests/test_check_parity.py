@@ -75,6 +75,8 @@ def _build_fake_tree(base: pathlib.Path):
         ".githooks/pre-push": "#!/bin/bash\nexit 0\n",
         ".github/workflows/real-agent-smoke.yml": "name: smoke\non: push\n",
         ".github/workflows/validate.yml": "name: validate\non: push\njobs:\n  repo-validation: {}\n",
+        "bootstrap/bootstrap.sh": "# bootstrap stub\n",
+        "bootstrap/bootstrap.ps1": "# bootstrap ps1 stub\n",
     }
     for rel, content in strict_files.items():
         (ac / rel).write_text(content)
@@ -109,8 +111,6 @@ def _build_fake_tree(base: pathlib.Path):
 
     by_design = {
         "AGENTS.md": ("# ac AGENTS (USC section)\n", "# aa AGENTS\n"),
-        "bootstrap/bootstrap.sh": ("# ac bootstrap\ngit config --global x\n", "# aa bootstrap\n"),
-        "bootstrap/bootstrap.ps1": ("# ac ps1\n", "# aa ps1\n"),
         "user/settings.json": ("{\"additionalDirectories\": []}\n", "{}\n"),
     }
     for rel, (ac_content, aa_content) in by_design.items():
