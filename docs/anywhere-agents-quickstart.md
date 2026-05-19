@@ -4,6 +4,13 @@ Maintainer-internal cheat sheet for installing `anywhere-agents` and operating i
 
 **Minimum recommended version: v0.5.6.** Earlier v0.5.x releases shipped composer fixes that the wheel CLI did not actually deliver to projects bootstrapped against an older clone. v0.5.6 bundles the composer into the wheel; a `pipx install --force` from v0.5.6+ delivers composer fixes without a re-bootstrap. See `../pack-architecture.md` § "aa v0.5.1 → v0.5.6 — operational hardening".
 
+## Prerequisites (maintainer host)
+
+- **`git >= 2.25`** for `git clone --filter=blob:none --sparse`. `--sparse` is the Git 2.25 floor; `--filter=blob:none` is the older partial-clone option (Git 2.19+). Bootstrap rejects older git up front with a platform-specific install line. The maintainer Windows host carries Git for Windows 2.50.x; the Ubuntu Spark host carries 2.34+; both pass.
+- **Python 3.x** (Miniforge `py312` env is the default; bootstrap also accepts stdlib-only invocations for the settings-merge step).
+- **Node 14+** only when exercising the npm distribution; not required for direct shell or pipx flows.
+- **Optional escape envs** for the v0.7.0 guard refactor (set in `~/.claude/settings.json` under `env`, removed after the meta-discussion write completes): `AGENT_STYLE_HOOK=off` disables the writing-style deny, `AGENT_COMPOUND_CD_HOOK=off` disables the compound-`cd` deny, `AGENT_CONFIG_GATES=off` is the legacy blanket (writing-style + banner only). Destructive git / gh approval is non-bypassable; no env disables those. The advertised set lives in `scripts/guard.py:_ESCAPE_HATCH_ENV_NAMES` and is pinned by a static literal-scan test.
+
 ## Install or upgrade
 
 ```bash

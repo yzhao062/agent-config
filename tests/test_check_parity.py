@@ -85,11 +85,14 @@ def _build_fake_tree(base: pathlib.Path):
 
     # Shared-contract test files added to STRICT in 2026-05-16 (closes
     # the tests/ drift that broke aa CI on every shared-skill change).
+    # test_bootstrap_preflight.py joined the list in v0.7.0 alongside
+    # bootstrap.sh/.ps1's git-preflight helper, which is shared STRICT.
     strict_test_files = (
         "tests/test_dispatch_codex.py",
         "tests/test_health_check.py",
         "tests/test_guard.py",
         "tests/test_prompt_byte_parity.py",
+        "tests/test_bootstrap_preflight.py",
     )
     for repo in (ac, aa):
         (repo / "tests").mkdir(exist_ok=True)

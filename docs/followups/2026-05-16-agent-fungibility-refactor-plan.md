@@ -1,6 +1,6 @@
 # Agent fungibility refactor plan: graceful degradation when an agent is unavailable
 
-**Status**: Plan captured 2026-05-16. Phase 0 (maintainer-local) completed 2026-05-16. Phase 0.5 + Phases 1-7 open; Phase 8 deferred.
+**Status**: Plan captured 2026-05-16. Phase 0 (maintainer-local) completed 2026-05-16. Phase 0.5 completed 2026-05-19 (shipped as v0.7.0 Slice B). Phases 1-7 open; Phase 8 deferred.
 **Owner**: Yue (driver) + Claude (implementer when invoked); reversal scenario explicitly includes Codex-as-implementer.
 **Driver**: Two concrete failure modes for the current Claude-primary design: (1) service outage or regional block (e.g., maintainer travel to a country where Claude is restricted), and (2) quality drift between Claude and Codex over time. Reversal testing is the deliberate flip of primary/gatekeeper roles to evaluate which agent is currently stronger for a given task class.
 
@@ -38,6 +38,10 @@ Add the agent-fungibility principle near `AGENTS.md` section "Agent Roles", then
 ### Done when
 
 A fresh consumer bootstrap includes the principle in `AGENTS.md`, `CLAUDE.md`, and `agents/codex.md`; this plan no longer names `CLAUDE.local.md` as the shared source. Verification: grep the principle's first sentence in a fresh aa consumer clone after bootstrap.
+
+### Completed 2026-05-19
+
+Shipped as v0.7.0 Slice B. `## Agent Fungibility` is now a top-level section in both ac and aa `AGENTS.md`, immediately after `## Agent Roles`. The CLAUDE.local.md section was trimmed to a one-line pointer at the canonical shared source. `CLAUDE.md` and `agents/codex.md` were regenerated in both repos. Reviewed via /implement-review (Codex) as part of the Slice B+C combined review.
 
 ## Phase 1 - SKILL.md agent-agnostic refactor (1 day)
 
