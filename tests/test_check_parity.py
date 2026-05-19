@@ -68,6 +68,7 @@ def _build_fake_tree(base: pathlib.Path):
         "scripts/_python": "#!/usr/bin/env bash\nexec python3 \"$@\"\n",
         "scripts/guard.py": "# guard stub\n",
         "scripts/session_bootstrap.py": "# session bootstrap stub\n",
+        "scripts/statusline.py": "# statusline stub\n",
         "scripts/generate_agent_configs.py": "# generator stub\n",
         "scripts/pre-push-smoke.sh": "#!/bin/bash\nexit 0\n",
         "scripts/remote-smoke.sh": "#!/bin/bash\nexit 0\n",
