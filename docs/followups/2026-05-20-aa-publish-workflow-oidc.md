@@ -1,8 +1,17 @@
 # FOLLOW-UP: aa publish.yml (PyPI + npm OIDC, removes manual upload chore)
 
-**Status**: Open. Not part of any current release.
-**Driver**: v0.7.0 release on 2026-05-19 hit an expired npm token during `npm publish` (E401), then a non-Bypass-2FA token (EOTP) on retry. The local `twine upload` + `npm publish` step is the only manual chore left in the release pipeline and is the most likely place for a release to stall on credential rot.
+**Status**: **Implemented 2026-05-20** (shipped alongside the v0.7.0 release, before the next aa version). `.github/workflows/publish.yml` is live (aa `be6ce22` initial, `fd07356` npm-OIDC switch); RELEASING.md rewritten around it (aa `777da77`). See "What actually shipped" below for deviations from the original plan.
+**Driver**: v0.7.0 release on 2026-05-19 hit an expired npm token during `npm publish` (E401), then a non-Bypass-2FA token (EOTP) on retry, then E403 from an automation token in CI. The local `twine upload` + `npm publish` step was the only manual chore left in the release pipeline and the most likely place for a release to stall on credential rot.
 **Owner**: Yue (driver) + Claude (implementer).
+
+## What actually shipped (2026-05-20)
+
+- **npm**: shipped on OIDC Trusted Publishing, NOT the `NPM_TOKEN` path the original plan led with. The token path was tried first and failed: an automation token returned `E403` after signing provenance because the package's "Publishing access" policy enforces 2FA-on-publish, which rejects all tokens. OIDC is exempt from that policy. The workflow upgrades npm to latest first (OIDC needs >= 11.5.1; node 20 ships npm 10.x) and publishes with `--provenance`. The `NPM_TOKEN` repo secret created during setup is now unused and can be deleted.
+- **PyPI**: Trusted Publishing pending-publisher configured (blank environment, so the workflow carries no `environment:` key). v0.7.0 itself was uploaded manually via `twine` before the workflow existed; `skip-existing: true` makes the workflow a clean no-op on that already-published version, and v0.7.1+ will publish through it.
+- **Indexing-race gotcha (new, not in the original plan)**: pushing `publish.yml` and creating the GitHub release within ~15s meant GitHub had not indexed the new workflow when the `release: published` event fired, so Publish did not auto-run. Worked around with a manual `gh workflow run publish.yml -f npm_only=true`. Documented in RELEASING.md so the next release either pushes the workflow well ahead of the release or expects the manual trigger.
+- **Deviation from the Validation plan below**: the RC-release dry-run (item 2) was NOT performed; the workflow was validated directly against the real v0.7.0 npm publish plus a live `npm install` + end-to-end scratch-consumer bootstrap smoke. The RC dry-run remains the right pattern for a future workflow change but was skipped here because v0.7.0 was already mid-flight.
+
+The sections below are the original pre-implementation plan, kept for design rationale.
 
 ## Purpose
 
