@@ -1,6 +1,6 @@
 # Agent fungibility refactor plan: graceful degradation when an agent is unavailable
 
-**Status**: Plan captured 2026-05-16. Phase 0 (maintainer-local) completed 2026-05-16. Phase 0.5 completed 2026-05-19 (shipped as v0.7.0 Slice B). Phases 1-7 open; Phase 8 deferred.
+**Status**: Plan captured 2026-05-16. Phase 0 (maintainer-local) completed 2026-05-16. Phase 0.5 completed 2026-05-19 (shipped as v0.7.0 Slice B). Phases 1-7 open; Phase 8 deferred. Adjacent increment 2026-05-22: `dispatch-copilot` third-agent reviewer shipped (see "Shipped adjacent" below); de-risks Phase 2, does not close it.
 **Owner**: Yue (driver) + Claude (implementer when invoked); reversal scenario explicitly includes Codex-as-implementer.
 **Driver**: Two concrete failure modes for the current Claude-primary design: (1) service outage or regional block (e.g., maintainer travel to a country where Claude is restricted), and (2) quality drift between Claude and Codex over time. Reversal testing is the deliberate flip of primary/gatekeeper roles to evaluate which agent is currently stronger for a given task class.
 
@@ -14,6 +14,26 @@ The shared source for the principle is `AGENTS.md` § "Agent Roles" (once Phase 
 
 1. **Absence**: one agent is genuinely unavailable. Service outage, regional block, API quota exhaustion, or hardware-induced refusal (e.g., Codex Windows 1312, Claude install lock). Work continues, possibly with degraded ergonomics, on the remaining agent.
 2. **Reversal testing**: the user deliberately swaps primary/gatekeeper roles. Codex-as-primary + Claude-as-gatekeeper is a supported configuration, not a workaround.
+
+## Shipped adjacent: dispatch-copilot third-agent reviewer (2026-05-22)
+
+Not one of the numbered phases below, but the first concrete realization of the principle and a working precedent for Phase 2. Shipped to both repos (ac `88a7c97`, aa `d5a0b90`): a GitHub Copilot CLI reviewer backend for the implement-review Auto-terminal channel, opt-in via `/implement-review auto copilot`. It serves the **absence** scenario plus the **codex-only reversal mode** named in Phase 4: when Claude is unavailable and Codex is the implementer, the reviewer "must be Codex itself or a third agent", and Copilot is that third agent.
+
+What it delivered:
+
+- `skills/implement-review/scripts/dispatch-copilot.{ps1,sh}`: mirrors the `dispatch-codex` contract (named args, single `STATE-DIR` stdout line, state-dir with pre-mtime/timestamp/tail, stall-watch, exit-code passthrough) with Copilot specifics: prompt via `-p "@file"`, `copilot` resolution with a `gh copilot` fallback, a narrow read+write+`shell(git:*)` allow-list scoped to the repo, `GIT_PAGER=cat`, and Copilot writing `Review-GitHub-Copilot.md` itself.
+- `tests/test_dispatch_copilot.py`: gated STRICT in `check-parity.sh` per the Phase 7 / Item 2 doctrine, byte-mirrored ac↔aa.
+- SKILL.md: an additive "Auto-terminal Copilot backend" subsection plus opt-in routing. Bare `/implement-review auto` still selects Codex (additive, no shared Codex script touched).
+- Validated with real `copilot` on Windows (`.cmd` path) and Spark Ubuntu (`.sh` path), and dogfooded through the new backend itself (12/12 Phase 2.0 health checks, no blocking findings).
+
+How it de-risks the remaining phases:
+
+- **Phase 2 (`dispatch-claude`)**: dispatch-copilot is the same "mirror dispatch-codex for a non-Codex reviewer" pattern, now proven cross-platform. The prompt-shape, state-dir, stall-watch, and AV-avoidance lessons transfer; the binary-resolution-with-fallback shape is reusable. dispatch-claude differs mainly in the binary (`claude -p` plus `--dangerously-skip-permissions`) and its failure envelopes.
+- **Phase 1 (reviewer-agnostic SKILL.md)**: only partially touched. SKILL.md stays Codex-default; the Copilot backend was added as an opt-in path, not a full narrative genericization. Phase 1 stays open, but now has two concrete backends to generalize from instead of one.
+- **Phase 6 (reviewer-agnostic health-check)**: not required for Copilot. The existing generic patterns plus the backtick-code-span exclusion handled the Copilot tail cleanly. Phase 6's Claude-specific survey still stands for the Claude tail.
+- **Phase 7 (test gating)**: precedent set. `test_dispatch_copilot.py` is in the STRICT block; `test_dispatch_claude.py` follows the same wiring.
+
+Numbered-plan status is unchanged: Phases 1-7 stay open. This increment lowers Phase 2's unknowns rather than closing any phase.
 
 ## Phase 0 - Capture the maintainer-local principle in CLAUDE.local.md (DONE, local-only)
 
@@ -253,6 +273,7 @@ The earlier "SSH-once-per-release" framing was wrong because a pack hotfix can l
 - `skills/implement-review/SKILL.md` Phase 1c - current Codex-only dispatch language
 - `skills/implement-review/scripts/dispatch-codex.{ps1,sh}` - the reference implementation to mirror for Claude
 - `tests/test_dispatch_codex.py` - the reference test suite
+- `skills/implement-review/scripts/dispatch-copilot.{ps1,sh}` + `tests/test_dispatch_copilot.py` - shipped 2026-05-22; third-agent (Copilot) reviewer realizing the same dispatch-codex-mirror pattern Phase 2 needs for Claude (see "Shipped adjacent" above)
 - [`2026-05-16-implement-review-auto-followups.md`](2026-05-16-implement-review-auto-followups.md) - STRICT-mirror doctrine for shared-contract tests (Item 2) and AV-avoidance lessons (Item 6)
 
 ## Delete this file when
