@@ -90,8 +90,11 @@ def _build_fake_tree(base: pathlib.Path):
     strict_test_files = (
         "tests/test_dispatch_codex.py",
         "tests/test_dispatch_copilot.py",
+        "tests/test_dispatch_claude.py",
         "tests/test_health_check.py",
         "tests/test_guard.py",
+        "tests/test_session_bootstrap.py",
+        "tests/test_pointer_files.py",
         "tests/test_prompt_byte_parity.py",
         "tests/test_bootstrap_preflight.py",
     )
