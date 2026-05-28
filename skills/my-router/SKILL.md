@@ -85,25 +85,26 @@ Some projects declare their type in `AGENTS.local.md` or directory naming:
 
 ## Skill Lookup Order
 
-In consuming project repos, shared skills are bootstrapped into `.agent-config/repo/skills/`, not the project's own `skills/`. When dispatching, look for each skill in this order:
+In consuming project repos, skills can be project-local, pack-deployed, or bootstrapped from shared config. When dispatching, look for each skill in this order:
 
-1. `skills/<name>/SKILL.md` — repo-local (highest priority). Projects may have their own custom skills here that are not in the shared config. The router should scan `skills/` for any available SKILL.md files, not just the ones listed in the routing table below.
-2. `.agent-config/repo/skills/<name>/SKILL.md` — bootstrapped from shared config.
+1. `skills/<name>/SKILL.md`: project-local (highest priority). Projects may have their own custom skills here that are not in the shared config. The router should scan `skills/` for any available SKILL.md files, not just the ones listed in the routing table below.
+2. `.claude/skills/<name>/SKILL.md`: pack-deployed by `anywhere-agents pack install`. The `.claude/` prefix is a historical Claude Code convention; the SKILL.md contents are agent-agnostic.
+3. `.agent-config/repo/skills/<name>/SKILL.md`: bootstrapped from shared config.
+4. **Installed plugins**: Claude Code plugins (e.g., `frontend-design`, `superpowers`, `pyright-lsp`) provide their own skills and capabilities. Check `/skills` output for plugin-provided skills alongside the three locations above. Plugin skills may overlap with custom skills; prefer the more specific one (e.g., a project-local `nsf-proposal-composer` over a generic plugin writing skill).
 
-If a repo-local skill matches the task better than a shared skill, prefer the local one. The router itself follows this same lookup order: in the `agent-config` repo it lives at `skills/my-router/`; in other projects it lives at `.agent-config/repo/skills/my-router/`.
-
-3. **Installed plugins** — Claude Code plugins (e.g., `frontend-design`, `superpowers`, `pyright-lsp`) provide their own skills and capabilities. Check `/skills` output for plugin-provided skills alongside repo-local and shared skills. Plugin skills may overlap with custom skills; prefer the more specific one (e.g., a project-local `nsf-proposal-composer` over a generic plugin writing skill).
+If a project-local skill matches the task better than a pack-deployed or bootstrapped skill, prefer the project-local one. The router itself follows this same lookup order: in the `agent-config` repo it lives at `skills/my-router/`; in other projects it lives at `.claude/skills/my-router/` or `.agent-config/repo/skills/my-router/`.
 
 ## Skill Availability
 
-Skills come from two sources with different availability:
+Skills come from three sources with different availability:
 
 | Source | Available where | How |
 |---|---|---|
 | `skills/` (shared) | All projects | Copied by bootstrap into `.agent-config/repo/skills/` |
+| Pack-deployed (third-party packs) | Projects that install the pack | `anywhere-agents pack install` writes into `.claude/skills/<name>/` |
 | `reference-skills/` (domain) | Only projects that have them locally | Copied manually into `skills/` in the project repo |
 
-Before invoking a reference skill, check that its `SKILL.md` exists in the current project (either `skills/` or `.agent-config/repo/skills/`). If it does not exist, inform the user: "This task would use [skill name], but it is not available in this project. You can copy it from https://github.com/yzhao062/agent-config/tree/main/reference-skills/."
+Before invoking a reference skill, check that its `SKILL.md` exists in the current project (in `skills/`, `.claude/skills/`, or `.agent-config/repo/skills/`). If it does not exist, inform the user: "This task would use [skill name], but it is not available in this project. You can copy it from https://github.com/yzhao062/agent-config/tree/main/reference-skills/."
 
 ## Combining with Dual-Pass Workflow
 
