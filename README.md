@@ -93,7 +93,7 @@ Rule-file precedence (most specific wins):
 
 Other precedence:
 
-- Project-local `skills/<name>/SKILL.md` overrides the shared copy of the same skill.
+- Project-local `skills/<name>/SKILL.md` overrides pack-deployed `.claude/skills/<name>/SKILL.md` and bootstrapped `.agent-config/repo/skills/<name>/SKILL.md` copies of the same skill.
 - `.claude/settings.local.json` overrides shared keys in `.claude/settings.json`.
 - Environment variable `CLAUDE_CODE_EFFORT_LEVEL` outranks persisted `effortLevel`; see `AGENTS.md` "Configuration Precedence" for the full chain.
 
