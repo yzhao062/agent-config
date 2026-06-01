@@ -26,7 +26,8 @@ A separate public repo provides **physical isolation**. Private content cannot l
 
 Shared components have a direction of travel that depends on which surface is changing. See `ONBOARDING.md` § "Direction of travel" for the governing policy.
 
-- **Shared-core code and shared skills** (including hooks, bootstrap scripts, workflows, shared-contract tests, and `skills/{implement-review, ci-mockup-figure, readme-polish}`; see `scripts/check-parity.sh` for the exact STRICT list) are maintained `ac`-first and mirrored to `aa` under STRICT byte parity. Standard flow: edit in `ac`, commit, push; backport to `aa` on the next release cut.
+- **Shared-core code** (hooks, bootstrap scripts, workflows, shared-contract tests; see `scripts/check-parity.sh` for the exact STRICT list) is maintained `ac`-first and mirrored to `aa` under STRICT byte parity. Standard flow: edit in `ac`, commit, push; backport to `aa` on the next release cut.
+- **Shared skills** (`skills/{implement-review, ci-mockup-figure, readme-polish}`) are also STRICT byte-identical, but the direction is no longer strictly `ac`-first. Feature work has landed `aa`-first and then synced back to `ac`: the `implement-review` Auto-terminal channel plus the Claude and Copilot reviewer backends are the worked example, built in `aa` and then resynced into `ac`. Either repo may originate the change; the invariant is byte parity at release time, not which side typed it first.
 - **aa-only surfaces** (pack composer, CLI, packaging, rule-pack manifest, composer-side templates) land in `aa` first with no `ac` mirror; `ac` carries only the maintainer-internal docs that never sanitize.
 - **External PRs** to `aa` against shared-core or a shared skill are merged in `aa`, then backported to `ac` before the next release cut so STRICT stays green.
 
@@ -44,7 +45,7 @@ Shared components have a direction of travel that depends on which surface is ch
 | `scripts/generate_agent_configs.py` | Yes, as-is | Central → per-agent generator. Already generic. |
 | `scripts/session_bootstrap.py` | Yes, as-is | SessionStart hook that enforces bootstrap without user typing. Already generic. |
 | `scripts/check-parity.sh` | Yes, as-is | Maintainer-only release gate. It exists in both repos and is byte-identical under STRICT so the check can run from either clone. It compares the side-by-side `agent-config` and `anywhere-agents` roots and is invoked by `anywhere-agents/RELEASING.md` pre-release check 5. |
-| `skills/implement-review/` | Yes, as-is | The signature skill. Still ac-first-mirrored as of 2026-05-27; row may shift if intentional aa-first drift becomes the policy in a future release. |
+| `skills/implement-review/` | Yes, as-is | The signature skill. The Auto-terminal channel plus the Claude and Copilot reviewer backends (aa v0.7.x) landed `aa`-first; `ac` has been resynced so the tree is byte-identical again. Direction is now "either side may originate, byte parity at release time" per the Canonical source rule above. |
 | `skills/my-router/` | Yes, with content changes | The public version has concrete routing rules for the four shipped skills (`implement-review`, `ci-mockup-figure`, `readme-polish`, plus `my-router` itself) with clear "extend this in your fork" guidance. Strip references to `nsf-*`, `usc-reimbursement`, `cs-paper-review`, etc. |
 | `skills/dual-pass-workflow/` | No | Author uses it, but it is research-flavored. |
 | `skills/bibref-filler/` | No | Research-specific (BibTeX / LaTeX citation workflow). |

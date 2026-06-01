@@ -4,7 +4,7 @@ Design note for the `anywhere-agents` (aa) pack composition architecture. Spans 
 
 **Audience**: maintainer; tracked in `ac` but not mirrored to `aa` (see `anywhere-agents.md` for the mirror policy). Parts may be sanitized for public reference once implementation lands.
 
-**Status**: active implementation reference. v0.4.0 shipped on 2026-04-24 (pack-v2 schema, active-kind dispatch, pack-management CLI, state + lifecycle primitives). Composer-side outer-lock acquisition, automatic startup reconciliation wiring, and bootstrap consumption of the 4-layer user-level resolver remain v0.4.x follow-ups tracked throughout this file. Replaces any prior `PLAN-skill-pack-composition.md` reference.
+**Status**: active implementation reference. v0.4.0 shipped on 2026-04-24 (pack-v2 schema, active-kind dispatch, pack-management CLI, state + lifecycle primitives). The composer-side outer-lock acquisition, automatic startup reconciliation wiring, and bootstrap consumption of the 4-layer user-level resolver that this file repeatedly calls "v0.4.x follow-ups" all shipped across the v0.5.x line (`scripts/packs/{locks,reconciliation,transaction,config}.py`); aa is at v0.7.2 as of 2026-05-31. The per-release sections below are kept as the design record written at each release's planning time: read them as historical plan, not as current pending work. Replaces any prior `PLAN-skill-pack-composition.md` reference.
 
 **Scope**: this design contract is scoped to ac → aa consolidation and bootstrap portability (private-pack support, user-level config, CLI, auth chain). Broader platform surface (registry, `~/.agent-profile/memory.md` bridge, consumer-facing rename migration, ecosystem framing) remains gated by the adoption tests in `vision.md` and is not a deliverable of this contract.
 
@@ -74,7 +74,7 @@ private   →  requires auth chain: ssh key → gh CLI token → GITHUB_TOKEN en
 ```
                   passive                            active
 public       agent-style (rule-pack)             implement-review, my-router,
-             agent-style-field (as v0.4)          ci-mockup-figure (aa-shipped)
+             agent-style-compact (as v0.3.4)     ci-mockup-figure (aa-shipped)
              agent-behave text (future)          agent-behave hooks (future)
 
 private      lab-writing rules                   nsf-helper skill
@@ -501,6 +501,8 @@ The `ONBOARDING.md` release-runbook cheat-sheet gains a post-release verificatio
 **STRICT parity**: 4 shipped command pointers (`.claude/commands/{implement-review,my-router,ci-mockup-figure,readme-polish}.md`) **drop from STRICT list** as they become pack-emitted outputs. `rule-packs.yaml` stays (as alias); `packs.yaml`, `pack-lock.json`, and `pack-state.json` are aa-only content (not mirrored to ac since ac does not ship a composer). `anywhere-agents.md` mirror policy table updates to reflect this reclassification.
 
 ### as v0.4.0 — Slim variants (coordinated; may ship before or after aa v0.4.0)
+
+> **Shipped differently (correction, 2026-06-01).** This section's plan, namely `rule-pack-field.md` plus `rule-pack-lite.md`, an `agent-style-field` / `agent-style-lite` manifest pair, and a `DEFAULT_SELECTIONS` switch to `agent-style-field`, did **not** ship as written. `agent-style` never cut a v0.4.0. The slim variant shipped instead as a single file, `docs/rule-pack-compact.md`, at **as v0.3.4** (directive plus the first BAD/GOOD pair per rule, about 21 KB against about 89 KB for the full pack). aa adopted it by flipping the existing `agent-style` entry's `from:` to `docs/rule-pack-compact.md` at `ref: v0.3.5` (see `bootstrap/packs.yaml`), not by adding `-field` / `-lite` manifest entries and not by changing `DEFAULT_SELECTIONS`. The pack name stayed `agent-style`, so the `rule-pack:agent-style:begin` marker persists. Read the rest of this section, and every later `agent-style-field` / `rule-pack-field` / `rule-pack-lite` reference in this file, as superseded design history.
 
 - Author `docs/rule-pack-field.md` (nine field-observed rules, RULE-A..I; hand-synced with the RULE-A..I section of `RULES.md`). Estimated size: 35-40k chars.
 - Author `docs/rule-pack-lite.md` (21 directives + banned-word list; drops BAD/GOOD examples and rationale). Estimated size: 10-15k chars.
@@ -988,7 +990,7 @@ If a further axis is spotted at any later release-planning round, schema change 
 
 ## Reference example: `agent-pack` repo
 
-[`yzhao062/agent-pack`](https://github.com/yzhao062/agent-pack) is the canonical third-party reference for the v2 manifest format. It declares 3 packs (`profile` passive, `paper-workflow` passive, `acad-skills` active with `kind: skill` entries for 3 skills) and ships the matching content at conventional paths: `docs/rule-pack.md`, `docs/paper-workflow.md`, and `skills/{bibref-filler,dual-pass-workflow,figure-prompt-builder}/`. Its `pack.yaml` uses the same v2 `active[].kind` plus `files[].from/to` structure as `aa-core-skills`, with remote `source` metadata added for third-party fetches, so consumers and v0.5.0 remote-fetch tooling can read it without special handling.
+[`yzhao062/agent-pack`](https://github.com/yzhao062/agent-pack) is the canonical third-party reference for the v2 manifest format. It declares 3 packs (`profile` passive, `paper-workflow` passive, `acad-skills` active with `kind: skill` entries for 4 skills) and ships the matching content at conventional paths: `docs/rule-pack.md`, `docs/paper-workflow.md`, and `skills/{bibref-filler,bibref-verify,dual-pass-workflow,figure-prompt-builder}/`. Its `pack.yaml` uses the same v2 `active[].kind` plus `files[].from/to` structure as `aa-core-skills`, with remote `source` metadata added for third-party fetches, so consumers and v0.5.0 remote-fetch tooling can read it without special handling.
 
 The repo is the **v0.5.0 acceptance test**: `anywhere-agents pack add https://github.com/yzhao062/agent-pack --ref v0.1.0` installs all 3 packs cleanly without any agent-pack changes. If installation requires a manifest tweak in agent-pack, the v0.5.0 design has drifted from this contract.
 
