@@ -1,6 +1,6 @@
 # Review Lenses
 
-Content-type-specific criteria for Codex reviews. Each lens is grounded in established review frameworks so the reviewer applies recognized standards rather than ad-hoc checks. The review request should include the relevant lens so Codex knows what to focus on.
+Content-type-specific criteria for Codex reviews. Each lens is grounded in established review frameworks so the reviewer applies recognized standards rather than ad-hoc checks. The review request should include the relevant lens so Codex knows what to focus on. For any prose diff, regardless of lens, also apply the Writing rules audit (General lens, item 7) so banned words and the "X, not Y" antithesis are caught on papers, proposals, and docs alike.
 
 ## Code
 
@@ -155,3 +155,4 @@ Fallback lens when content type does not match the above or is mixed.
 4. **Clarity** -- Is the writing or code easy to understand?
 5. **Over-engineering** -- Is anything more complex than it needs to be?
 6. **Impact on existing work** -- Does the change break or conflict with anything already in place?
+7. **Writing rules (prose diffs)** -- For changed prose in .md, .tex, .rst, .txt (and prose inside code), audit against the agent-style writing rules already present in this repo's AGENTS.md (the banned-word list, the "X, not Y" antithesis construction, casual em/en-dashes, double negation, uncalibrated claims, and the rest). Flag each hit with file:line and a suggested rewrite. Do not re-list the rules; they live in AGENTS.md.
