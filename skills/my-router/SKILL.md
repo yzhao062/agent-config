@@ -31,7 +31,7 @@ When superpowers is not active (direct dispatch or quick task), the router works
 
 ## How Routing Works
 
-At dispatch time, the router checks three signals in order:
+At dispatch time, the router checks three signals in order (keywords, file types, project structure). In a consuming repo, before applying the table below, it first merges any consumer-local routing extensions: a `routing-table.local.md` at the repo root, or a `## Routing` section in `AGENTS.local.md`. Those two files survive bootstrap, so they are where a consuming repo registers project-local skills that bootstrap would otherwise overwrite; on a keyword or file-type conflict, the local row wins.
 
 ### 1. Prompt keywords (highest priority)
 
