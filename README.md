@@ -115,6 +115,7 @@ Codex can be used from within Claude Code as an MCP server. See [AGENTS.md — C
 | `ci-mockup-figure` | Build interactive HTML mockups of systems, methodological flowcharts, dashboards, and timelines, then capture as space-efficient figures for papers and proposals. |
 | `my-router` | Context-aware dispatcher that detects work type (papers, proposals, code, figures, citations, admin) and routes to the right domain skill. Works as the inner decision loop within superpowers' execution phase. |
 | `readme-polish` | Audit and rewrite a GitHub README using modern 2025-2026 patterns — centered header, badges, hero image, GitHub alert callouts, emoji feature bullets, collapsibles, Mermaid diagrams, tables over dense prose. Produces a README that survives a 10-second skim and a deep dive. |
+| `prun` | Parallel delegation fan-out. The coordinating session decomposes a task into independent units that run in parallel on Codex (`codex exec`) and Sonnet workers, never on the coordinator, then gathers results, reviews each diff, and integrates. Units may read or write code; code-writing units run in a throwaway clone with its remote removed, so workers cannot commit or push to the real repo. |
 
 ## Skill Usage
 
