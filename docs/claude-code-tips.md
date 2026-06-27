@@ -154,9 +154,10 @@ claude -p "prompt" --max-turns 10 --max-budget-usd 5  # safety limits
 | Low | File renames, simple greps, quick questions |
 | Medium | General coding, small refactors |
 | High | Complex debugging, multi-file refactors |
+| Xhigh | Heavy multi-file or design work below Max (persists to settings) |
 | Max | System design, deeply nested bugs (Opus only, resets on session end) |
 
-Set via: `/effort low|medium|high|auto` (persists to user settings), `/effort max` (session only, because `max` is not a valid persisted value), `claude --effort <level>` at launch (session only), `"effortLevel": "low|medium|high"` in `settings.json` for persisted low/medium/high, or the `CLAUDE_CODE_EFFORT_LEVEL` env var, which is the only way to persist `max` (for example, `"env": {"CLAUDE_CODE_EFFORT_LEVEL": "max"}` in `~/.claude/settings.json`). The env var outranks CLI and slash-command overrides. Left/right arrows in the `/model` picker also change the level.
+Set via: `/effort low|medium|high|xhigh` (persists to user settings), `/effort max` (session only, because `max` is not a valid persisted value), `claude --effort <level>` at launch (session only), `"effortLevel": "low|medium|high"` in `settings.json` for persisted low/medium/high, or the `CLAUDE_CODE_EFFORT_LEVEL` env var, which is the only way to persist `max` (for example, `"env": {"CLAUDE_CODE_EFFORT_LEVEL": "max"}` in `~/.claude/settings.json`). The env var outranks CLI and slash-command overrides. Left/right arrows in the `/model` picker also change the level.
 
 ## 11. Cost & Performance
 

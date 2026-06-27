@@ -16,7 +16,7 @@ This repo is the **canonical source** of shared agent configuration. Its **sanit
 
 Read before touching either repo:
 
-- [`anywhere-agents.md`](anywhere-agents.md) — canonical source rule, "what gets copied" table, 11-step release workflow, package/asset ownership.
+- [`anywhere-agents.md`](anywhere-agents.md) — canonical source rule, "what gets copied" table, 13-step release workflow, package/asset ownership.
 - [`docs/specs/open-source-framework.md`](docs/specs/open-source-framework.md) — the historical release plan plus the dated post-v1.0 update (npm/PyPI CLI policy).
 - [`yzhao062/anywhere-agents/RELEASING.md`](https://github.com/yzhao062/anywhere-agents/blob/main/RELEASING.md) — the public-facing release steps (tag → build → publish to PyPI + npm → verify). Use this after the backport is staged.
 
@@ -164,6 +164,10 @@ skills/                            # Shared skills (bootstrapped to all projects
     SKILL.md                       # Context-aware dispatcher for academic tasks
     agents/openai.yaml             # Codex wrapper
     references/routing-table.md    # Quick-reference routing table and lens selection
+  prun/
+    SKILL.md                       # Skill definition
+    agents/openai.yaml             # Codex wrapper
+    scripts/                       # dispatch-task, gather, monitor (.sh + .ps1)
   readme-polish/
     SKILL.md                       # Audit + rewrite a GitHub README with modern patterns
     agents/openai.yaml             # Codex wrapper
@@ -207,11 +211,13 @@ docs/
   claude-code-extras.md            # Buddy/companion, plugins
 .claude/commands/                  # Claude Code pointer commands for shared skills
   bibref-filler.md
+  bibref-verify.md
   ci-mockup-figure.md
   dual-pass-workflow.md
   figure-prompt-builder.md
   implement-review.md
   my-router.md
+  prun.md
   readme-polish.md
 .claude/settings.json              # Shared Claude project defaults (permissions, attribution, etc.)
 user/settings.json                 # Shared user-level defaults (permissions, hooks, CLAUDE_CODE_EFFORT_LEVEL=max env entry)

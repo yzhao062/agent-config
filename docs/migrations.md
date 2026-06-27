@@ -97,8 +97,8 @@ The switch is a one-line change to `.agent-config/upstream`. Bootstrap is idempo
 For an existing ac-bootstrapped project, do these quick checks before changing `.agent-config/upstream`:
 
 1. Move any direct edits in `AGENTS.md`, `CLAUDE.md`, or `agents/codex.md` into the matching `.local.md` file, because bootstrap rewrites the generated files.
-2. Check `.claude/commands/` for pointers to ac-only skills (`bibref-filler`, `dual-pass-workflow`, `figure-prompt-builder`, or any `reference-skills/` entry). Either keep the project on ac, or copy the needed skill into repo-local `skills/<name>/`.
-3. Confirm the aa skill set (`implement-review`, `my-router`, `ci-mockup-figure`, `readme-polish`) plus repo-local `skills/` covers any router expectations the project encodes.
+2. Check `.claude/commands/` for pointers to ac-only skills (`bibref-filler`, `bibref-verify`, `dual-pass-workflow`, `figure-prompt-builder`, or any `reference-skills/` entry). Either keep the project on ac, or copy the needed skill into repo-local `skills/<name>/`.
+3. Confirm the aa skill set (`implement-review`, `my-router`, `ci-mockup-figure`, `readme-polish`, `prun`) plus repo-local `skills/` covers any router expectations the project encodes.
 4. Run the project's pre-push smoke check if it has one.
 
 ### Path 1: Change upstream (recommended)
@@ -159,13 +159,13 @@ grep -c 'rule-pack:agent-style:begin' AGENTS.md
 # expected: 1   (aa v0.3.0+ default-on rule-pack composition)
 
 ls .agent-config/repo/skills/
-# expected: ci-mockup-figure implement-review my-router readme-polish
-# (exactly four entries)
+# expected: ci-mockup-figure implement-review my-router prun readme-polish
+# (exactly five entries)
 
 ls .claude/commands/
-# expected shared aa pointers: ci-mockup-figure.md implement-review.md my-router.md readme-polish.md
+# expected shared aa pointers: ci-mockup-figure.md implement-review.md my-router.md prun.md readme-polish.md
 # Any extra file is either project-local or a STALE ac-only pointer
-# (bibref-filler.md, dual-pass-workflow.md, figure-prompt-builder.md, plus
+# (bibref-filler.md, bibref-verify.md, dual-pass-workflow.md, figure-prompt-builder.md, plus
 # any reference-skill pointer the project previously enabled). Bootstrap
 # does NOT delete stale pointers; remove them manually unless the project
 # has copied the matching skill into repo-local skills/<name>/.

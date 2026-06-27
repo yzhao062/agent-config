@@ -7,7 +7,7 @@ This document explains how the **private daily-driver (`yzhao062/agent-config`)*
 | Repo | Role | Visibility | What lives here |
 |------|------|------------|-----------------|
 | `yzhao062/agent-config` | **Canonical source + personal daily driver** | Private | Full working config: USC-specific content, `reference-skills/` (NSF proposal composer, USC reimbursement, CS paper review, etc.), `figure-references/`, in-progress specs, `docs/superpowers/`, and every skill the author uses across research projects. |
-| `yzhao062/anywhere-agents` | **Sanitized public release** | Public | Only what a stranger can fork and use: clean `AGENTS.md`, four shared skills (`implement-review`, `my-router`, `ci-mockup-figure`, `readme-polish`), bootstrap scripts, guard hook, settings, tests, CI. No personal content, no research-specific reference skills. |
+| `yzhao062/anywhere-agents` | **Sanitized public release** | Public | Only what a stranger can fork and use: clean `AGENTS.md`, five shared skills (`implement-review`, `my-router`, `ci-mockup-figure`, `readme-polish`, `prun`), bootstrap scripts, guard hook, settings, tests, CI. No personal content, no research-specific reference skills. |
 
 **Shorthand**: `ac` = `agent-config`, `aa` = `anywhere-agents`. Both forms appear interchangeably in maintainer prompts and the private docs under `docs/`; the full names are used in public-facing text and commit messages.
 
@@ -27,7 +27,7 @@ A separate public repo provides **physical isolation**. Private content cannot l
 Shared components have a direction of travel that depends on which surface is changing. See `ONBOARDING.md` § "Direction of travel" for the governing policy.
 
 - **Shared-core code** (hooks, bootstrap scripts, workflows, shared-contract tests; see `scripts/check-parity.sh` for the exact STRICT list) is maintained `ac`-first and mirrored to `aa` under STRICT byte parity. Standard flow: edit in `ac`, commit, push; backport to `aa` on the next release cut.
-- **Shared skills** (`skills/{implement-review, ci-mockup-figure, readme-polish}`) are also STRICT byte-identical, but the direction is no longer strictly `ac`-first. Feature work has landed `aa`-first and then synced back to `ac`: the `implement-review` Auto-terminal channel plus the Claude and Copilot reviewer backends are the worked example, built in `aa` and then resynced into `ac`. Either repo may originate the change; the invariant is byte parity at release time, not which side typed it first.
+- **Shared skills** (`skills/{implement-review, ci-mockup-figure, readme-polish, prun}`) are also STRICT byte-identical, but the direction is no longer strictly `ac`-first. Feature work has landed `aa`-first and then synced back to `ac`: the `implement-review` Auto-terminal channel plus the Claude and Copilot reviewer backends are the worked example, built in `aa` and then resynced into `ac`. Either repo may originate the change; the invariant is byte parity at release time, not which side typed it first.
 - **aa-only surfaces** (pack composer, CLI, packaging, rule-pack manifest, composer-side templates) land in `aa` first with no `ac` mirror; `ac` carries only the maintainer-internal docs that never sanitize.
 - **External PRs** to `aa` against shared-core or a shared skill are merged in `aa`, then backported to `ac` before the next release cut so STRICT stays green.
 
@@ -46,7 +46,7 @@ Shared components have a direction of travel that depends on which surface is ch
 | `scripts/session_bootstrap.py` | Yes, as-is | SessionStart hook that enforces bootstrap without user typing. Already generic. |
 | `scripts/check-parity.sh` | Yes, as-is | Maintainer-only release gate. It exists in both repos and is byte-identical under STRICT so the check can run from either clone. It compares the side-by-side `agent-config` and `anywhere-agents` roots and is invoked by `anywhere-agents/RELEASING.md` pre-release check 5. |
 | `skills/implement-review/` | Yes, as-is | The signature skill. The Auto-terminal channel plus the Claude and Copilot reviewer backends (aa v0.7.x) landed `aa`-first; `ac` has been resynced so the tree is byte-identical again. Direction is now "either side may originate, byte parity at release time" per the Canonical source rule above. |
-| `skills/my-router/` | Yes, with content changes | The public version has concrete routing rules for the four shipped skills (`implement-review`, `ci-mockup-figure`, `readme-polish`, plus `my-router` itself) with clear "extend this in your fork" guidance. Strip references to `nsf-*`, `usc-reimbursement`, `cs-paper-review`, etc. |
+| `skills/my-router/` | Yes, with content changes | The public version has concrete routing rules for the five shipped skills (`implement-review`, `ci-mockup-figure`, `readme-polish`, `prun`, plus `my-router` itself) with clear "extend this in your fork" guidance. Strip references to `nsf-*`, `usc-reimbursement`, `cs-paper-review`, etc. |
 | `skills/dual-pass-workflow/` | No | Author uses it, but it is research-flavored. |
 | `skills/bibref-filler/` | No | Research-specific (BibTeX / LaTeX citation workflow). |
 | `skills/figure-prompt-builder/` | No | Research-specific (figure prompts for papers). |
@@ -58,10 +58,10 @@ Shared components have a direction of travel that depends on which surface is ch
 | `docs/hero.html`, `docs/hero.png`, `docs/avatar.jpg` | Only in public | These are public README assets authored in `anywhere-agents` directly. They do not exist in `agent-config`. |
 | `.readthedocs.yaml`, `mkdocs.yml`, `docs/requirements.txt`, `docs/*.md`, `docs/stylesheets/` | Only in public | Read the Docs + MkDocs Material site source, authored directly in `anywhere-agents`. Skill pages use `mkdocs-include-markdown-plugin` to pull from `skills/<name>/SKILL.md` so the skill source-of-truth stays in one place. |
 | `Review-*.md` (e.g., `Review-Codex.md`, `Review-GitHub-Copilot.md`, `Review-Gemini.md`) | No | Per-reviewer scratch files for review rounds; each reviewer self-names via the `implement-review` skill. |
-| `.claude/commands/` | Only for shipped skills | `implement-review.md`, `my-router.md`, `ci-mockup-figure.md`, `readme-polish.md`. Since aa v0.4.0 these four pointers are **pack-emitted** via `kind: skill` dispatch (see `bootstrap/packs.yaml` `aa-core-skills` entry); they remain in both source trees for the PyYAML-missing fallback path but have **dropped from `scripts/check-parity.sh` STRICT**. Content still identical in practice; strict byte-identity is no longer enforced. |
+| `.claude/commands/` | Only for shipped skills | `implement-review.md`, `my-router.md`, `ci-mockup-figure.md`, `readme-polish.md`, `prun.md`. Since aa v0.4.0 these five pointers are **pack-emitted** via `kind: skill` dispatch (see `bootstrap/packs.yaml` `aa-core-skills` entry; `prun.md` joined the pack in v0.7.7); they remain in both source trees for the PyYAML-missing fallback path but have **dropped from `scripts/check-parity.sh` STRICT**. Content still identical in practice; strict byte-identity is no longer enforced. |
 | `.claude/settings.json` | Yes, sanitized | Already generic in `agent-config`. |
 | `user/settings.json` | Yes, sanitized | Strip `additionalDirectories` (contains user-specific paths). Keep permissions, hook wiring (both `PreToolUse` guard and `SessionStart` bootstrap hook), `CLAUDE_CODE_EFFORT_LEVEL=max`. |
-| `tests/` | Yes, with edits | Remove tests for unshipped skills. Update `test_repo.py` to assert the four-skill shipped set and correct URLs. |
+| `tests/` | Yes, with edits | Remove tests for unshipped skills. Update `test_repo.py` to assert the five-skill shipped set and correct URLs. |
 | `.github/workflows/` | Partial | `real-agent-smoke.yml` and `validate.yml` mirror byte-identically (STRICT in `scripts/check-parity.sh`). `docs-strict-build.yml` is `anywhere-agents`-only (RTD MkDocs strict-build gate; `agent-config` does not host RTD). `package-smoke.yml` is `anywhere-agents`-only (published PyPI/npm package verification; no `agent-config` counterpart). |
 
 ## Package and documentation assets
@@ -104,7 +104,7 @@ When cutting a new `anywhere-agents` release:
     - Test both locally: `python -m build packages/pypi/ --outdir /tmp/pypi-dist && pip install /tmp/pypi-dist/*.whl` then `anywhere-agents --version` and `--dry-run`; `node packages/npm/bin/anywhere-agents.js --version` and `--dry-run`.
 11. **Commit and push** `anywhere-agents` (and any paired change to `agent-config`).
 12. **Tag** the release commit (`git tag -a v<X.Y.Z> -m "..."; git push origin v<X.Y.Z>`). The tag must point at the same commit that contains the package source bumps, so checking out the tag reproduces exactly what is on PyPI/npm.
-13. **Publish packages** from the tagged checkout in order: PyPI first (`cd packages/pypi && python -m build && twine upload dist/*`), then npm (`cd packages/npm && npm publish --access public`). Verify each is live and the CLI runs end-to-end from a fresh install.
+13. **Publish packages.** Since v0.7.0 this is automatic: creating the GitHub release on the tag (`gh release create v<X.Y.Z> --target main`) fires `.github/workflows/publish.yml`, which uploads to PyPI and npm via OIDC Trusted Publishing (no local token). Wait for `Validate` to be green on the release commit, create the release, then poll the workflow and confirm both registries serve the new version and the CLI runs end-to-end from a fresh install. **Fallback** (only when the workflow or OIDC is unavailable): build and upload manually from the tagged checkout in order: PyPI first (`cd packages/pypi && python -m build && twine upload dist/*`), then npm (`cd packages/npm && npm publish --access public`).
 
 ## What this document is not
 

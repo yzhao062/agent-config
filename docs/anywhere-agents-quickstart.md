@@ -77,7 +77,7 @@ Expected post-fix state on a maintainer project with the standard user-level con
 | Pack | Source | Status |
 |---|---|---|
 | `aa-core-skills` | `bundled` (wheel-shipped) | ✅ deployed (bundled default) |
-| `agent-style` | `https://github.com/yzhao062/agent-style @ v0.3.2` | ✅ deployed (bundled default) |
+| `agent-style` | `https://github.com/yzhao062/agent-style @ v0.3.6` | ✅ deployed (bundled default) |
 | `acad-skills` | `https://github.com/yzhao062/agent-pack @ main` | ✅ deployed |
 | `paper-workflow` | `https://github.com/yzhao062/agent-pack @ main` | ✅ deployed |
 | `profile` | `https://github.com/yzhao062/agent-pack @ main` | ✅ deployed |

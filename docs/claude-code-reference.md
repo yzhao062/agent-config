@@ -86,7 +86,7 @@ Lookup tables for keyboard shortcuts, slash commands, vim mode, and command hist
 | Command              | Purpose                                                   |
 |----------------------|-----------------------------------------------------------|
 | `/model`             | Switch model                                              |
-| `/effort`            | Set effort level (low/medium/high/max/auto)               |
+| `/effort`            | Set effort level (low/medium/high/xhigh/max)              |
 | `/fast [on/off]`     | Toggle fast mode                                          |
 | `/vim`               | Enable vim keybindings                                    |
 | `/theme`             | Change syntax highlighting theme                          |
