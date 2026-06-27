@@ -112,7 +112,7 @@ def _build_fake_tree(base: pathlib.Path):
         (ac / rel).write_text(content)
         (aa / rel).write_text(content)
 
-    for skill in ("implement-review", "ci-mockup-figure", "readme-polish"):
+    for skill in ("implement-review", "ci-mockup-figure", "readme-polish", "prun"):
         (ac / f"skills/{skill}").mkdir()
         (aa / f"skills/{skill}").mkdir()
         (ac / f"skills/{skill}/SKILL.md").write_text(f"# {skill}\n")
