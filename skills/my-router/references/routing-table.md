@@ -5,12 +5,14 @@
 | Skill | Triggers on | What it does |
 |---|---|---|
 | `bibref-filler` | citation/bibliography work | Add verified citations to `working.bib`, keep curated bib files stable |
+| `bibref-verify` | citation audit / verification before submission | Audit an existing `.bib` for hallucinated citations or stale metadata (fabricated authors, future arXiv IDs, already-published preprints); companion to `bibref-filler` |
 | `ci-mockup-figure` | HTML mockups, TikZ/skia-canvas figures, dashboards, Gantt charts | Build space-efficient figures via HTML capture or abstract figure toolchain |
 | `figure-prompt-builder` | figure/diagram requests | Build copy-ready prompts for explanatory figures |
 | `implement-review` | staged changes + review request | Multi-round review loop with Codex, content-aware lenses |
 | `dual-pass-workflow` | multi-step build-then-audit tasks | First pass builds, second pass audits and reconciles |
 | `my-router` | any task (this skill) | Detects context and dispatches to the right skill |
 | `readme-polish` | README audit / rewrite / modernize | Apply modern 2025-2026 GitHub README patterns (centered header, badges, hero image, callouts, emoji feature bullets, collapsibles, Mermaid, tables) |
+| `prun` | explicit parallel delegation / fan-out intent (not auto-routed by file type) | Fan out independent task units to Codex and Sonnet workers while the Opus session coordinates; workers never commit or push |
 
 **Local-first rule:** If a project has a more specific local skill (e.g., `nsf-bibref-filler` alongside shared `bibref-filler`), always prefer the local version. Local skills are more customized for the project context.
 
