@@ -964,7 +964,7 @@ Is the 2-axis (passive / active × public / private) model complete? Candidates 
 - "ownership" (maintainer / team / community) → reduces to source-axis variants, not a new axis.
 - "language" (Python hook / shell hook / YAML permissions) → implementation detail captured by `files:` + `kind:`, not architectural.
 - "lifecycle" (install-time / session-time / tool-time) → captured by `trigger:` on active items, not a separate axis.
-- "scope" (repo-level vs user-level) → already handled naturally by `files.to:` paths (relative to consumer root vs absolute `~/.claude/...`); a strength of the current shape, not a new axis.
+- "scope" (repo-level vs user-level) → already handled naturally by `files.to:` paths (relative to consumer root vs absolute `~/.claude/...`); a strength of the current shape, not a new axis. **Revisited operationally in [anywhere-agents#16](https://github.com/yzhao062/anywhere-agents/issues/16)** (deploy shared skills once to `~/.claude/skills/` to cut per-project duplication and drift): a legitimate goal expressible through this same `files.to:` mechanism, not a new axis or a `scope:` field, so the "not a new axis" decision stands. Deferred to a focused session; full tradeoff analysis and recommendation in [this comment](https://github.com/yzhao062/anywhere-agents/issues/16#issuecomment-4900180544).
 - "trust" (integrity / provenance) → handled as a required manifest field set (`update_policy:`, `pack-lock.json` with resolved commit id and sha256), not a top-level axis.
 - "host applicability" (claude-code / codex / other) → handled by per-entry `hosts:` + `required:`, not a top-level axis.
 
