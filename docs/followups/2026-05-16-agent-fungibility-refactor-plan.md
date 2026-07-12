@@ -219,7 +219,7 @@ Keep the parent's two-flag design; do not narrow it to `--primary codex` only (t
 ### Semantics
 
 - Default remains Claude-primary; no-flag bootstrap reproduces the pre-Phase-4 Claude setup.
-- `--primary codex` heals `~/.codex/config.toml` (or `%USERPROFILE%\.codex\config.toml`): `model = "gpt-5.5"`, `model_reasoning_effort = "xhigh"`, `service_tier = "fast"`, `[features] fast_mode = true`. Preserve unrelated keys; do not rewrite when already current; create the parent directory if missing.
+- `--primary codex` heals `~/.codex/config.toml` (or `%USERPROFILE%\.codex\config.toml`): `model = "gpt-5.6-sol"` (or the current highest-capability generally available model; do not freeze this string), `model_reasoning_effort = "max"` for maximum single-agent reasoning, `service_tier = "fast"`, `[features] fast_mode = true`. `ultra` is an explicit opt-in when automatic task delegation is intended, not a higher effort. Preserve unrelated keys; do not rewrite when already current; create the parent directory if missing.
 - `--primary codex` still performs Claude setup unless `--skip-claude-user-setup` is also passed (reversal mode needs Claude installed as the reviewer half).
 - Print one line naming the active primary mode and any degraded features (using the Phase 3 function-mapping, not a flat loss list).
 
