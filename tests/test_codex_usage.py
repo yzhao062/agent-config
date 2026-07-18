@@ -19,6 +19,7 @@ import pathlib
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 
@@ -44,23 +45,31 @@ def _window(pct, minutes):
 
 
 def _render(rate_limits):
-    """Run both renderers against a synthetic rollout in a throwaway HOME,
-    returning (statusline_segment, agent_quota_row)."""
+    """Run both renderers against a synthetic rollout in a throwaway home
+    directory, returning (statusline_segment, agent_quota_row).
+
+    Both scripts locate the rollout via os.path.expanduser("~"). Setting
+    $HOME only redirects that on POSIX; Windows expanduser reads
+    USERPROFILE. Patching os.path.expanduser is platform-independent, so
+    the same test exercises the real glob/parse path on Linux, macOS, and
+    the Windows CI lane alike."""
     with tempfile.TemporaryDirectory() as tmp:
         sess = pathlib.Path(tmp) / ".codex" / "sessions" / "s"
         sess.mkdir(parents=True, exist_ok=True)
         (sess / "rollout-1.jsonl").write_text(
             json.dumps({"payload": {"rate_limits": rate_limits}}) + "\n"
         )
-        old_home = os.environ.get("HOME")
-        os.environ["HOME"] = tmp
-        try:
+        real = os.path.expanduser
+
+        def fake(path):
+            if path == "~":
+                return tmp
+            if path.startswith("~" + os.sep) or path.startswith("~/"):
+                return os.path.join(tmp, path[2:])
+            return real(path)
+
+        with mock.patch("os.path.expanduser", fake):
             return statusline.codex_segment(), agent_quota.codex_row()
-        finally:
-            if old_home is None:
-                os.environ.pop("HOME", None)
-            else:
-                os.environ["HOME"] = old_home
 
 
 class TestWindowLabel(unittest.TestCase):
