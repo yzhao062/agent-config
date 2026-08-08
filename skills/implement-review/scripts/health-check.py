@@ -127,6 +127,124 @@ REGEX_SOURCE_MARKERS = [
     r"tool .* failed",
 ]
 
+# Documentation source sentences (W1b). These are exact prose fragments from
+# this skill's own SKILL.md and from the shared AGENTS.md that bootstrap installs
+# at the root of every consuming project. A reviewer that reads those files
+# carries the sentences into its stdout tail, where the check 8 patterns above
+# then match benign documentation rather than a real failure.
+#
+# Removal is fragment-scoped, not line-scoped: only the matched sentence is cut
+# and the rest of the line survives, so a real failure that TRAILS a quoted
+# sentence still counts. Fragment scope alone is not sufficient, though. When a
+# complete fragment sits inside a diagnostic line, that line's failure evidence
+# lives INSIDE the fragment, so cutting it silences a real error. Removal is
+# therefore also gated on the occurrence not sitting in diagnostic context; see
+# DOC_DIAGNOSTIC_CONTEXT_RE and strip_doc_fragments below.
+#
+# Case-sensitive on purpose: these are canonical source strings, and matching
+# case-insensitively would widen suppression past the three known shapes.
+#
+# Deliberately NOT added to REGEX_SOURCE_MARKERS: is_echo_line() treats a marker
+# hit as grounds to skip the whole line, which would hide a real failure that
+# happens to share the line with quoted documentation.
+#
+# Drift warning: these are exact strings, so one character of edit in SKILL.md or
+# AGENTS.md silently disables the matching entry. The source-coupled tests in
+# tests/test_health_check.py scan the live SKILL.md and AGENTS.md and exist to
+# catch that; the inline fixtures alone would stay green straight through it.
+DOC_ECHO_FRAGMENTS = [
+    # Legacy pre-W1a shape from the SKILL.md Phase 2.0 check 8 row. W1a
+    # backticked both occurrences, so strip_code_spans now removes them before
+    # this list is consulted and the entry no longer fires against a current
+    # SKILL.md. Retained for preserved pre-W1a tails, deleted-side diff text, and
+    # consumers whose SKILL.md has not been refreshed. Back when it did fire, two
+    # patterns matched nested spans of it, so each occurrence counted twice.
+    "HTTP/status 429/5xx",
+    # Legacy pre-W1a shape from the SKILL.md Substance heuristics paragraph. W1a
+    # backticked the `rate limit` inside it, so the same reasoning applies.
+    "tools silently failed mid-run; rate limit; context overflow; "
+    "or the model did not engage",
+    # AGENTS.md Tool-Use Reliability bullet. Unlike the two above, this one is
+    # still live: AGENTS.md is deliberately not edited, and bootstrap installs it
+    # at the root of every consuming project. It matches the intrinsic
+    # ``tool .* failed`` pattern because "tool failures" carries the required
+    # space, whereas SKILL.md's "tools silently failed" does not.
+    "transient-looking tool failures: a single failed attempt is weak evidence",
+]
+
+# A fragment sitting in diagnostic context is never stripped. Without this gate,
+# ``ERROR: request failed: <complete fragment>`` loses every Check 8 marker it
+# had, because the evidence lives inside the fragment rather than after it.
+#
+# The test is applied to the text BEFORE each fragment occurrence, not to the
+# whole line from column zero. Anchoring at column zero was the first attempt and
+# it failed in both directions: real diagnostics carry prefixes (an ISO
+# timestamp, a JSON envelope, a ``codex_core::`` logger path) that pushed the
+# severity token off column zero and silenced them, while a blanket
+# "any label ending in failed:" branch matched benign prose such as
+# ``Example failure:`` and restored the documentation false positive.
+#
+# Two context families, deliberately asymmetric:
+#
+# 1. Severity context may appear ANYWHERE in the prefix, so timestamps, log
+#    levels, and logger paths do not hide it. Branch 1a accepts bare uppercase
+#    tokens, branch 1b accepts mixed case before ``:`` or ``]``, and branch 2
+#    accepts structured level fields.
+# 2. Operational context (branch 3) accepts a bare ``<subject> failed:`` label
+#    only at the start of the line and only for a maintained subject. The
+#    maintained list is the point: it is narrower and far more predictable than
+#    matching any word before a colon, which is what let "Example failure:"
+#    through.
+#
+# The operational family takes only the VERB form ``failed:``, never the noun
+# ``failure:``. That single distinction carries most of the precision here.
+# Runtimes emit ``API call failed:``; documentation and headings write
+# ``Tool failure:``. Accepting the noun form made ``Tool failure:`` and
+# ``Build failure:`` read as diagnostics purely because their first word was on
+# the subject list, which restored the AGENTS.md false positive. A genuine
+# noun-form diagnostic is not lost: it almost always carries severity context,
+# which branches 1a, 1b, and 2 still catch.
+#
+# The subject list is a maintained list and will need occasional additions.
+# ``openai``, ``api``, ``exec``, and ``spawn`` were added after real dispatch-tail
+# labels (``OpenAI API request failed:``, ``spawn failed:``) were found missing.
+# The gap allowance is 3 words so multi-word subjects like
+# ``OpenAI API request failed:`` still reach the verb.
+DOC_DIAGNOSTIC_CONTEXT_RE = re.compile(
+    r"(?:"
+    # Branch 1a: a bare UPPERCASE severity token, anywhere in the prefix. This
+    # is the observed Codex logger convention: a scan of preserved dispatch
+    # tails found 18 ``codex_core::`` failures, all with uppercase severity and
+    # none without. Uppercase alone is strong enough evidence to need no
+    # punctuation.
+    r"\b(?:ERROR|WARN(?:ING)?|FATAL|EXCEPTION|TRACEBACK)\b"
+    # Branch 1b: mixed-case raw severity, but only when diagnostic punctuation
+    # follows immediately. The punctuation is what separates a severity LABEL
+    # from the same word used in prose: ``Error:``, ``error:``, ``Warning:`` and
+    # ``[Error]`` are labels, while ``Error example:`` is a heading. An
+    # uppercase-only branch was tried first and silenced every mixed-case
+    # diagnostic; a case-insensitive branch without the punctuation guard put
+    # the ``Error example:`` false positive back. This form is not hypothetical:
+    # a preserved Copilot dispatch tail opens with
+    # ``Error: Authentication token found but could not be validated.``
+    r"|(?i:\b(?:error|warn(?:ing)?|fatal|exception|traceback)\b"
+    r"(?=\s*[:\]]))"
+    # Branch 2: a structured level field. Case-insensitive: JSON and logfmt
+    # emitters write level=error, Level=ERROR, "severity":"Warning" alike.
+    r"|(?i:[\"']?(?:level|severity)[\"']?\s*[:=]\s*[\"']?"
+    r"(?:error|warn(?:ing)?|fatal|exception)\b)"
+    # Branch 3: an operational subject followed by the VERB form. Case-
+    # insensitive, since runtimes are inconsistent about capitalising subjects.
+    r"|(?i:^\s*(?:\d+:\s*)?"
+    r"(?:openai|codex|mcp|api|request|tool|command|dispatch|process|"
+    r"subprocess|operation|connection|authentication|execution|exec|"
+    r"run|worker|runner|backend|client|server|job|task|build|test|call|"
+    r"spawn|shell)"
+    r"(?:\s+[\w./-]+){0,3}\s+"
+    r"(?:failed|denied|timed\s+out|timeout|refused|reset)\s*:)"
+    r")",
+)
+
 # Back-compat: callers/tests that import the flat union still work.
 TOOL_FAILURE_PATTERNS = INTRINSIC_FAILURE_PATTERNS + GENERIC_FAILURE_PATTERNS
 
@@ -160,6 +278,48 @@ def strip_code_spans(text: str) -> str:
     text = re.sub(r"```.*?```", "", text, flags=re.DOTALL)
     text = re.sub(r"`[^`\n]*`", "", text)
     return text
+
+
+def strip_doc_fragments(text: str) -> str:
+    """Remove known documentation sentences before Check 8 pattern scanning.
+
+    Applied *after* :func:`strip_code_spans` and *before* echo flags, frame
+    flags, and pattern counting. The ordering is load-bearing: the fragments
+    only take their final shape once neighbouring backticked spans have been
+    removed, so they cannot be found by grepping the source files.
+
+    Two guards keep this from eating real failures:
+
+    1. **Context gate.** Each occurrence is kept when the text preceding it on
+       the same line matches :data:`DOC_DIAGNOSTIC_CONTEXT_RE`. A complete
+       fragment inside ``ERROR: request failed: ...`` holds that line's only
+       failure evidence, so stripping it would turn a real WARN into a silent
+       PASS. Judging the preceding text per occurrence, rather than the whole
+       line, is what lets a timestamped or JSON-wrapped diagnostic keep its
+       marker while benign prose on the same shape still gets stripped.
+    2. **Fragment scope.** Only the matched sentence is cut, never the whole
+       line, so evidence trailing the quoted documentation survives.
+
+    Deliberately preserved from the previous implementation: a real error that
+    appears only AFTER a benign fragment does not protect that fragment. The
+    prefix is what decides, so ``<benign fragment> ERROR: ECONNRESET`` still
+    strips the fragment and still counts the trailing error.
+    """
+    out: list[str] = []
+    for line in text.splitlines(keepends=True):
+        for fragment in DOC_ECHO_FRAGMENTS:
+            search_from = 0
+            while True:
+                index = line.find(fragment, search_from)
+                if index < 0:
+                    break
+                if DOC_DIAGNOSTIC_CONTEXT_RE.search(line[:index]):
+                    # Diagnostic context: keep this occurrence, look past it.
+                    search_from = index + len(fragment)
+                    continue
+                line = line[:index] + line[index + len(fragment):]
+        out.append(line)
+    return "".join(out)
 
 
 def is_echo_line(line: str, intrinsic_res: list, diagnostic_re) -> bool:
@@ -360,7 +520,7 @@ def main(argv: list[str] | None = None) -> int:
             tail_text += "\n" + tail_stderr_file.read_text(
                 encoding="utf-8", errors="replace"
             )
-        tail_no_code = strip_code_spans(tail_text)
+        tail_no_code = strip_doc_fragments(strip_code_spans(tail_text))
 
         intrinsic_compiled = [
             (p, re.compile(p, re.IGNORECASE)) for p in INTRINSIC_FAILURE_PATTERNS

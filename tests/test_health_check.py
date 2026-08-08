@@ -390,8 +390,17 @@ class HealthCheckPython(unittest.TestCase):
             )
             self.assertIn("tool-failure-markers", parsed["check-8"][1])
 
-    def _assert_check8_pass(self, tail_content: str) -> None:
-        """Run health-check.py with the given tail and assert Check 8 PASS."""
+    def _assert_check8_pass(
+        self, tail_content: str, source_label: str | None = None
+    ) -> None:
+        """Run health-check.py with the given tail and assert Check 8 PASS.
+
+        ``source_label`` replaces the tail text in the failure message. Pass it
+        when the tail is a whole file: repr-ing a 90 KB SKILL.md produces a
+        six-figure assertion message that buries the pattern breakdown, which is
+        the part that actually says what went wrong. Inline fixtures leave it
+        unset and keep showing their own text.
+        """
         with tempfile.TemporaryDirectory() as td:
             td_path = Path(td)
             review = td_path / "Review-Codex.md"
@@ -400,9 +409,10 @@ class HealthCheckPython(unittest.TestCase):
             result = run_health_py(state, review)
             self.assertEqual(result.returncode, 0)
             parsed = parse_output(result.stdout)
+            described = source_label or repr(tail_content)
             self.assertEqual(
                 parsed["check-8"][0], "PASS",
-                f"expected PASS for tail {tail_content!r}, got {parsed['check-8']}",
+                f"expected PASS for tail {described}, got {parsed['check-8']}",
             )
 
     def test_check8_warns_on_createprocessasuserw_1312_alone(self) -> None:
@@ -613,6 +623,377 @@ class HealthCheckPython(unittest.TestCase):
         """Bare `rate limit` WITH an error-frame token on the same line counts
         (Fix B generic rule)."""
         self._assert_check8_warn("ERROR: rate limit was hit during the run\n")
+
+    # ----- Check 8 W1b (documentation-echo fragment removal) -----
+    # Negative corpus. Built from the three real documentation source lines that
+    # blocked 11 of 11 preserved dispatch state dirs, with zero real tool
+    # failures among them. Determined pre-fix marker counts: the SKILL.md
+    # check-8 row yields 4, the SKILL.md Substance paragraph 1, the AGENTS.md
+    # Tool-Use Reliability bullet 1. All three must now scan to zero.
+    #
+    # Inline on purpose: check-parity.sh has no tests/fixtures/ rule, so an
+    # external fixture file would let this mirrored test reference a file
+    # present in only one repo while parity still reported green.
+
+    def test_check8_passes_on_legacy_pre_w1a_check8_row_shape(self) -> None:
+        """Legacy pre-W1a shape of the SKILL.md Phase 2.0 check-8 row.
+
+        This fixture is NOT how the current SKILL.md reads: W1a backticked both
+        occurrences, so strip_code_spans now removes them before the fragment
+        list is consulted. It is retained to protect preserved pre-W1a tails,
+        deleted-side diff text, and consumers whose SKILL.md has not been
+        refreshed. The live-file test below is what covers the current shape.
+
+        Back when it did fire, ``HTTP/status 429/5xx`` was the only unbackticked
+        pattern in its table cell, so strip_code_spans deleted its neighbours and
+        left it exposed. Two regexes then matched nested spans of the same
+        substring -- ``HTTP/\\S* (?:429|5\\d\\d)`` and ``status (?:429|5\\d\\d)``
+        -- so every occurrence counted twice and the row's two yielded 4.
+        """
+        self._assert_check8_pass(
+            "for `tool ... failed`, `mcp tool failed`, HTTP/status 429/5xx, "
+            "`rate limit`, `quota exceeded`, then count intrinsic failure "
+            "forms (HTTP/status 429/5xx, `Too Many Requests`, quota) alone.\n"
+        )
+
+    def test_check8_passes_on_legacy_pre_w1a_substance_paragraph_shape(
+        self,
+    ) -> None:
+        """Legacy pre-W1a shape of the SKILL.md Substance heuristics paragraph.
+
+        As above, W1a backticked the ``rate limit`` inside this sentence, so the
+        fixture no longer matches a current SKILL.md and is kept for preserved
+        tails, deleted-side diff text, and unrefreshed consumers.
+
+        When it did fire it contributed exactly one generic ``rate limit``
+        marker, licensed by the ``failed`` error-frame token on the same line.
+        Note it does NOT also match intrinsic ``tool .* failed``: that pattern
+        needs a literal ``"tool "`` with a trailing space, and this sentence
+        reads "tools silently failed".
+        """
+        self._assert_check8_pass(
+            "They do NOT catch a review that is structurally clean but "
+            "substantively shallow (Codex's tools silently failed mid-run; "
+            "rate limit; context overflow; or the model did not engage).\n"
+        )
+
+    def test_check8_passes_on_agents_md_tool_reliability_shape(self) -> None:
+        """AGENTS.md Tool-Use Reliability bullet.
+
+        Reaches consumers because bootstrap installs AGENTS.md at the root of
+        every consuming project. Matches intrinsic ``tool .* failed`` here
+        because "tool failures: a single failed" does carry the required space.
+        """
+        self._assert_check8_pass(
+            "The same caution applies to other transient-looking tool "
+            "failures: a single failed attempt is weak evidence, unless the "
+            "failure is clearly deterministic.\n"
+        )
+
+    def test_check8_passes_on_all_three_doc_shapes_together(self) -> None:
+        """The three shapes co-occur in a real tail; together they must still
+        scan to zero rather than summing into a block."""
+        self._assert_check8_pass(
+            "for `mcp tool failed`, HTTP/status 429/5xx, `quota exceeded`\n"
+            "(Codex's tools silently failed mid-run; rate limit; context "
+            "overflow; or the model did not engage)\n"
+            "other transient-looking tool failures: a single failed attempt "
+            "is weak evidence\n"
+        )
+
+    # Positive preservation cases, kept isolated from the negative corpus above.
+    # These are the specific guard against over-suppression: W1b must not buy
+    # its zeros by eating real failure evidence.
+
+    def test_check8_w1b_preserves_isolated_http_429(self) -> None:
+        """A real HTTP 429 status line still counts."""
+        self._assert_check8_warn("HTTP/1.1 429 Too Many Requests\n")
+
+    def test_check8_w1b_preserves_bare_econnreset(self) -> None:
+        """A bare errno symbol still counts."""
+        self._assert_check8_warn("ECONNRESET\n")
+
+    def test_check8_w1b_preserves_line_numbered_diagnostic(self) -> None:
+        """A line-numbered REAL diagnostic is not an echo and still counts."""
+        self._assert_check8_warn("12: ERROR: HTTP/1.1 429\n")
+
+    def test_check8_w1b_preserves_real_error_sharing_a_doc_line(self) -> None:
+        """Removal is fragment-scoped, not line-scoped.
+
+        A documentation sentence followed on the SAME line by a real error must
+        still count. Adding these fragments to REGEX_SOURCE_MARKERS instead
+        would skip the whole line via is_echo_line() and lose this failure.
+        """
+        self._assert_check8_warn(
+            "other transient-looking tool failures: a single failed attempt "
+            "is weak evidence ERROR: ECONNRESET\n"
+        )
+
+    def test_check8_w1b_preserves_framed_skill_md_prefix_collision(self) -> None:
+        """Truncated prefix of the SKILL.md fragment under an error frame.
+
+        This is why the fragments are long sentences rather than short keys:
+        suppressing on a bare ``rate limit`` key would consume the only failure
+        evidence on this line and drop it from 1 marker to 0.
+        """
+        self._assert_check8_warn(
+            "ERROR: tools silently failed mid-run; rate limit\n"
+        )
+
+    def test_check8_w1b_preserves_framed_agents_md_prefix_collision(self) -> None:
+        """Truncated prefix of the AGENTS.md fragment under an error frame.
+
+        Same guard as above for the ``tool .* failed`` shape: a short
+        ``tool ... failed`` suppression key would have eaten this line.
+        """
+        self._assert_check8_warn(
+            "ERROR: tool failures: a single failed attempt\n"
+        )
+
+    def test_check8_w1b_preserves_complete_fragment_under_diagnostic_prefix(
+        self,
+    ) -> None:
+        """A COMPLETE fragment inside a diagnostic line must still count.
+
+        Fragment scope alone does not cover this: the truncated-prefix cases
+        above survive because the fragment never matches, but here it matches
+        in full and the line's only failure evidence is *inside* it. Stripping
+        would leave a bare ``ERROR: request failed: `` scoring zero, turning a
+        real WARN into a silent PASS. DOC_DIAGNOSTIC_CONTEXT_RE is what stops
+        that, so this test pins the line gate rather than the fragment list.
+        """
+        skill_fragment = (
+            "tools silently failed mid-run; rate limit; context overflow; "
+            "or the model did not engage"
+        )
+        agents_fragment = (
+            "transient-looking tool failures: a single failed attempt "
+            "is weak evidence"
+        )
+        for prefix, fragment in (
+            ("ERROR: request failed: ", skill_fragment),
+            ("request failed: ", skill_fragment),
+            ("ERROR: ", skill_fragment),
+            ("FATAL: ", agents_fragment),
+        ):
+            with self.subTest(prefix=prefix):
+                self._assert_check8_warn(prefix + fragment + "\n")
+
+    def test_check8_w1b_preserves_fragment_under_prefixed_diagnostics(
+        self,
+    ) -> None:
+        """Real diagnostics whose severity token is NOT at column zero.
+
+        The first line gate anchored its match at the start of the line, so an
+        ISO timestamp, a JSON envelope, or a ``codex_core::`` logger path pushed
+        the severity token out of reach and silenced the whole line. These four
+        shapes each returned PASS 0 under that version. The context gate now
+        accepts a severity or structured level token anywhere in the text
+        preceding the fragment, which is what keeps them counting.
+        """
+        fragment = (
+            "tools silently failed mid-run; rate limit; context overflow; "
+            "or the model did not engage"
+        )
+        for label, line in (
+            ("iso timestamp",
+             f"2026-08-07T12:34:56Z ERROR request failed: {fragment}"),
+            ("space timestamp",
+             f"2026-08-07 12:34:56 WARN request failed: {fragment}"),
+            ("json envelope",
+             '{"level":"error","message":"request failed: ' + fragment + '"}'),
+            ("logger path",
+             f"codex_core::ERROR request failed: {fragment}"),
+        ):
+            with self.subTest(shape=label):
+                self._assert_check8_warn(line + "\n")
+
+    def test_check8_w1b_strips_fragment_under_benign_failure_labels(
+        self,
+    ) -> None:
+        """Benign prose that merely labels an example is not a diagnostic.
+
+        The first line gate treated any word followed by ``failed:`` within 80
+        characters as diagnostic context, so ``Example failure:`` and friends
+        restored the documentation false positive. Restricting the bare-label
+        branch to an operational subject list at line start is what separates
+        these from a real ``request failed:``.
+        """
+        fragment = (
+            "tools silently failed mid-run; rate limit; context overflow; "
+            "or the model did not engage"
+        )
+        for label in ("Example failure:", "Expected failure:",
+                      "This example failed:"):
+            with self.subTest(label=label):
+                self._assert_check8_pass(f"{label} {fragment}\n")
+
+    def test_check8_w1b_preserves_fragment_under_operational_failure_labels(
+        self,
+    ) -> None:
+        """Realistic dispatch-tail labels must reach the verb in the subject list.
+
+        Each of these was silenced by the first subject list: ``API`` and
+        ``OpenAI`` were absent, ``exec`` was present only as ``execution``,
+        ``spawn`` was missing outright, and a two-word gap allowance could not
+        span ``OpenAI API request``. The only Check 8 evidence on these lines
+        lives inside the fragment, so a miss here is a silent PASS on a real
+        failure.
+        """
+        fragment = (
+            "tools silently failed mid-run; rate limit; context overflow; "
+            "or the model did not engage"
+        )
+        for label in ("API call failed:", "OpenAI API request failed:",
+                      "spawn failed:", "exec failed:"):
+            with self.subTest(label=label):
+                self._assert_check8_warn(f"{label} {fragment}\n")
+
+    def test_check8_w1b_strips_fragment_under_noun_form_failure_headings(
+        self,
+    ) -> None:
+        """Noun-form ``failure:`` headings are documentation, not diagnostics.
+
+        This is the other half of the pair above and the reason the operational
+        branch takes only the verb ``failed:``. ``Tool failure:`` and ``Build
+        failure:`` open with words that ARE on the subject list, so accepting
+        the noun form classified them as diagnostics and restored the AGENTS.md
+        false positive. A real noun-form failure still counts through the
+        severity branch, which is unaffected.
+        """
+        fragment = (
+            "transient-looking tool failures: a single failed attempt "
+            "is weak evidence"
+        )
+        for heading in ("Tool failure:", "Build failure:"):
+            with self.subTest(heading=heading):
+                self._assert_check8_pass(f"{heading} {fragment}\n")
+
+    def test_check8_w1b_strips_fragment_under_prose_error_headings(
+        self,
+    ) -> None:
+        """Lowercase prose containing "Error" is not a log severity token.
+
+        Under a blanket IGNORECASE the severity branch matched the English word,
+        so ``Error example:`` counted as diagnostic context, kept its fragment,
+        and produced a Check 8 warning. That is a false positive of exactly the
+        kind W1b exists to remove. Branch 1a is uppercase-only, branch 1b
+        accepts mixed case only before ``:`` or ``]``, and structured level
+        fields remain case-insensitive. The word here is followed by another
+        word rather than punctuation, which is what keeps it out.
+        """
+        fragment = (
+            "tools silently failed mid-run; rate limit; context overflow; "
+            "or the model did not engage"
+        )
+        for heading in ("Error example:", "Error case:", "Warning example:"):
+            with self.subTest(heading=heading):
+                self._assert_check8_pass(f"{heading} {fragment}\n")
+
+    def test_check8_w1b_preserves_fragment_under_mixed_case_severity(
+        self,
+    ) -> None:
+        """Mixed-case severity LABELS are diagnostics and must keep counting.
+
+        An uppercase-only severity branch was tried first and silenced every
+        one of these, which is a silent false negative on real output rather
+        than a cosmetic miss: a preserved Copilot dispatch tail opens with
+        ``Error: Authentication token found but could not be validated.``
+        The punctuation lookahead is what admits these without also admitting
+        the prose headings pinned in the test above.
+        """
+        fragment = (
+            "tools silently failed mid-run; rate limit; context overflow; "
+            "or the model did not engage"
+        )
+        for prefix in ("Error:", "error:", "Warning:", "[Error]",
+                       "2026-08-07T12:34:56Z Error:"):
+            with self.subTest(prefix=prefix):
+                self._assert_check8_warn(f"{prefix} {fragment}\n")
+
+    def test_check8_w1b_structured_level_field_stays_case_insensitive(
+        self,
+    ) -> None:
+        """Splitting raw severity into uppercase and punctuation-gated forms
+        must not break structured levels.
+
+        JSON and logfmt emitters disagree on capitalisation, so the
+        ``level=`` / ``severity=`` branch keeps matching any case. This is the
+        guard on the tightening above: it would be easy to make the whole
+        pattern case-sensitive and silently lose lowercase structured logs.
+        Note these records carry no ``:`` or ``]`` directly after the severity
+        word, so branch 1b would not rescue them.
+        """
+        fragment = (
+            "tools silently failed mid-run; rate limit; context overflow; "
+            "or the model did not engage"
+        )
+        for envelope in (
+            '{"level":"error","msg":"%s"}',
+            '{"Level":"ERROR","msg":"%s"}',
+            'severity=warning msg="%s"',
+        ):
+            with self.subTest(envelope=envelope[:24]):
+                self._assert_check8_warn((envelope % fragment) + "\n")
+
+    def test_check8_w1b_severity_token_still_wins_over_noun_form(self) -> None:
+        """Dropping noun-form ``failure:`` must not lose real noun diagnostics.
+
+        Guards the escape hatch claimed by the test above: a genuine noun-form
+        failure carries a severity token, and the severity branch catches it
+        regardless of the operational-label branch.
+        """
+        fragment = (
+            "transient-looking tool failures: a single failed attempt "
+            "is weak evidence"
+        )
+        self._assert_check8_warn(f"ERROR Tool failure: {fragment}\n")
+
+    def test_check8_w1b_trailing_error_does_not_protect_earlier_fragment(
+        self,
+    ) -> None:
+        """An error AFTER a benign fragment does not shield the fragment.
+
+        Only the preceding text decides, so the fragment is still stripped and
+        the trailing error is still counted. This pins the asymmetry: without
+        it, appending any error token to a documentation line would restore the
+        false positive.
+        """
+        self._assert_check8_warn(
+            "other transient-looking tool failures: a single failed attempt "
+            "is weak evidence ERROR: ECONNRESET\n"
+        )
+
+    # Source-coupled drift alarm. Every other fixture in this section is an
+    # inline copy, so a one-character edit to the live SKILL.md or AGENTS.md
+    # could restore a false positive while the whole suite stayed green. These
+    # two feed the real files through the real classifier, which is the cheapest
+    # thing that actually fails when the documentation and the fragment list
+    # drift apart.
+
+    def test_check8_live_skill_md_scans_clean(self) -> None:
+        """The current SKILL.md, read whole, produces zero Check 8 markers."""
+        skill_md = ROOT / "skills" / "implement-review" / "SKILL.md"
+        self.assertTrue(skill_md.is_file(), f"missing {skill_md}")
+        self._assert_check8_pass(
+            skill_md.read_text(encoding="utf-8", errors="replace"),
+            source_label=str(skill_md),
+        )
+
+    def test_check8_live_agents_md_scans_clean(self) -> None:
+        """The current AGENTS.md, read whole, produces zero Check 8 markers.
+
+        AGENTS.md is deliberately not edited by W1a, so its shape is handled
+        only at the classifier. That makes this the load-bearing half of the
+        drift alarm: bootstrap installs this file at the root of every
+        consuming project, so a regression here reaches all of them.
+        """
+        agents_md = ROOT / "AGENTS.md"
+        self.assertTrue(agents_md.is_file(), f"missing {agents_md}")
+        self._assert_check8_pass(
+            agents_md.read_text(encoding="utf-8", errors="replace"),
+            source_label=str(agents_md),
+        )
 
     # ----- Check 9: stall warning -----
     def test_check9_warns_when_stall_warning_present(self) -> None:
@@ -838,6 +1219,47 @@ class HealthCheckScriptsTracked(unittest.TestCase):
 
     def test_ps1_exists(self) -> None:
         self.assertTrue(HEALTH_PS1.exists())
+
+
+class HealthCheckWheelMirror(unittest.TestCase):
+    """Non-mutating byte comparison of the source pair against its wheel copy.
+
+    check-parity.sh already detects this drift, but it is a maintainer script
+    that has to be run by hand. The existing aa-internal drift test synthesises
+    a `bootstrap/packs.yaml` difference and only asserts that the script reports
+    *that* file, so it can pass while implement-review is already out of sync.
+    These assertions run in the default suite and read only.
+
+    Skipped in repositories with no wheel-bundled composer tree (agent-config),
+    which is what keeps this file byte-identical across the parity mirror.
+    """
+
+    COMPOSER = (
+        ROOT / "packages" / "pypi" / "anywhere_agents" / "composer"
+        / "skills" / "implement-review"
+    )
+    SOURCE = ROOT / "skills" / "implement-review"
+
+    def setUp(self) -> None:
+        if not self.COMPOSER.is_dir():
+            self.skipTest("no wheel-bundled composer tree in this repository")
+
+    def _assert_mirrored(self, relative: str) -> None:
+        src = self.SOURCE / relative
+        dst = self.COMPOSER / relative
+        self.assertTrue(src.is_file(), f"missing source copy {src}")
+        self.assertTrue(dst.is_file(), f"missing wheel copy {dst}")
+        self.assertEqual(
+            src.read_bytes(), dst.read_bytes(),
+            f"{relative} has drifted between the source skill and its "
+            f"wheel-bundled copy; re-run the mirror step before committing",
+        )
+
+    def test_health_check_py_matches_wheel_copy(self) -> None:
+        self._assert_mirrored("scripts/health-check.py")
+
+    def test_skill_md_matches_wheel_copy(self) -> None:
+        self._assert_mirrored("SKILL.md")
 
 
 if __name__ == "__main__":
