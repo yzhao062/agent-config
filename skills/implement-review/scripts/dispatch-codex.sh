@@ -10,6 +10,7 @@
 #
 # Env:
 #   CODEX_BIN                      Codex binary name or path (default: codex)
+#   ANYWHERE_AGENTS_PYTHON         Explicit Python interpreter override
 #   TMPDIR                         Temp dir for state-dir (default: /tmp)
 #
 # Stdout:
@@ -23,6 +24,49 @@
 #   Returns 2 on usage errors (missing/invalid args).
 
 set -u
+
+# Windows cannot replace a shell script while bash has it open. The review
+# child may still invoke the consumer bootstrap despite the dispatch-specific
+# instruction below, so release the deployed path before doing any work. A
+# command-string parent waits for the copied script, removes it after the child
+# exits, and propagates the child's status. The sentinel prevents re-exec loops.
+if [ "${IMPLEMENT_REVIEW_DISPATCH_REEXEC:-}" != "1" ]; then
+    REEXEC_TMP_BASE="${TMPDIR:-/tmp}"
+    REEXEC_TMP_BASE="${REEXEC_TMP_BASE%/}"
+    REEXEC_DIR="${REEXEC_TMP_BASE}/implement-review-dispatch-codex-reexec-$$"
+    REEXEC_COPY="${REEXEC_DIR}/dispatch-codex.sh"
+
+    umask 077
+    if ! mkdir "$REEXEC_DIR"; then
+        echo "dispatch-codex: failed to create re-exec dir: $REEXEC_DIR" >&2
+        exit 2
+    fi
+    if ! cp -- "$0" "$REEXEC_COPY"; then
+        rmdir -- "$REEXEC_DIR" 2>/dev/null || true
+        echo "dispatch-codex: failed to create re-exec copy: $REEXEC_COPY" >&2
+        exit 2
+    fi
+    chmod u+x "$REEXEC_COPY" 2>/dev/null || true
+
+    export IMPLEMENT_REVIEW_DISPATCH_REEXEC=1
+    export IMPLEMENT_REVIEW_DISPATCH_SOURCE_DIR
+    IMPLEMENT_REVIEW_DISPATCH_SOURCE_DIR=$(dirname -- "$0")
+
+    exec "${BASH:-bash}" -c '
+        reexec_copy=$1
+        shift
+        "${BASH:-bash}" "$reexec_copy" "$@"
+        reexec_exit=$?
+        rm -f -- "$reexec_copy"
+        rmdir -- "$(dirname -- "$reexec_copy")" 2>/dev/null || true
+        exit "$reexec_exit"
+    ' dispatch-codex-reexec "$REEXEC_COPY" "$@"
+
+    echo "dispatch-codex: failed to launch re-exec copy: $REEXEC_COPY" >&2
+    rm -f -- "$REEXEC_COPY"
+    rmdir -- "$REEXEC_DIR" 2>/dev/null || true
+    exit 2
+fi
 
 PROMPT_FILE=""
 ROUND=""
@@ -59,6 +103,146 @@ case "$ROUND" in
         echo "dispatch-codex: --round must be a positive integer, got: $ROUND" >&2
         exit 2 ;;
 esac
+
+# Resolve a Python interpreter for the reviewer before spending a Codex round.
+# A path/name check alone is insufficient on Windows: App Execution Aliases are
+# discoverable zero-length reparse points. Each candidate must execute isolated
+# code, report an absolute sys.executable, and pass a second probe through that
+# reported executable. The nonempty-file and WindowsApps checks are additional
+# guards, not substitutes for execution.
+probe_python_candidate() {
+    [ "$#" -gt 0 ] || return 1
+    case "$1" in
+        *WindowsApps*|*windowsapps*) return 1 ;;
+    esac
+
+    local probe_output resolved resolved_real
+    probe_output=$("$@" -I -c 'import os, sys; print("IMPLEMENT_REVIEW_PYTHON=" + sys.executable); print("IMPLEMENT_REVIEW_REALPATH=" + os.path.realpath(sys.executable))' 2>/dev/null) || return 1
+    resolved=$(printf '%s\n' "$probe_output" | sed -n 's/^IMPLEMENT_REVIEW_PYTHON=//p' | tail -n 1 | tr -d '\r')
+    resolved_real=$(printf '%s\n' "$probe_output" | sed -n 's/^IMPLEMENT_REVIEW_REALPATH=//p' | tail -n 1 | tr -d '\r')
+    [ -n "$resolved" ] || return 1
+    [ -n "$resolved_real" ] || return 1
+    case "$resolved" in
+        /*|[A-Za-z]:[\\/]*|\\\\*) ;;
+        *) return 1 ;;
+    esac
+    case "$resolved" in
+        *WindowsApps*|*windowsapps*) return 1 ;;
+    esac
+    # Canonicalization is only an alias-location check. Keep the selected
+    # sys.executable unchanged so POSIX venv symlinks retain their environment.
+    case "$resolved_real" in
+        *WindowsApps*|*windowsapps*) return 1 ;;
+    esac
+    [ -s "$resolved" ] || return 1
+    "$resolved" -I -c 'import sys; sys.exit(0)' >/dev/null 2>&1 || return 1
+    printf '%s\n' "$resolved"
+}
+
+try_python_path() {
+    local candidate=$1 resolved
+    [ -n "$candidate" ] || return 1
+    [ -f "$candidate" ] || return 1
+    resolved=$(probe_python_candidate "$candidate") || return 1
+    PYTHON_BIN=$resolved
+    return 0
+}
+
+PYTHON_BIN=""
+
+# 1. Explicit shared override. A configured but broken override is an error;
+# silently falling through would hide a machine configuration defect.
+if [ -n "${ANYWHERE_AGENTS_PYTHON:-}" ]; then
+    if ! PYTHON_BIN=$(probe_python_candidate "$ANYWHERE_AGENTS_PYTHON"); then
+        echo "dispatch-codex: ANYWHERE_AGENTS_PYTHON is not an executable Python interpreter: $ANYWHERE_AGENTS_PYTHON" >&2
+        exit 2
+    fi
+fi
+
+# 2. Project virtual environments, then an activated virtual environment.
+if [ -z "$PYTHON_BIN" ]; then
+    for candidate in \
+        "$PWD/.venv/Scripts/python.exe" "$PWD/.venv/bin/python" \
+        "$PWD/venv/Scripts/python.exe" "$PWD/venv/bin/python"; do
+        try_python_path "$candidate" && break
+    done
+fi
+if [ -z "$PYTHON_BIN" ] && [ -n "${VIRTUAL_ENV:-}" ]; then
+    for candidate in \
+        "$VIRTUAL_ENV/Scripts/python.exe" "$VIRTUAL_ENV/bin/python"; do
+        try_python_path "$candidate" && break
+    done
+fi
+
+# 3. Active conda environment, then discovered Miniforge/conda roots and envs.
+CONDA_ROOTS=()
+if [ -z "$PYTHON_BIN" ] && [ -n "${CONDA_PREFIX:-}" ]; then
+    for candidate in \
+        "$CONDA_PREFIX/python.exe" "$CONDA_PREFIX/bin/python" \
+        "$CONDA_PREFIX/bin/python3"; do
+        try_python_path "$candidate" && break
+    done
+    case "$CONDA_PREFIX" in
+        */envs/*) CONDA_ROOTS+=("${CONDA_PREFIX%/envs/*}") ;;
+        *) CONDA_ROOTS+=("$CONDA_PREFIX") ;;
+    esac
+fi
+[ -n "${CONDA_ROOT:-}" ] && CONDA_ROOTS+=("$CONDA_ROOT")
+[ -n "${MAMBA_ROOT_PREFIX:-}" ] && CONDA_ROOTS+=("$MAMBA_ROOT_PREFIX")
+for manager in conda mamba; do
+    manager_path=$(command -v "$manager" 2>/dev/null || true)
+    [ -n "$manager_path" ] && CONDA_ROOTS+=("$(dirname -- "$(dirname -- "$manager_path")")")
+done
+if [ -n "${HOME:-}" ]; then
+    for home_child in "$HOME"/*/; do
+        [ -d "${home_child}conda-meta" ] && CONDA_ROOTS+=("${home_child%/}")
+    done
+fi
+if [ -z "$PYTHON_BIN" ]; then
+    for root in ${CONDA_ROOTS[@]+"${CONDA_ROOTS[@]}"}; do
+        [ -n "$root" ] || continue
+        for candidate in "$root/python.exe" "$root/bin/python" "$root/bin/python3"; do
+            try_python_path "$candidate" && break 2
+        done
+        for env_dir in "$root"/envs/*/; do
+            [ -d "$env_dir" ] || continue
+            for candidate in \
+                "${env_dir}python.exe" "${env_dir}bin/python" \
+                "${env_dir}bin/python3"; do
+                try_python_path "$candidate" && break 3
+            done
+        done
+    done
+fi
+
+# 4. Windows Python launcher. Resolve it to sys.executable so the reviewer gets
+# an absolute interpreter path rather than a launcher command.
+if [ -z "$PYTHON_BIN" ]; then
+    while IFS= read -r candidate; do
+        [ -n "$candidate" ] || continue
+        if PYTHON_BIN=$(probe_python_candidate "$candidate" -3); then
+            break
+        fi
+    done < <(type -a -p py 2>/dev/null || true)
+fi
+
+# 5. Every PATH entry, not only the first alias hit. Execution probing remains
+# authoritative; the path filter only avoids launching a known Store redirector.
+if [ -z "$PYTHON_BIN" ]; then
+    for command_name in python3 python; do
+        while IFS= read -r candidate; do
+            [ -n "$candidate" ] || continue
+            if PYTHON_BIN=$(probe_python_candidate "$candidate"); then
+                break 2
+            fi
+        done < <(type -a -p "$command_name" 2>/dev/null || true)
+    done
+fi
+
+if [ -z "$PYTHON_BIN" ]; then
+    echo "dispatch-codex: no working Python interpreter found (checked ANYWHERE_AGENTS_PYTHON, project virtualenvs, conda/Miniforge, py -3, and non-WindowsApps PATH entries)" >&2
+    exit 2
+fi
 
 # Build unique state-dir under TMPDIR
 TMP_BASE="${TMPDIR:-/tmp}"
@@ -110,16 +294,37 @@ printf '%s\n' "$PRE_MTIME" > "$STATE_DIR/pre-mtime"
 # Record dispatch start wall time (Unix epoch seconds)
 date +%s > "$STATE_DIR/timestamp"
 
+# One logical dispatch may retry only a confirmed response-stream death. The
+# state directory stays stable so the single STATE-DIR stdout contract remains
+# valid; failed attempts are archived under attempt-N.
+STREAM_RETRY_LIMIT="${IMPLEMENT_REVIEW_STREAM_RETRY_LIMIT:-1}"
+case "$STREAM_RETRY_LIMIT" in
+    ''|*[!0-9]*) STREAM_RETRY_LIMIT=1 ;;
+esac
+STREAM_RETRY_LIMIT=$((10#$STREAM_RETRY_LIMIT))
+STREAM_RETRY_COUNT=0
+printf '%s\n' "$STREAM_RETRY_LIMIT" > "$STATE_DIR/stream-retry-limit"
+printf '0\n' > "$STATE_DIR/stream-retry-count"
+
+# Record exactly what was passed to the reviewer for caller diagnostics.
+printf '%s\n' "$PYTHON_BIN" > "$STATE_DIR/python-interpreter"
+
 # Emit STATE-DIR on stdout (first and only machine-readable line)
 printf 'STATE-DIR %s\n' "$STATE_DIR"
 
 # Launch stall-watch in background if present (B2 will land the script)
-STALL_WATCH="$(dirname -- "$0")/stall-watch.sh"
+SCRIPT_DIR="${IMPLEMENT_REVIEW_DISPATCH_SOURCE_DIR:-$(dirname -- "$0")}"
+STALL_WATCH="${SCRIPT_DIR}/stall-watch.sh"
 STALL_WATCH_PID=""
-if [ -x "$STALL_WATCH" ]; then
-    "$STALL_WATCH" --state-dir "$STATE_DIR" --parent-pid $$ >/dev/null 2>&1 &
-    STALL_WATCH_PID=$!
-fi
+_start_stall_watch() {
+    STALL_WATCH_PID=""
+    if [ -x "$STALL_WATCH" ]; then
+        "$STALL_WATCH" --state-dir "$STATE_DIR" --parent-pid $$ >/dev/null 2>&1 &
+        STALL_WATCH_PID=$!
+    fi
+}
+_start_stall_watch
+unset IMPLEMENT_REVIEW_DISPATCH_REEXEC IMPLEMENT_REVIEW_DISPATCH_SOURCE_DIR
 
 # Run codex exec with prompt via stdin (NOT positional arg; not codex exec review).
 #
@@ -169,16 +374,79 @@ CODEX_ISOLATE_ARGS=(--ignore-user-config -c "model_reasoning_effort=$CODEX_DISPA
 if [ "$(printf '%s' "${CODEX_DISPATCH_ISOLATE_MCP:-}" | tr '[:upper:]' '[:lower:]')" = "off" ]; then
     CODEX_ISOLATE_ARGS=()
 fi
-"$CODEX_BIN" exec --sandbox "$CODEX_DISPATCH_SANDBOX" ${CODEX_ISOLATE_ARGS[@]+"${CODEX_ISOLATE_ARGS[@]}"} - < "$PROMPT_FILE" > "$STATE_DIR/tail" 2>&1
-CODEX_EXIT=$?
+# The parent session already refreshed the consumer repo at startup. Repeating
+# that setup inside every review child adds latency and can mutate the deployed
+# dispatcher mid-run. This developer instruction outranks AGENTS.md's generic
+# new-session bootstrap rule while preserving every other project instruction.
+CHILD_SESSION_INSTRUCTIONS="The parent agent session already completed the repository bootstrap at startup. Skip bootstrap and shared configuration refresh commands in this child review session. Use the shared configuration currently on disk. Follow all other project instructions. A working Python interpreter was execution-probed before dispatch. Use this exact absolute path for every Python command: $PYTHON_BIN. Do not invoke bare python, python3, or py. Before issuing a PASS or BLOCK commit verdict, execute relevant verification commands. In $EXPECTED_REVIEW_FILE, add one standalone line exactly 'Verification status: VERIFIED' if at least one relevant verification command completed, otherwise add 'Verification status: UNVERIFIED'. If the status is UNVERIFIED, write 'Commit verdict: UNVERIFIED'; never issue PASS or BLOCK. Verification notes must list the exact commands and outcomes."
+CODEX_CHILD_ARGS=(-c "developer_instructions=$CHILD_SESSION_INSTRUCTIONS")
+_archive_stream_attempt() {
+    local attempt_number="$1" attempt_dir name
+    local active_files="tail tail.stderr-tmp stall-warning stream-death stream-retry-request stream-reap-complete worker-roots reap-targets reap-reason reap-worker.cmd"
+    attempt_dir="$STATE_DIR/attempt-$attempt_number"
+    mkdir "$attempt_dir" 2>/dev/null || return 1
+
+    for name in pre-mtime timestamp stream-retry-limit stream-retry-count; do
+        cp -- "$STATE_DIR/$name" "$attempt_dir/$name" 2>/dev/null || return 1
+    done
+    for name in $active_files; do
+        [ -f "$STATE_DIR/$name" ] || continue
+        cp -- "$STATE_DIR/$name" "$attempt_dir/$name" 2>/dev/null || return 1
+    done
+    for name in tail stream-death stream-retry-request stream-reap-complete; do
+        [ -f "$attempt_dir/$name" ] || return 1
+    done
+    for name in $active_files; do
+        rm -f -- "$STATE_DIR/$name"
+    done
+    return 0
+}
+
+while :; do
+    "$CODEX_BIN" exec --sandbox "$CODEX_DISPATCH_SANDBOX" ${CODEX_ISOLATE_ARGS[@]+"${CODEX_ISOLATE_ARGS[@]}"} ${CODEX_CHILD_ARGS[@]+"${CODEX_CHILD_ARGS[@]}"} - < "$PROMPT_FILE" > "$STATE_DIR/tail" 2>&1
+    CODEX_EXIT=$?
+
+    if [ ! -f "$STATE_DIR/stream-death" ] || \
+       [ ! -f "$STATE_DIR/stream-retry-request" ] || \
+       [ "$STREAM_RETRY_COUNT" -ge "$STREAM_RETRY_LIMIT" ]; then
+        break
+    fi
+
+    handoff_wait=0
+    while [ ! -f "$STATE_DIR/stream-reap-complete" ] && \
+          [ "$handoff_wait" -lt 10 ]; do
+        sleep 1
+        handoff_wait=$((handoff_wait + 1))
+    done
+    if [ ! -f "$STATE_DIR/stream-reap-complete" ]; then
+        printf 'AUTO-REDISPATCH-SKIPPED reason=stream-reap-handoff-timeout state-dir=%s\n' \
+            "$STATE_DIR" >&2
+        break
+    fi
+    if [ -n "$STALL_WATCH_PID" ]; then
+        wait "$STALL_WATCH_PID" 2>/dev/null || true
+    fi
+    if ! _archive_stream_attempt "$((STREAM_RETRY_COUNT + 1))"; then
+        printf 'AUTO-REDISPATCH-SKIPPED reason=attempt-archive-failed state-dir=%s\n' \
+            "$STATE_DIR" >&2
+        break
+    fi
+
+    STREAM_RETRY_COUNT=$((STREAM_RETRY_COUNT + 1))
+    printf '%s\n' "$STREAM_RETRY_COUNT" > "$STATE_DIR/stream-retry-count"
+    date +%s > "$STATE_DIR/timestamp"
+    printf 'AUTO-REDISPATCH attempt=%s/%s reason=codex-response-stream-disconnected state-dir=%s\n' \
+        "$((STREAM_RETRY_COUNT + 1))" "$((STREAM_RETRY_LIMIT + 1))" "$STATE_DIR" >&2
+    _start_stall_watch
+done
 
 # Pipe last 80 lines of tail to stderr for caller visibility
 tail -n 80 "$STATE_DIR/tail" >&2 2>/dev/null || true
 
-# Do NOT force-kill stall-watch. It already polls our PID via `kill -0` and
-# will exit silently on its next interval after we die. Stopping it on the hot
-# path can erase a stall period that crossed the threshold during the final
-# poll window, leaving Phase 2.0 Health check 9 with no record.
+# Do NOT force-kill stall-watch. It checks our PID and captured process-start
+# identity, then exits silently on its next interval after we die. Stopping it
+# on the hot path can erase a stall period that crossed the threshold during
+# the final poll window, leaving Phase 2.0 Health check 9 with no record.
 # The cost is one extra polling interval of lingering observer; the benefit is
 # preserving the Check 9 signal that justified stall-watch's existence.
 

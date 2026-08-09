@@ -1007,6 +1007,86 @@ class HealthCheckPython(unittest.TestCase):
             self.assertEqual(parsed["check-9"][0], "WARN")
             self.assertIn("stall-periods", parsed["check-9"][1])
 
+    # ----- Check 10: commit-verification contract -----
+    def test_check10_accepts_all_supported_status_label_shapes(self) -> None:
+        label_shapes = {
+            "plain": "Verification status: {status}",
+            "bulleted": "- **Verification status:** {status}",
+            "bold-label": "**Verification status**: {status}",
+            "bold-label-and-colon": "**Verification status:** {status}",
+            "underscored-label-and-colon": "__Verification status:__ {status}",
+            "heading": "## Verification status: {status}",
+            "bold-value": "Verification status: **{status}**",
+            "no-space": "**Verification status:**{status}",
+        }
+        expected = {
+            "VERIFIED": (0, "PASS", "verification=VERIFIED"),
+            "UNVERIFIED": (1, "FAIL", "verification=UNVERIFIED"),
+        }
+
+        for shape_name, template in label_shapes.items():
+            for status, (returncode, outcome, detail) in expected.items():
+                with self.subTest(shape=shape_name, status=status):
+                    with tempfile.TemporaryDirectory() as td:
+                        td_path = Path(td)
+                        review = td_path / "Review-Codex.md"
+                        make_review(
+                            review,
+                            extra_body=(
+                                f"{template.format(status=status)}\n\n"
+                                "**Commit verdict:** PASS"
+                            ),
+                        )
+                        state = make_state_dir(td_path)
+                        result = run_health_py(state, review)
+                        parsed = parse_output(result.stdout)
+                        self.assertEqual(result.returncode, returncode)
+                        self.assertEqual(parsed["check-10"][0], outcome)
+                        self.assertIn(detail, parsed["check-10"][1])
+
+    def test_check7_warns_when_review_could_not_execute_commands(self) -> None:
+        blocked_phrases = (
+            "I was unable to execute any commands here",
+            "I was unable to run the tests here",
+            "I was not able to execute any commands here",
+            "I was not able to run the tests here",
+        )
+        for phrase in blocked_phrases:
+            with self.subTest(phrase=phrase):
+                with tempfile.TemporaryDirectory() as td:
+                    td_path = Path(td)
+                    review = td_path / "Review-Codex.md"
+                    make_review(
+                        review,
+                        extra_body=(
+                            f"I inspected the diff. {phrase}.\n\n"
+                            "Recommendation: BLOCK"
+                        ),
+                    )
+                    state = make_state_dir(td_path)
+                    result = run_health_py(state, review)
+                    parsed = parse_output(result.stdout)
+                    self.assertEqual(result.returncode, 0)
+                    self.assertEqual(parsed["check-7"][0], "WARN")
+                    self.assertEqual(parsed["check-10"][0], "PASS")
+                    self.assertIn("no-commit-verdict", parsed["check-10"][1])
+
+    def test_check10_rejects_explicitly_empty_notes_without_status(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            review = td_path / "Review-Codex.md"
+            make_review(
+                review,
+                include_verification_notes=False,
+                extra_body="Verification notes: none.\n\nRecommendation: BLOCK",
+            )
+            state = make_state_dir(td_path)
+            result = run_health_py(state, review)
+            parsed = parse_output(result.stdout)
+            self.assertEqual(result.returncode, 1)
+            self.assertEqual(parsed["check-10"][0], "FAIL")
+            self.assertIn("but-notes-report-none", parsed["check-10"][1])
+
     # ----- State contract -----
     def test_state_contract_missing_pre_mtime_is_fail(self) -> None:
         with tempfile.TemporaryDirectory() as td:

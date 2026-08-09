@@ -18,6 +18,11 @@
 #   COPILOT_BIN                    Copilot binary name or path (default: copilot)
 #   GH_BIN                         gh binary name or path for the fallback path
 #                                  (default: gh; used only when copilot is absent)
+#   COPILOT_PREFLIGHT              auto (default), force, or off. auto runs a
+#                                  live auth + git-shell probe for official
+#                                  copilot / gh executables and skips wrappers.
+#   COPILOT_PREFLIGHT_TIMEOUT_SECONDS
+#                                  Live preflight timeout (default: 60)
 #   TMPDIR / TEMP / TMP            Temp dir for state-dir (Windows uses TEMP by default)
 #
 # Stdout:
@@ -29,8 +34,54 @@
 # Exit code:
 #   Propagates copilot's exit code unchanged.
 #   Returns 2 on usage errors (missing/invalid args).
+#   Returns 70 when preflight/postflight rejects an unusable review, 124 when
+#   preflight times out, and 127 when no Copilot executable is available.
 
 $ErrorActionPreference = 'Stop'
+
+# Release the deployed path before the review child can invoke bootstrap.
+# PowerShell closes parsed script files, so the parent can wait for the copy,
+# remove it deterministically, and propagate the copied script's exit status.
+if ($env:IMPLEMENT_REVIEW_DISPATCH_REEXEC -ne '1') {
+    $reexecTmpBase = $env:TMPDIR
+    if (-not $reexecTmpBase) { $reexecTmpBase = $env:TEMP }
+    if (-not $reexecTmpBase) { $reexecTmpBase = $env:TMP }
+    if (-not $reexecTmpBase) { $reexecTmpBase = [System.IO.Path]::GetTempPath() }
+    $reexecTmpBase = $reexecTmpBase.TrimEnd('\', '/')
+    $reexecDir = Join-Path $reexecTmpBase "implement-review-dispatch-copilot-reexec-$PID"
+    $reexecCopy = Join-Path $reexecDir 'dispatch-copilot.ps1'
+
+    try {
+        New-Item -ItemType Directory -Path $reexecDir | Out-Null
+        Copy-Item -LiteralPath $PSCommandPath -Destination $reexecCopy
+    } catch {
+        [Console]::Error.WriteLine("dispatch-copilot: failed to create re-exec copy: $reexecCopy")
+        if (Test-Path -LiteralPath $reexecCopy -PathType Leaf) {
+            Remove-Item -LiteralPath $reexecCopy -Force -ErrorAction SilentlyContinue
+        }
+        Remove-Item -LiteralPath $reexecDir -Force -ErrorAction SilentlyContinue
+        exit 2
+    }
+
+    $env:IMPLEMENT_REVIEW_DISPATCH_REEXEC = '1'
+    $env:IMPLEMENT_REVIEW_DISPATCH_SOURCE_DIR = $PSScriptRoot
+    $reexecHost = if ($PSVersionTable.PSEdition -eq 'Core') {
+        Join-Path $PSHOME 'pwsh.exe'
+    } else {
+        Join-Path $PSHOME 'powershell.exe'
+    }
+    $reexecExit = 2
+    try {
+        & $reexecHost -NoProfile -ExecutionPolicy Bypass -File $reexecCopy @args
+        $reexecExit = $LASTEXITCODE
+    } catch {
+        [Console]::Error.WriteLine("dispatch-copilot: failed to launch re-exec copy: $reexecCopy")
+    } finally {
+        Remove-Item -LiteralPath $reexecCopy -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $reexecDir -Force -ErrorAction SilentlyContinue
+    }
+    exit $reexecExit
+}
 
 # Resolve an Application command to a runnable, extension-bearing path.
 # Mirrors dispatch-codex.ps1's resolution: skip Microsoft Store App Execution
@@ -147,19 +198,6 @@ $nowUnix = [int]([DateTimeOffset]::UtcNow).ToUnixTimeSeconds()
 [Console]::Out.WriteLine("STATE-DIR $stateDir")
 [Console]::Out.Flush()
 
-# Launch stall-watch in background if present (shared with the Codex backend).
-# Use $PSScriptRoot (auto-populated when invoked as a file) instead of
-# Split-Path $PSCommandPath, which can fail under some invocation contexts.
-$scriptDir = $PSScriptRoot
-$stallWatch = Join-Path $scriptDir 'stall-watch.ps1'
-$stallProc = $null
-if (Test-Path -LiteralPath $stallWatch -PathType Leaf) {
-    $stallProc = Start-Process -FilePath 'powershell.exe' `
-        -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $stallWatch,
-                        '--state-dir', $stateDir, '--parent-pid', $PID) `
-        -WindowStyle Hidden -PassThru -ErrorAction SilentlyContinue
-}
-
 # Resolve copilot binary, with gh-copilot fallback ------------------------
 # Standalone `copilot` is preferred; if it is not resolvable, fall back to the
 # built-in `gh copilot` entry point (both verified equivalent in the probe).
@@ -174,13 +212,134 @@ if (-not $exe) {
         $exe = $ghResolved
         $useGh = $true
     } else {
-        # Nothing resolvable; let the cmd invocation surface its own error to
-        # the tail rather than guessing here.
-        $exe = $copilotBin
+        $tailPath = Join-Path $stateDir 'tail'
+        $missingMessage = @(
+            "dispatch-copilot: no runnable Copilot CLI found (tried '$copilotBin' and '$ghBin').",
+            'Install GitHub Copilot CLI or set COPILOT_BIN / GH_BIN to a runnable executable.'
+        ) -join "`r`n"
+        [System.IO.File]::WriteAllText($tailPath, "$missingMessage`r`n")
+        [Console]::Error.WriteLine($missingMessage)
+        exit 127
     }
 }
 
 $tailPath = Join-Path $stateDir 'tail'
+
+$ghPrefix = if ($useGh) { 'copilot -- ' } else { '' }
+$preflightMode = if ($env:COPILOT_PREFLIGHT) {
+    $env:COPILOT_PREFLIGHT.ToLowerInvariant()
+} else {
+    'auto'
+}
+if ($preflightMode -notin @('auto', 'force', 'off')) {
+    [Console]::Error.WriteLine("dispatch-copilot: COPILOT_PREFLIGHT must be auto, force, or off (got: $preflightMode)")
+    exit 2
+}
+
+$officialCli = ([System.IO.Path]::GetFileName($exe) -match '^(?i:copilot|gh)(\.exe)?$')
+$runPreflight = $officialCli
+$strictChecks = $officialCli
+if ($preflightMode -eq 'force') {
+    $runPreflight = $true
+    $strictChecks = $true
+}
+if ($preflightMode -eq 'off') { $runPreflight = $false }
+
+$preflightTimeout = 60
+if ($env:COPILOT_PREFLIGHT_TIMEOUT_SECONDS) {
+    $parsedTimeout = 0
+    if (-not [int]::TryParse($env:COPILOT_PREFLIGHT_TIMEOUT_SECONDS, [ref]$parsedTimeout) -or $parsedTimeout -lt 1) {
+        [Console]::Error.WriteLine('dispatch-copilot: COPILOT_PREFLIGHT_TIMEOUT_SECONDS must be a positive integer')
+        exit 2
+    }
+    $preflightTimeout = $parsedTimeout
+}
+
+# Paths and short prompt are escaped for cmd exactly as the full dispatch is.
+$repo = (Get-Location).Path
+$exeEsc = $exe -replace '%', '%%'
+$repoEsc = $repo -replace '%', '%%'
+$stateDirEsc = $stateDir -replace '%', '%%'
+$promptFileEsc = $PromptFile -replace '%', '%%'
+$tailPathEsc = $tailPath -replace '%', '%%'
+$utf8NoBom = New-Object System.Text.UTF8Encoding $false
+
+if ($runPreflight) {
+    $preflightTail = Join-Path $stateDir 'preflight-tail'
+    $preflightTailEsc = $preflightTail -replace '%', '%%'
+    $preflightHelper = Join-Path $stateDir 'run-copilot-preflight.cmd'
+    $preflightPrompt = 'Run git --version exactly once. If it exits 0, reply exactly COPILOT_PREFLIGHT_OK. Do not modify files.'
+    $preflightBody = "@echo off`r`nchcp 65001 >NUL`r`nset GIT_PAGER=cat`r`n""$exeEsc"" ${ghPrefix}-C ""$stateDirEsc"" -p ""$preflightPrompt"" --add-dir ""$stateDirEsc"" --allow-tool=""shell(git:*)"" --no-ask-user --no-auto-update --no-custom-instructions --disable-builtin-mcps --stream on --output-format json --no-color > ""$preflightTailEsc"" 2>&1`r`n"
+    [System.IO.File]::WriteAllText($preflightHelper, $preflightBody, $utf8NoBom)
+
+    $preflightExit = 70
+    try {
+        $preflightProc = Start-Process -FilePath $preflightHelper -WindowStyle Hidden -PassThru -ErrorAction Stop
+        if ($preflightProc.WaitForExit($preflightTimeout * 1000)) {
+            $preflightExit = $preflightProc.ExitCode
+        } else {
+            & taskkill.exe /PID $preflightProc.Id /T /F *> $null
+            $preflightExit = 124
+        }
+    } catch {
+        [System.IO.File]::WriteAllText($preflightTail, "dispatch-copilot: could not launch preflight: $($_.Exception.Message)`r`n")
+    } finally {
+        Remove-Item -LiteralPath $preflightHelper -Force -ErrorAction SilentlyContinue
+    }
+
+    $preflightText = if (Test-Path -LiteralPath $preflightTail -PathType Leaf) {
+        Get-Content -LiteralPath $preflightTail -Raw -ErrorAction SilentlyContinue
+    } else {
+        ''
+    }
+    $preflightToolOk = $preflightText -match '"type":"tool\.execution_complete".*"success":true'
+    $preflightReplyOk = $preflightText -match '"type":"assistant\.message".*"content":"COPILOT_PREFLIGHT_OK"'
+
+    if ($preflightExit -ne 0 -or -not $preflightToolOk -or -not $preflightReplyOk) {
+        if (Test-Path -LiteralPath $preflightTail -PathType Leaf) {
+            Copy-Item -LiteralPath $preflightTail -Destination $tailPath -Force -ErrorAction SilentlyContinue
+        } else {
+            [System.IO.File]::WriteAllText($tailPath, '')
+        }
+
+        if ($preflightExit -eq 124) {
+            [Console]::Error.WriteLine("dispatch-copilot: preflight timed out after ${preflightTimeout}s; refusing to spend a review round.")
+        } elseif ($preflightText -match '(?i)Authentication token found but could not be validated|Failed to fetch OAuth user login|authentication failed|not authenticated|unauthorized') {
+            [Console]::Error.WriteLine('dispatch-copilot: preflight could not validate Copilot authentication; refusing to spend a review round.')
+            [Console]::Error.WriteLine("Check network/proxy access first, then run 'copilot login' or provide COPILOT_GITHUB_TOKEN, GH_TOKEN, or GITHUB_TOKEN.")
+        } elseif ($preflightText -match "(?i)unknown option '--no-warnings'") {
+            [Console]::Error.WriteLine("dispatch-copilot: Copilot's shell runner rejected its internal --no-warnings flag; refusing to start.")
+            [Console]::Error.WriteLine("Run 'copilot update', start a fresh process, and retry. Dispatch auto-update is disabled with --no-auto-update.")
+        } else {
+            [Console]::Error.WriteLine("dispatch-copilot: preflight could not run a successful git shell command (exit $preflightExit); refusing to start.")
+        }
+        if (Test-Path -LiteralPath $preflightTail -PathType Leaf) {
+            Get-Content -LiteralPath $preflightTail -Tail 40 -ErrorAction SilentlyContinue | ForEach-Object {
+                [Console]::Error.WriteLine($_)
+            }
+        }
+        if ($preflightExit -eq 0) { $preflightExit = 70 }
+        exit $preflightExit
+    }
+}
+
+# Start stall-watch only for the full review. The live JSON stream below makes
+# tail growth a meaningful liveness signal instead of a completion-only write.
+$scriptDir = if ($env:IMPLEMENT_REVIEW_DISPATCH_SOURCE_DIR) {
+    $env:IMPLEMENT_REVIEW_DISPATCH_SOURCE_DIR
+} else {
+    $PSScriptRoot
+}
+$stallWatch = Join-Path $scriptDir 'stall-watch.ps1'
+$stallProc = $null
+if (Test-Path -LiteralPath $stallWatch -PathType Leaf) {
+    $stallProc = Start-Process -FilePath 'powershell.exe' `
+        -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $stallWatch,
+                        '--state-dir', $stateDir, '--parent-pid', $PID) `
+        -WindowStyle Hidden -PassThru -ErrorAction SilentlyContinue
+}
+Remove-Item Env:IMPLEMENT_REVIEW_DISPATCH_REEXEC -ErrorAction SilentlyContinue
+Remove-Item Env:IMPLEMENT_REVIEW_DISPATCH_SOURCE_DIR -ErrorAction SilentlyContinue
 
 $ErrorActionPreference = 'Continue'
 
@@ -201,20 +360,15 @@ $ErrorActionPreference = 'Continue'
 # stdin redirection. GIT_PAGER=cat keeps Copilot's own `git diff` from stalling
 # on a pager. The narrow allow-list (read + write + git, scoped to the repo via
 # --add-dir) is tighter than the Codex backend's danger-full-access; Copilot
-# writes Review-GitHub-Copilot.md itself per the prompt's save contract.
+# writes Review-GitHub-Copilot.md itself per the prompt's save contract. JSON
+# streaming records reasoning and tool lifecycle events as they occur, so
+# stall-watch can observe progress and postflight can reject hidden tool denial.
 #
 # Path handling mirrors dispatch-codex: escape every `%` to `%%` so cmd does not
 # env-expand path values, and write the helper as UTF-8 (no BOM) with a
 # `chcp 65001` prefix so non-ASCII paths survive cmd's codepage layer.
 $cmdHelper = Join-Path $stateDir 'run-copilot.cmd'
-$repo = (Get-Location).Path
-$exeEsc = $exe -replace '%', '%%'
-$repoEsc = $repo -replace '%', '%%'
-$promptFileEsc = $PromptFile -replace '%', '%%'
-$tailPathEsc = $tailPath -replace '%', '%%'
-$ghPrefix = if ($useGh) { 'copilot ' } else { '' }
-$cmdBody = "@echo off`r`nchcp 65001 >NUL`r`nset GIT_PAGER=cat`r`n""$exeEsc"" ${ghPrefix}-C ""$repoEsc"" -p ""@$promptFileEsc"" --add-dir ""$repoEsc"" --allow-tool=read --allow-tool=write --allow-tool=""shell(git:*)"" --no-ask-user --silent --stream off --no-color > ""$tailPathEsc"" 2>&1`r`n"
-$utf8NoBom = New-Object System.Text.UTF8Encoding $false
+$cmdBody = "@echo off`r`nchcp 65001 >NUL`r`nset GIT_PAGER=cat`r`n""$exeEsc"" ${ghPrefix}-C ""$repoEsc"" -p ""@$promptFileEsc"" --add-dir ""$repoEsc"" --allow-tool=read --allow-tool=write --allow-tool=""shell(git:*)"" --no-ask-user --no-auto-update --stream on --output-format json --no-color > ""$tailPathEsc"" 2>&1`r`n"
 [System.IO.File]::WriteAllText($cmdHelper, $cmdBody, $utf8NoBom)
 
 & $cmdHelper
@@ -226,6 +380,55 @@ Remove-Item -LiteralPath $cmdHelper -Force -ErrorAction SilentlyContinue
 # Health check 8 distinguishes "tail empty" from "tail missing".
 if (-not (Test-Path -LiteralPath $tailPath -PathType Leaf)) {
     Set-Content -LiteralPath $tailPath -Value '' -NoNewline -ErrorAction SilentlyContinue
+}
+
+# Official CLI runs must not look complete when auth, the internal shell
+# runner, permissions, or the review save contract failed quietly.
+if ($strictChecks) {
+    $tailText = Get-Content -LiteralPath $tailPath -Raw -ErrorAction SilentlyContinue
+    $operationalTailText = (Get-Content -LiteralPath $tailPath -ErrorAction SilentlyContinue | Where-Object {
+        $_ -notmatch '^\{' -or
+        $_ -match '"type":"tool\.execution_complete".*"success":false' -or
+        $_ -match '"type":"error"'
+    }) -join "`n"
+    if ($operationalTailText -match "(?i)unknown option '--no-warnings'") {
+        [Console]::Error.WriteLine('dispatch-copilot: Copilot emitted the known --no-warnings shell-runner failure; review rejected.')
+        $copilotExit = 70
+    } elseif ($operationalTailText -match '(?i)Authentication token found but could not be validated|Failed to fetch OAuth user login|authentication failed|not authenticated|unauthorized') {
+        [Console]::Error.WriteLine("dispatch-copilot: Copilot authentication failed during dispatch; review rejected. Run 'copilot login' after checking network/proxy access.")
+        $copilotExit = 70
+    } elseif ($tailText -match '(?i)("type":"tool\.execution_complete".*"success":false.*(permission|denied|not allowed|blocked)|(permission|denied|not allowed|blocked).*"type":"tool\.execution_complete".*"success":false)') {
+        [Console]::Error.WriteLine("dispatch-copilot: a review tool was denied by Copilot's permission layer; review rejected instead of accepting unverified output.")
+        $copilotExit = 70
+    }
+
+    if ($copilotExit -eq 0) {
+        $reviewPath = if ([System.IO.Path]::IsPathRooted($ExpectedReviewFile)) {
+            $ExpectedReviewFile
+        } else {
+            Join-Path $repo $ExpectedReviewFile
+        }
+        $reviewFailure = $null
+        if (-not (Test-Path -LiteralPath $reviewPath -PathType Leaf)) {
+            $reviewFailure = "expected review file was not created: $ExpectedReviewFile"
+        } else {
+            $reviewItem = Get-Item -LiteralPath $reviewPath
+            $firstLine = Get-Content -LiteralPath $reviewPath -TotalCount 1 -ErrorAction SilentlyContinue
+            $reviewMtime = ([DateTimeOffset]$reviewItem.LastWriteTimeUtc).ToUnixTimeSeconds()
+            $freshFloor = [Math]::Max([long]$preMtime, [long]$nowUnix)
+            if ($reviewItem.Length -lt 500) {
+                $reviewFailure = "expected review file is only $($reviewItem.Length) bytes: $ExpectedReviewFile"
+            } elseif ($firstLine.TrimEnd("`r") -ne "<!-- Round $Round -->") {
+                $reviewFailure = "expected review file lacks the current round marker: $ExpectedReviewFile"
+            } elseif ($reviewMtime -le $freshFloor) {
+                $reviewFailure = "expected review file was not refreshed by this dispatch: $ExpectedReviewFile"
+            }
+        }
+        if ($reviewFailure) {
+            [Console]::Error.WriteLine("dispatch-copilot: $reviewFailure; review rejected.")
+            $copilotExit = 70
+        }
+    }
 }
 
 # Pipe last 80 lines of tail to stderr for caller visibility

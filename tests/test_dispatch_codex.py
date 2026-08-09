@@ -29,8 +29,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS_DIR = ROOT / "skills" / "implement-review" / "scripts"
-DISPATCH_SH = SCRIPTS_DIR / "dispatch-codex.sh"
-DISPATCH_PS1 = SCRIPTS_DIR / "dispatch-codex.ps1"
+DISPATCH_SH = Path(os.environ.get(
+    "TEST_DISPATCH_CODEX_SH", SCRIPTS_DIR / "dispatch-codex.sh"
+))
+DISPATCH_PS1 = Path(os.environ.get(
+    "TEST_DISPATCH_CODEX_PS1", SCRIPTS_DIR / "dispatch-codex.ps1"
+))
 
 
 def _temp_dir():
@@ -59,6 +63,7 @@ Behavior driven by env vars (all optional):
 import json
 import os
 import sys
+import time
 
 log_dir = os.environ.get("MOCK_CODEX_LOG", os.getcwd())
 os.makedirs(log_dir, exist_ok=True)
@@ -72,6 +77,19 @@ with open(os.path.join(log_dir, "stdin"), "w", encoding="utf-8", newline="") as 
 
 with open(os.path.join(log_dir, "cwd"), "w", encoding="utf-8") as f:
     f.write(os.getcwd())
+
+with open(os.path.join(log_dir, "dispatch-env"), "w", encoding="utf-8") as f:
+    json.dump({
+        "reexec": os.environ.get("IMPLEMENT_REVIEW_DISPATCH_REEXEC"),
+        "source_dir": os.environ.get("IMPLEMENT_REVIEW_DISPATCH_SOURCE_DIR"),
+    }, f)
+
+started = os.environ.get("MOCK_CODEX_STARTED")
+if started:
+    with open(started, "w", encoding="utf-8") as f:
+        f.write("started\n")
+
+time.sleep(float(os.environ.get("MOCK_CODEX_SLEEP", "0")))
 
 sys.stdout.write(os.environ.get("MOCK_CODEX_STDOUT", "mock-codex: stdout\n"))
 sys.stderr.write(os.environ.get("MOCK_CODEX_STDERR", "mock-codex: stderr\n"))
@@ -135,11 +153,12 @@ class _DispatchContractMixin:
         prompt_file: Path,
         round_arg: str,
         expected_review_file: str,
+        script_path: Path | None = None,
     ) -> list[str]:
         if self.SHELL_KIND == "bash":
             return [
                 BASH,
-                str(DISPATCH_SH),
+                str(script_path or DISPATCH_SH),
                 "--prompt-file", str(prompt_file),
                 "--round", round_arg,
                 "--expected-review-file", expected_review_file,
@@ -149,7 +168,7 @@ class _DispatchContractMixin:
                 PS_SHELL,
                 "-NoProfile",
                 "-ExecutionPolicy", "Bypass",
-                "-File", str(DISPATCH_PS1),
+                "-File", str(script_path or DISPATCH_PS1),
                 "--prompt-file", str(prompt_file),
                 "--round", round_arg,
                 "--expected-review-file", expected_review_file,
@@ -578,6 +597,99 @@ class _DispatchContractMixin:
             self.assertNotEqual(d1, d2,
                                 "consecutive dispatches must produce unique state-dirs")
 
+    def test_reexec_uses_temp_copy_scrubs_sentinels_and_cleans_up(self) -> None:
+        with _temp_dir() as td:
+            tmpdir = Path(td)
+            codex, prompt, log_dir = self._fresh_fixture(tmpdir)
+            deployed_dir = tmpdir / "deployed"
+            deployed_dir.mkdir()
+            source_script = DISPATCH_SH if self.SHELL_KIND == "bash" else DISPATCH_PS1
+            deployed_script = deployed_dir / source_script.name
+            shutil.copy2(source_script, deployed_script)
+            if self.SHELL_KIND == "bash":
+                deployed_script.chmod(
+                    deployed_script.stat().st_mode
+                    | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+                )
+
+            started = tmpdir / "mock-started"
+            env = os.environ.copy()
+            env.pop("IMPLEMENT_REVIEW_DISPATCH_REEXEC", None)
+            env.pop("IMPLEMENT_REVIEW_DISPATCH_SOURCE_DIR", None)
+            env.update({
+                "CODEX_BIN": str(codex),
+                "MOCK_CODEX_LOG": str(log_dir),
+                "MOCK_CODEX_STARTED": str(started),
+                "MOCK_CODEX_SLEEP": "2",
+                "TMPDIR": str(tmpdir),
+                "TEMP": str(tmpdir),
+                "TMP": str(tmpdir),
+                "STALL_POLL_INTERVAL_SECONDS": "1",
+                "STALL_THRESHOLD_SECONDS": "999999",
+            })
+            proc = subprocess.Popen(
+                self._build_cmd(
+                    prompt, "1", "Review-Codex.md",
+                    script_path=deployed_script,
+                ),
+                cwd=str(tmpdir),
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            try:
+                deadline = time.monotonic() + 15
+                while time.monotonic() < deadline and not started.exists():
+                    if proc.poll() is not None:
+                        break
+                    time.sleep(0.1)
+                self.assertTrue(started.exists(), "mock reviewer did not start")
+
+                reexec_dirs = list(tmpdir.glob(
+                    "implement-review-dispatch-codex-reexec-*"
+                ))
+                self.assertEqual(
+                    len(reexec_dirs), 1,
+                    f"expected one live re-exec directory, found: {reexec_dirs}",
+                )
+                self.assertTrue(
+                    (reexec_dirs[0] / source_script.name).is_file(),
+                    "re-exec directory must contain the copied dispatcher",
+                )
+
+                deployed_script.unlink()
+                self.assertFalse(
+                    deployed_script.exists(),
+                    "the deployed script path remained held during review",
+                )
+
+                stdout, stderr = proc.communicate(timeout=20)
+                self.assertEqual(
+                    proc.returncode, 0,
+                    f"re-exec dispatch failed\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}",
+                )
+                self.assertEqual(
+                    list(tmpdir.glob("implement-review-dispatch-codex-reexec-*")),
+                    [],
+                    "the temporary dispatcher copy was not cleaned up",
+                )
+                dispatch_env = json.loads(
+                    (log_dir / "dispatch-env").read_text(encoding="utf-8")
+                )
+                self.assertEqual(
+                    dispatch_env,
+                    {"reexec": None, "source_dir": None},
+                    "re-exec sentinels must not leak into the reviewer process",
+                )
+            finally:
+                if proc.poll() is None:
+                    proc.kill()
+                proc.wait(timeout=5)
+                for stream in (proc.stdout, proc.stderr):
+                    if stream is not None:
+                        stream.close()
+
     def test_missing_prompt_file_exits_two(self) -> None:
         with _temp_dir() as td:
             tmpdir = Path(td)
@@ -653,6 +765,77 @@ class DispatchScriptsTracked(unittest.TestCase):
     def test_ps1_exists(self) -> None:
         self.assertTrue(DISPATCH_PS1.exists(),
                         f"dispatch-codex.ps1 missing: {DISPATCH_PS1}")
+
+
+class DispatchInterpreterResolutionContract(unittest.TestCase):
+    """The execution probe must preserve environment-specific launch paths."""
+
+    def test_probe_preserves_sys_executable_and_alias_safeguards(self) -> None:
+        sh = DISPATCH_SH.read_text(encoding="utf-8")
+        ps1 = DISPATCH_PS1.read_text(encoding="utf-8")
+
+        for script_name, body in (("dispatch-codex.sh", sh),
+                                  ("dispatch-codex.ps1", ps1)):
+            self.assertEqual(
+                body.count("realpath(sys.executable)"), 1,
+                f"{script_name} may canonicalize only for alias rejection",
+            )
+            self.assertIn(
+                "WindowsApps", body,
+                f"{script_name} must retain Windows Store alias rejection",
+            )
+
+        self.assertIn(
+            'print("IMPLEMENT_REVIEW_PYTHON=" + sys.executable)', sh
+        )
+        self.assertIn(
+            'case "$resolved_real" in\n'
+            '        *WindowsApps*|*windowsapps*) return 1 ;;',
+            sh,
+        )
+        self.assertIn('[ -s "$resolved" ] || return 1', sh)
+        self.assertIn(
+            '"$resolved" -I -c \'import sys; sys.exit(0)\'', sh
+        )
+
+        self.assertIn(
+            'print("IMPLEMENT_REVIEW_PYTHON="+sys.executable)', ps1
+        )
+        self.assertIn(
+            "$resolvedRealPath -match '(?i)[\\\\/]WindowsApps[\\\\/]'",
+            ps1,
+        )
+        self.assertIn("$resolvedItem.Length -le 0", ps1)
+        self.assertIn(
+            "& $resolvedPath -I -c 'import sys; sys.exit(0)'", ps1
+        )
+
+
+class DispatchReexecContract(unittest.TestCase):
+    def test_sh_reexec_copy_is_guarded_scrubbed_and_cleaned(self) -> None:
+        text = DISPATCH_SH.read_text(encoding="utf-8")
+        self.assertIn('IMPLEMENT_REVIEW_DISPATCH_REEXEC:-', text)
+        self.assertIn('IMPLEMENT_REVIEW_DISPATCH_SOURCE_DIR', text)
+        self.assertIn('implement-review-dispatch-codex-reexec-', text)
+        self.assertIn('"${BASH:-bash}" "$reexec_copy" "$@"', text)
+        self.assertIn('rm -f -- "$reexec_copy"', text)
+        self.assertIn('rmdir -- "$(dirname -- "$reexec_copy")"', text)
+        self.assertIn(
+            'unset IMPLEMENT_REVIEW_DISPATCH_REEXEC '
+            'IMPLEMENT_REVIEW_DISPATCH_SOURCE_DIR',
+            text,
+        )
+
+    def test_ps1_reexec_copy_is_guarded_scrubbed_and_cleaned(self) -> None:
+        text = DISPATCH_PS1.read_text(encoding="utf-8")
+        self.assertIn('$env:IMPLEMENT_REVIEW_DISPATCH_REEXEC', text)
+        self.assertIn('$env:IMPLEMENT_REVIEW_DISPATCH_SOURCE_DIR', text)
+        self.assertIn('implement-review-dispatch-codex-reexec-', text)
+        self.assertIn('-File $reexecCopy @args', text)
+        self.assertIn('Remove-Item -LiteralPath $reexecCopy', text)
+        self.assertIn('Remove-Item -LiteralPath $reexecDir', text)
+        self.assertIn('Remove-Item Env:IMPLEMENT_REVIEW_DISPATCH_REEXEC', text)
+        self.assertIn('Remove-Item Env:IMPLEMENT_REVIEW_DISPATCH_SOURCE_DIR', text)
 
 
 class DispatchSandboxFlagContract(unittest.TestCase):

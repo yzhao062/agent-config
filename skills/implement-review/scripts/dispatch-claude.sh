@@ -31,6 +31,10 @@
 #   CLAUDECODE                       Set to '1' by Claude Code in its Bash / PowerShell
 #                                    / hook / tmux / status-line subprocesses.
 #                                    Used as the implicit fall-through guard signal.
+#   CLAUDE_PREFLIGHT                  auto (default), force, or off. auto runs a
+#                                    no-model auth check for the official Claude
+#                                    CLI and skips opaque wrappers.
+#   CLAUDE_PREFLIGHT_TIMEOUT_SECONDS  Preflight timeout (default: 60).
 #   TMPDIR                           Temp dir for state-dir (default: /tmp)
 #
 # Stdout:
@@ -42,8 +46,51 @@
 # Exit code:
 #   Propagates claude's exit code unchanged.
 #   Returns 2 on usage errors (missing/invalid args) or self-review refusal.
+#   Returns 70 when preflight/postflight rejects an unusable review, 124 when
+#   preflight times out, and 127 when Claude is unavailable.
 
 set -u
+
+# Release the deployed path before the reviewer can follow project startup
+# instructions that refresh this skill. A command-string parent waits for the
+# copied script, removes it after the child exits, and preserves its status.
+if [ "${IMPLEMENT_REVIEW_DISPATCH_REEXEC:-}" != "1" ]; then
+    REEXEC_TMP_BASE="${TMPDIR:-/tmp}"
+    REEXEC_TMP_BASE="${REEXEC_TMP_BASE%/}"
+    REEXEC_DIR="${REEXEC_TMP_BASE}/implement-review-dispatch-claude-reexec-$$"
+    REEXEC_COPY="${REEXEC_DIR}/dispatch-claude.sh"
+
+    umask 077
+    if ! mkdir "$REEXEC_DIR"; then
+        echo "dispatch-claude: failed to create re-exec dir: $REEXEC_DIR" >&2
+        exit 2
+    fi
+    if ! cp -- "$0" "$REEXEC_COPY"; then
+        rmdir -- "$REEXEC_DIR" 2>/dev/null || true
+        echo "dispatch-claude: failed to create re-exec copy: $REEXEC_COPY" >&2
+        exit 2
+    fi
+    chmod u+x "$REEXEC_COPY" 2>/dev/null || true
+
+    export IMPLEMENT_REVIEW_DISPATCH_REEXEC=1
+    export IMPLEMENT_REVIEW_DISPATCH_SOURCE_DIR
+    IMPLEMENT_REVIEW_DISPATCH_SOURCE_DIR=$(dirname -- "$0")
+
+    exec "${BASH:-bash}" -c '
+        reexec_copy=$1
+        shift
+        "${BASH:-bash}" "$reexec_copy" "$@"
+        reexec_exit=$?
+        rm -f -- "$reexec_copy"
+        rmdir -- "$(dirname -- "$reexec_copy")" 2>/dev/null || true
+        exit "$reexec_exit"
+    ' dispatch-claude-reexec "$REEXEC_COPY" "$@"
+
+    echo "dispatch-claude: failed to launch re-exec copy: $REEXEC_COPY" >&2
+    rm -f -- "$REEXEC_COPY"
+    rmdir -- "$REEXEC_DIR" 2>/dev/null || true
+    exit 2
+fi
 
 PROMPT_FILE=""
 ROUND=""
@@ -149,21 +196,123 @@ date +%s > "$STATE_DIR/timestamp"
 # Emit STATE-DIR on stdout (first and only machine-readable line)
 printf 'STATE-DIR %s\n' "$STATE_DIR"
 
-# Launch stall-watch in background if present (shared with the Codex/Copilot backends)
-STALL_WATCH="$(dirname -- "$0")/stall-watch.sh"
-STALL_WATCH_PID=""
-if [ -x "$STALL_WATCH" ]; then
-    "$STALL_WATCH" --state-dir "$STATE_DIR" --parent-pid $$ >/dev/null 2>&1 &
-    STALL_WATCH_PID=$!
-fi
-
 # Resolve claude binary -----------------------------------------------------
 CLAUDE_BIN="${CLAUDE_BIN:-claude}"
-if command -v "$CLAUDE_BIN" >/dev/null 2>&1; then
-    CLAUDE_CMD="$CLAUDE_BIN"
+if CLAUDE_RESOLVED=$(command -v "$CLAUDE_BIN" 2>/dev/null); then
+    CLAUDE_CMD="$CLAUDE_RESOLVED"
 else
-    # Not resolvable; let the invocation surface its own error to tail.
-    CLAUDE_CMD="$CLAUDE_BIN"
+    printf '%s\n' \
+        "dispatch-claude: no runnable Claude CLI found: $CLAUDE_BIN" \
+        "Install Claude Code or set CLAUDE_BIN to a runnable executable." \
+        > "$STATE_DIR/tail"
+    cat "$STATE_DIR/tail" >&2
+    exit 127
+fi
+
+# Refuse to spend a review round when the official CLI cannot authenticate.
+# `claude auth status` does not invoke a model. API-key, gateway, and hosted-
+# provider modes use an availability check because their credentials are not
+# represented by the first-party login status. Opaque wrappers are skipped in
+# auto mode; CLAUDE_PREFLIGHT=force opts them into the auth check.
+PREFLIGHT_MODE=$(printf '%s' "${CLAUDE_PREFLIGHT:-auto}" | tr '[:upper:]' '[:lower:]')
+case "$PREFLIGHT_MODE" in
+    auto|force|off) ;;
+    *)
+        echo "dispatch-claude: CLAUDE_PREFLIGHT must be auto, force, or off (got: $PREFLIGHT_MODE)" >&2
+        exit 2 ;;
+esac
+
+OFFICIAL_CLI=0
+case "$(basename -- "$CLAUDE_CMD")" in
+    claude|claude.exe|claude.cmd) OFFICIAL_CLI=1 ;;
+esac
+RUN_PREFLIGHT=$OFFICIAL_CLI
+STRICT_CHECKS=$OFFICIAL_CLI
+if [ "$PREFLIGHT_MODE" = "force" ]; then
+    RUN_PREFLIGHT=1
+    STRICT_CHECKS=1
+elif [ "$PREFLIGHT_MODE" = "off" ]; then
+    RUN_PREFLIGHT=0
+fi
+
+PREFLIGHT_TIMEOUT="${CLAUDE_PREFLIGHT_TIMEOUT_SECONDS:-60}"
+case "$PREFLIGHT_TIMEOUT" in
+    ''|*[!0-9]*|0)
+        echo "dispatch-claude: CLAUDE_PREFLIGHT_TIMEOUT_SECONDS must be a positive integer" >&2
+        exit 2 ;;
+esac
+
+if [ "$RUN_PREFLIGHT" -eq 1 ]; then
+    PREFLIGHT_KIND=auth
+    if [ "${CLAUDE_DISPATCH_BARE:-}" = "1" ] ||
+       [ -n "${ANTHROPIC_API_KEY:-}" ] ||
+       [ -n "${ANTHROPIC_BASE_URL:-}" ] ||
+       [ -n "${CLAUDE_CODE_USE_BEDROCK:-}" ] ||
+       [ -n "${CLAUDE_CODE_USE_VERTEX:-}" ] ||
+       [ -n "${CLAUDE_CODE_USE_FOUNDRY:-}" ]; then
+        PREFLIGHT_KIND=availability
+    fi
+
+    PREFLIGHT_RAW="$STATE_DIR/preflight-raw"
+    PREFLIGHT_TAIL="$STATE_DIR/preflight-tail"
+    PREFLIGHT_TIMEOUT_MARKER="$STATE_DIR/preflight-timeout"
+    if [ "$PREFLIGHT_KIND" = "auth" ]; then
+        "$CLAUDE_CMD" auth status --json </dev/null > "$PREFLIGHT_RAW" 2>&1 &
+    else
+        "$CLAUDE_CMD" --version </dev/null > "$PREFLIGHT_RAW" 2>&1 &
+    fi
+    PREFLIGHT_PID=$!
+
+    (
+        sleep "$PREFLIGHT_TIMEOUT"
+        if kill -0 "$PREFLIGHT_PID" 2>/dev/null; then
+            : > "$PREFLIGHT_TIMEOUT_MARKER"
+            kill -TERM "$PREFLIGHT_PID" 2>/dev/null || true
+            sleep 2
+            kill -KILL "$PREFLIGHT_PID" 2>/dev/null || true
+        fi
+    ) >/dev/null 2>&1 &
+    PREFLIGHT_TIMER_PID=$!
+
+    wait "$PREFLIGHT_PID"
+    PREFLIGHT_EXIT=$?
+    kill "$PREFLIGHT_TIMER_PID" 2>/dev/null || true
+    wait "$PREFLIGHT_TIMER_PID" 2>/dev/null || true
+    if [ -f "$PREFLIGHT_TIMEOUT_MARKER" ]; then
+        PREFLIGHT_EXIT=124
+    fi
+
+    PREFLIGHT_OK=0
+    if [ "$PREFLIGHT_EXIT" -eq 0 ]; then
+        if [ "$PREFLIGHT_KIND" = "auth" ]; then
+            if grep -Eq '"loggedIn"[[:space:]]*:[[:space:]]*true' "$PREFLIGHT_RAW"; then
+                PREFLIGHT_OK=1
+            fi
+        elif [ -s "$PREFLIGHT_RAW" ]; then
+            PREFLIGHT_OK=1
+        fi
+    fi
+
+    printf 'CLAUDE_PREFLIGHT kind=%s status=%s exit=%s\n' \
+        "$PREFLIGHT_KIND" "$([ "$PREFLIGHT_OK" -eq 1 ] && printf ok || printf failed)" \
+        "$PREFLIGHT_EXIT" > "$PREFLIGHT_TAIL"
+    rm -f -- "$PREFLIGHT_RAW"
+
+    if [ "$PREFLIGHT_OK" -ne 1 ]; then
+        cp "$PREFLIGHT_TAIL" "$STATE_DIR/tail" 2>/dev/null || : > "$STATE_DIR/tail"
+        if [ "$PREFLIGHT_EXIT" -eq 124 ]; then
+            echo "dispatch-claude: preflight timed out after ${PREFLIGHT_TIMEOUT}s; refusing to spend a review round." >&2
+        elif [ "$PREFLIGHT_KIND" = "auth" ]; then
+            echo "dispatch-claude: Claude authentication is unavailable; refusing to spend a review round. Run 'claude auth login' and retry." >&2
+        else
+            echo "dispatch-claude: Claude CLI availability preflight failed; refusing to spend a review round." >&2
+        fi
+        cat "$PREFLIGHT_TAIL" >&2
+        if [ "$PREFLIGHT_EXIT" -eq 124 ]; then
+            exit 124
+        fi
+        exit 70
+    fi
 fi
 
 # Build a Claude-specific relay prompt. Claude only reads context and returns
@@ -228,6 +377,17 @@ if [ "${CLAUDE_DISPATCH_BARE:-}" = "1" ]; then
     CLAUDE_BARE_ARGS=(--bare)
 fi
 
+# Start stall-watch only for the full review. Bash redirects both output streams
+# to files as Claude runs, so tail growth is a live liveness signal.
+SCRIPT_DIR="${IMPLEMENT_REVIEW_DISPATCH_SOURCE_DIR:-$(dirname -- "$0")}"
+STALL_WATCH="${SCRIPT_DIR}/stall-watch.sh"
+STALL_WATCH_PID=""
+if [ -x "$STALL_WATCH" ]; then
+    "$STALL_WATCH" --state-dir "$STATE_DIR" --parent-pid $$ >/dev/null 2>&1 &
+    STALL_WATCH_PID=$!
+fi
+unset IMPLEMENT_REVIEW_DISPATCH_REEXEC IMPLEMENT_REVIEW_DISPATCH_SOURCE_DIR
+
 (
     cd "$VALIDATION_DIR" || exit 2
     GIT_PAGER=cat "$CLAUDE_CMD" -p \
@@ -242,22 +402,57 @@ fi
 )
 CLAUDE_EXIT=$?
 
-# Save Claude's final answer to the expected review file. Stderr stays in the
-# state-dir for diagnostics and is not copied into the review body.
-if [ "$CLAUDE_EXIT" -eq 0 ] && [ -s "$STATE_DIR/tail" ]; then
+# Claude text mode has no structured terminal-result frame. Keep publication
+# behind process success, then validate a same-directory candidate and rename it
+# into place so auto-watch can never mistake a partial file for a finished one.
+if [ "$CLAUDE_EXIT" -eq 0 ] && [ "$STRICT_CHECKS" -eq 1 ] &&
+   grep -Eqi 'not logged in|please run .?login|authentication (failed|required)|unauthorized|invalid api key|api error|stream (disconnected|closed) before completion|econn(reset|refused)|etimedout|socket hang up|connection (reset|refused|timed out)|rate limit|overloaded_error' \
+       "$STATE_DIR/tail.stderr-tmp" 2>/dev/null; then
+    printf '%s\n' 'CLAUDE-TRANSPORT-FAILURE stderr matched a terminal auth/transport pattern' \
+        > "$STATE_DIR/transport-failure"
+    echo "dispatch-claude: Claude reported an authentication or transport failure; review rejected." >&2
+    CLAUDE_EXIT=70
+fi
+
+if [ "$CLAUDE_EXIT" -eq 0 ]; then
     MARKER="<!-- Round ${ROUND} -->"
-    NORMALIZED_REVIEW="$STATE_DIR/review-normalized"
-    if grep -Fq "$MARKER" "$STATE_DIR/tail"; then
-        awk -v marker="$MARKER" 'found || $0 == marker { found = 1; print }' \
-            "$STATE_DIR/tail" > "$NORMALIZED_REVIEW"
+    REVIEW_DIR=$(dirname -- "$EXPECTED_REVIEW_FILE")
+    REVIEW_BASE=$(basename -- "$EXPECTED_REVIEW_FILE")
+    REVIEW_CANDIDATE="${REVIEW_DIR}/.${REVIEW_BASE}.dispatch-claude-$$-${NONCE}.tmp"
+    REVIEW_FAILURE=""
+
+    if [ ! -s "$STATE_DIR/tail" ]; then
+        REVIEW_FAILURE="Claude exited 0 but produced no review output"
+    elif awk -v marker="$MARKER" '
+        { sub(/\r$/, "") }
+        found || $0 == marker { found = 1; print }
+        END { if (!found) exit 1 }
+    ' "$STATE_DIR/tail" > "$REVIEW_CANDIDATE"; then
+        :
     else
         {
             printf '%s\n\n' "$MARKER"
-            cat "$STATE_DIR/tail"
-        } > "$NORMALIZED_REVIEW"
+            sed 's/\r$//' "$STATE_DIR/tail"
+        } > "$REVIEW_CANDIDATE"
     fi
-    if ! cp "$NORMALIZED_REVIEW" "$EXPECTED_REVIEW_FILE"; then
-        echo "dispatch-claude: failed to write expected review file: $EXPECTED_REVIEW_FILE" >&2
+
+    if [ -z "$REVIEW_FAILURE" ]; then
+        REVIEW_SIZE=$(wc -c < "$REVIEW_CANDIDATE" 2>/dev/null || printf '0')
+        REVIEW_FIRST_LINE=$(head -n 1 "$REVIEW_CANDIDATE" 2>/dev/null | tr -d '\r')
+        if [ "$REVIEW_FIRST_LINE" != "$MARKER" ]; then
+            REVIEW_FAILURE="normalized review lacks the current round marker"
+        elif [ "$STRICT_CHECKS" -eq 1 ] && [ "$REVIEW_SIZE" -lt 500 ]; then
+            REVIEW_FAILURE="normalized review is only ${REVIEW_SIZE} bytes"
+        fi
+    fi
+
+    if [ -n "$REVIEW_FAILURE" ]; then
+        rm -f -- "$REVIEW_CANDIDATE"
+        echo "dispatch-claude: $REVIEW_FAILURE; review rejected." >&2
+        CLAUDE_EXIT=70
+    elif ! mv -f -- "$REVIEW_CANDIDATE" "$EXPECTED_REVIEW_FILE"; then
+        rm -f -- "$REVIEW_CANDIDATE"
+        echo "dispatch-claude: failed to atomically publish expected review file: $EXPECTED_REVIEW_FILE" >&2
         CLAUDE_EXIT=2
     fi
 fi

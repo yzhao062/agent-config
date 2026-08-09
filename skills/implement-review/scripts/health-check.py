@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""health-check.py -- 9 structural Health checks + 3 Substance heuristics.
+"""health-check.py -- 10 structural Health checks + 3 Substance heuristics.
 
 Cross-platform implementation invoked by health-check.sh / health-check.ps1
 wrappers. See skills/implement-review/SKILL.md > Phase 2.0 prologue for the
@@ -15,7 +15,7 @@ Stdout schema (one machine-parseable line per check/heuristic):
 
 Exit code:
   0 if no FAIL (WARN-only is exit 0)
-  1 if any Check 1-6 FAIL or required dispatch state missing/stale
+  1 if any Check 1-6/10 FAIL or required dispatch state missing/stale
 """
 from __future__ import annotations
 
@@ -32,6 +32,7 @@ SUSPICIOUS_PHRASES = [
     r"permission denied",
     r"rate limit",
     r"unable to access",
+    r"(?:unable|not able) to (?:execute|run)",
     r"do not have access",
     r"not authenticated",
     r"authentication failed",
@@ -260,6 +261,25 @@ AXIS_3_KEYWORDS = (
     "shrink", "docs only", "document only", "script only", "no-op",
 )
 
+VERIFICATION_STATUS_RE = re.compile(
+    r"^\s*(?:#{1,6}\s+|[-*+]\s+)?(?:\*\*|__)?verification\s+status"
+    r"(?:\*\*|__)?\s*:\s*(?:\*\*|__)?\s*(VERIFIED|UNVERIFIED)\b",
+    re.IGNORECASE | re.MULTILINE,
+)
+VERDICT_LABEL_RE = re.compile(
+    r"^\s*(?:#{1,6}\s+|[-*+]\s+)?(?:\*\*|__)?"
+    r"(?:commit\s+)?verdict\b(?P<rest>.*)$",
+    re.IGNORECASE,
+)
+VERDICT_VALUE_RE = re.compile(
+    r"\b(BLOCK(?:ED)?|PASS(?:ED)?|UNVERIFIED)\b",
+    re.IGNORECASE,
+)
+VERIFICATION_NOTES_LABEL_RE = re.compile(
+    r"^(?:verification|validation)\s+notes\b[.:]?\s*(.*)$",
+    re.IGNORECASE,
+)
+
 
 def strip_code_spans(text: str) -> str:
     """Remove fenced ``` ... ``` blocks and inline `code` spans.
@@ -359,6 +379,81 @@ def is_echo_line(line: str, intrinsic_res: list, diagnostic_re) -> bool:
         # prefix. Treating it as an echo avoids re-counting source citations of
         # rate-limit / error-handling code, which is the W3 FP-reduction goal.
         return True
+    return False
+
+
+def extract_commit_verdicts(text: str) -> set[str]:
+    """Return normalized verdict values from labeled commit-verdict lines.
+
+    Review files in the field use both ``Commit verdict: BLOCKED`` and a
+    ``# Commit verdict`` heading followed by ``BLOCKED`` on the next nonempty
+    line. Restricting detection to a line-start label avoids treating a finding
+    that merely discusses the word "block" as the review's verdict.
+    """
+    verdicts: set[str] = set()
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        match = VERDICT_LABEL_RE.match(line)
+        if not match:
+            continue
+        candidates = [match.group("rest")]
+        for following in lines[index + 1:index + 5]:
+            if following.strip():
+                candidates.append(following)
+                break
+        for candidate in candidates:
+            value_match = VERDICT_VALUE_RE.search(candidate)
+            if not value_match:
+                continue
+            value = value_match.group(1).upper()
+            if value.startswith("BLOCK"):
+                verdicts.add("BLOCK")
+            elif value.startswith("PASS"):
+                verdicts.add("PASS")
+            else:
+                verdicts.add("UNVERIFIED")
+            break
+    return verdicts
+
+
+def verification_notes_explicitly_empty(text: str) -> bool:
+    """True when the Verification notes section says no command was executed."""
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        plain = re.sub(r"^\s*(?:#{1,6}\s+|[-*+]\s+)", "", line)
+        plain = plain.replace("**", "").replace("__", "").strip()
+        label = VERIFICATION_NOTES_LABEL_RE.match(plain)
+        if not label:
+            continue
+
+        inline_notes = label.group(1).strip().replace("**", "").replace("__", "")
+        if re.match(r"^(?:none|n/?a)\s*[.!]?\s*$", inline_notes, re.IGNORECASE):
+            return True
+        block_lines = [inline_notes]
+        started = bool(block_lines[0])
+        for following in lines[index + 1:index + 21]:
+            stripped = following.strip()
+            if re.match(r"^#{1,6}\s+", stripped):
+                break
+            if not stripped:
+                if started:
+                    break
+                continue
+            started = True
+            block_lines.append(stripped)
+
+        block = " ".join(part for part in block_lines if part).strip()
+        block = block.replace("**", "").replace("__", "")
+        if re.match(r"^(?:none|n/?a)\s*[.!]?\s*$", block, re.IGNORECASE):
+            return True
+        if re.search(
+            r"\b(?:no (?:shell )?commands? or (?:project )?tests? were run|"
+            r"no commands? (?:were )?(?:run|executed)|"
+            r"nothing was (?:run|executed|verified))\b",
+            block,
+            re.IGNORECASE,
+        ):
+            return True
     return False
 
 
@@ -598,6 +693,52 @@ def main(argv: list[str] | None = None) -> int:
         emit("WARN", "check-9", str(stall_count), "stall-periods")
     else:
         emit("PASS", "check-9", "no-stall-warning")
+
+    # ----- Check 10: a verdict must carry machine-readable verification -----
+    # The dispatcher requires one standalone Verification status marker. This
+    # turns the previously prose-only "I could not run anything" degradation
+    # into a hard health-check failure while leaving non-verdict review formats
+    # backward compatible.
+    verification_statuses = {
+        match.upper() for match in VERIFICATION_STATUS_RE.findall(review_no_code)
+    }
+    verdicts = extract_commit_verdicts(review_no_code)
+    check10_detail = None
+    if len(verification_statuses) > 1:
+        check10_detail = "conflicting-verification-statuses=" + ",".join(
+            sorted(verification_statuses)
+        )
+    elif len(verdicts) > 1:
+        check10_detail = "conflicting-verdicts=" + ",".join(sorted(verdicts))
+    else:
+        status = next(iter(verification_statuses), None)
+        verdict = next(iter(verdicts), None)
+        if status == "UNVERIFIED":
+            check10_detail = f"verdict={verdict or 'NONE'} verification=UNVERIFIED"
+        elif verdict == "UNVERIFIED":
+            check10_detail = f"verdict=UNVERIFIED verification={status or 'MISSING'}"
+        elif verdict in {"PASS", "BLOCK"} and status != "VERIFIED":
+            check10_detail = f"verdict={verdict} verification=MISSING"
+        elif verification_notes_explicitly_empty(review_no_code):
+            check10_detail = (
+                f"verdict={verdict or 'NONE'} "
+                f"verification={status or 'MISSING'} "
+                "but-notes-report-none"
+            )
+
+    if check10_detail is not None:
+        emit("FAIL", "check-10", check10_detail)
+        any_fail = True
+    else:
+        status = next(iter(verification_statuses), None)
+        verdict = next(iter(verdicts), None)
+        if status == "VERIFIED":
+            emit(
+                "PASS", "check-10",
+                f"verdict={verdict or 'NONE'}", "verification=VERIFIED",
+            )
+        else:
+            emit("PASS", "check-10", "no-commit-verdict")
 
     # ----- Substance 1: time-to-completion floor -----
     prompt_chars = len(prompt_text)

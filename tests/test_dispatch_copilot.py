@@ -38,8 +38,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS_DIR = ROOT / "skills" / "implement-review" / "scripts"
-DISPATCH_SH = SCRIPTS_DIR / "dispatch-copilot.sh"
-DISPATCH_PS1 = SCRIPTS_DIR / "dispatch-copilot.ps1"
+DISPATCH_SH = Path(os.environ.get(
+    "TEST_DISPATCH_COPILOT_SH", SCRIPTS_DIR / "dispatch-copilot.sh"
+))
+DISPATCH_PS1 = Path(os.environ.get(
+    "TEST_DISPATCH_COPILOT_PS1", SCRIPTS_DIR / "dispatch-copilot.ps1"
+))
 
 
 def _temp_dir():
@@ -70,20 +74,57 @@ Behavior driven by env vars (all optional):
 import json
 import os
 import sys
+import time
 
 log_dir = os.environ.get("MOCK_COPILOT_LOG", os.getcwd())
 os.makedirs(log_dir, exist_ok=True)
 
-with open(os.path.join(log_dir, "args"), "w", encoding="utf-8") as f:
-    f.write(json.dumps(sys.argv[1:]))
+args = sys.argv[1:]
+prompt_value = ""
+if "-p" in args and args.index("-p") + 1 < len(args):
+    prompt_value = args[args.index("-p") + 1]
+is_preflight = bool(prompt_value and not prompt_value.startswith("@"))
+args_name = "preflight-args" if is_preflight else "args"
+
+with open(os.path.join(log_dir, args_name), "w", encoding="utf-8") as f:
+    f.write(json.dumps(args))
 
 with open(os.path.join(log_dir, "cwd"), "w", encoding="utf-8") as f:
     f.write(os.getcwd())
 
-sys.stdout.write(os.environ.get("MOCK_COPILOT_STDOUT", "mock-copilot: stdout\n"))
-sys.stderr.write(os.environ.get("MOCK_COPILOT_STDERR", "mock-copilot: stderr\n"))
+if not is_preflight:
+    review_path = os.environ.get("MOCK_COPILOT_REVIEW_PATH")
+    review_mode = os.environ.get("MOCK_COPILOT_REVIEW_MODE", "missing")
+    round_number = os.environ.get("MOCK_COPILOT_ROUND", "1")
+    if review_path and review_mode != "missing":
+        if review_mode == "small":
+            review_text = f"<!-- Round {round_number} -->\nsmall\n"
+        elif review_mode == "wrong-marker":
+            review_text = "<!-- Round 999 -->\n" + ("x" * 600) + "\n"
+        else:
+            review_text = f"<!-- Round {round_number} -->\n" + ("x" * 600) + "\n"
+        with open(review_path, "w", encoding="utf-8", newline="") as f:
+            f.write(review_text)
+        stamp = time.time() - 30 if review_mode == "stale" else time.time() + 2
+        os.utime(review_path, (stamp, stamp))
 
-sys.exit(int(os.environ.get("MOCK_COPILOT_EXIT", "0")))
+if is_preflight:
+    stdout = os.environ.get(
+        "MOCK_COPILOT_PREFLIGHT_STDOUT",
+        '{"type":"tool.execution_complete","success":true}\n'
+        '{"type":"assistant.message","content":"COPILOT_PREFLIGHT_OK"}\n',
+    )
+    stderr = os.environ.get("MOCK_COPILOT_PREFLIGHT_STDERR", "")
+    exit_code = int(os.environ.get("MOCK_COPILOT_PREFLIGHT_EXIT", "0"))
+else:
+    stdout = os.environ.get("MOCK_COPILOT_STDOUT", "mock-copilot: stdout\n")
+    stderr = os.environ.get("MOCK_COPILOT_STDERR", "mock-copilot: stderr\n")
+    exit_code = int(os.environ.get("MOCK_COPILOT_EXIT", "0"))
+
+sys.stdout.write(stdout)
+sys.stderr.write(stderr)
+
+sys.exit(exit_code)
 '''
 
 
@@ -221,6 +262,21 @@ class _DispatchContractMixin:
 
     def _read_args(self, log_dir: Path) -> list[str]:
         return json.loads((log_dir / "args").read_text(encoding="utf-8"))
+
+    def _strict_env(
+        self,
+        tmpdir: Path,
+        review_mode: str = "valid",
+        round_number: str = "1",
+    ) -> dict[str, str]:
+        return {
+            "COPILOT_PREFLIGHT": "force",
+            "MOCK_COPILOT_REVIEW_PATH": str(
+                tmpdir / "Review-GitHub-Copilot.md"
+            ),
+            "MOCK_COPILOT_REVIEW_MODE": review_mode,
+            "MOCK_COPILOT_ROUND": round_number,
+        }
 
     # --- contract assertions ---------------------------------------------
 
@@ -392,6 +448,127 @@ class _DispatchContractMixin:
                           f"copilot must run non-interactively: {args}")
             self.assertNotIn("--sandbox", args,
                              f"--sandbox is Codex-only; must not reach copilot: {args}")
+
+    def test_copilot_invoked_with_live_json_stream_and_no_auto_update(self) -> None:
+        with _temp_dir() as td:
+            tmpdir = Path(td)
+            copilot, prompt, log_dir = self._fresh_fixture(tmpdir)
+            result = self._run_dispatch(
+                tmpdir, prompt, "1", "Review-GitHub-Copilot.md", copilot, log_dir
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            args = self._read_args(log_dir)
+            self.assertIn("--no-auto-update", args)
+            self.assertIn("--no-ask-user", args)
+            self.assertIn("--no-color", args)
+            self.assertIn(
+                ("--stream", "on"), list(zip(args, args[1:])),
+                f"Copilot stream must remain live: {args}",
+            )
+            self.assertIn(
+                ("--output-format", "json"), list(zip(args, args[1:])),
+                f"Copilot output must remain machine-readable JSON: {args}",
+            )
+            self.assertNotIn("--silent", args)
+
+    def test_live_auth_preflight_requires_marker_before_full_review(self) -> None:
+        with _temp_dir() as td:
+            tmpdir = Path(td)
+            copilot, prompt, log_dir = self._fresh_fixture(tmpdir)
+            env = self._strict_env(tmpdir)
+            env["MOCK_COPILOT_PREFLIGHT_STDOUT"] = (
+                "Authentication token found but could not be validated\n"
+            )
+            result = self._run_dispatch(
+                tmpdir, prompt, "1", "Review-GitHub-Copilot.md", copilot, log_dir,
+                extra_env=env,
+            )
+            self.assertEqual(
+                result.returncode, 70,
+                f"missing COPILOT_PREFLIGHT_OK must reject dispatch: {result.stderr}",
+            )
+            self.assertTrue((log_dir / "preflight-args").is_file())
+            self.assertFalse(
+                (log_dir / "args").exists(),
+                "full review ran despite failed authentication preflight",
+            )
+            self.assertFalse(
+                (tmpdir / "Review-GitHub-Copilot.md").exists(),
+                "failed preflight spent a full review invocation",
+            )
+            self.assertIn("could not validate Copilot authentication", result.stderr)
+
+    def test_live_auth_preflight_success_runs_full_review(self) -> None:
+        with _temp_dir() as td:
+            tmpdir = Path(td)
+            copilot, prompt, log_dir = self._fresh_fixture(tmpdir)
+            result = self._run_dispatch(
+                tmpdir, prompt, "1", "Review-GitHub-Copilot.md", copilot, log_dir,
+                extra_env=self._strict_env(tmpdir),
+            )
+            self.assertEqual(
+                result.returncode, 0,
+                f"valid preflight and review failed\nSTDERR:\n{result.stderr}",
+            )
+            preflight_args = json.loads(
+                (log_dir / "preflight-args").read_text(encoding="utf-8")
+            )
+            full_args = self._read_args(log_dir)
+            for args in (preflight_args, full_args):
+                self.assertIn("--no-auto-update", args)
+                self.assertIn("--no-ask-user", args)
+                self.assertIn("--no-color", args)
+                self.assertIn(("--stream", "on"), list(zip(args, args[1:])))
+                self.assertIn(
+                    ("--output-format", "json"), list(zip(args, args[1:]))
+                )
+            self.assertIn("--no-custom-instructions", preflight_args)
+            self.assertIn("--disable-builtin-mcps", preflight_args)
+            self.assertTrue((tmpdir / "Review-GitHub-Copilot.md").is_file())
+
+    def test_postflight_rejects_tool_permission_denial(self) -> None:
+        with _temp_dir() as td:
+            tmpdir = Path(td)
+            copilot, prompt, log_dir = self._fresh_fixture(tmpdir)
+            env = self._strict_env(tmpdir)
+            env["MOCK_COPILOT_STDOUT"] = (
+                '{"type":"tool.execution_complete","success":false,'
+                '"error":"permission denied"}\n'
+            )
+            result = self._run_dispatch(
+                tmpdir, prompt, "1", "Review-GitHub-Copilot.md", copilot, log_dir,
+                extra_env=env,
+            )
+            self.assertEqual(result.returncode, 70)
+            self.assertIn("review tool was denied", result.stderr)
+            self.assertGreaterEqual(
+                (tmpdir / "Review-GitHub-Copilot.md").stat().st_size, 500,
+                "permission denial must win even when a plausible review exists",
+            )
+
+    def test_postflight_validates_review_size_marker_and_freshness(self) -> None:
+        cases = (
+            ("valid", 0, None),
+            ("missing", 70, "was not created"),
+            ("small", 70, "is only"),
+            ("wrong-marker", 70, "lacks the current round marker"),
+            ("stale", 70, "was not refreshed by this dispatch"),
+        )
+        for mode, expected_exit, diagnostic in cases:
+            with self.subTest(mode=mode), _temp_dir() as td:
+                tmpdir = Path(td)
+                copilot, prompt, log_dir = self._fresh_fixture(tmpdir)
+                result = self._run_dispatch(
+                    tmpdir, prompt, "1", "Review-GitHub-Copilot.md",
+                    copilot, log_dir,
+                    extra_env=self._strict_env(tmpdir, review_mode=mode),
+                )
+                self.assertEqual(
+                    result.returncode, expected_exit,
+                    f"postflight mode {mode!r}\nSTDERR:\n{result.stderr}",
+                )
+                if diagnostic:
+                    self.assertIn(diagnostic, result.stderr)
 
     def test_copilot_invoked_with_working_dir(self) -> None:
         """`-C <repo>` must point copilot at the cwd (repo root)."""
@@ -584,6 +761,34 @@ class DispatchCopilotFlagContract(unittest.TestCase):
             self.assertIn("shell(git:*)", text)
             self.assertIn("--add-dir", text)
             self.assertIn("--no-ask-user", text)
+
+    def test_live_json_stream_disables_hot_auto_update(self) -> None:
+        for text in self._both():
+            normalized = text.replace("\\\n", " ")
+            invocation_lines = [
+                line for line in normalized.splitlines() if "--no-ask-user" in line
+            ]
+            self.assertEqual(
+                len(invocation_lines), 2,
+                "preflight and full review must each be non-interactive",
+            )
+            for line in invocation_lines:
+                self.assertIn("--no-auto-update", line)
+                self.assertIn("--stream on", line)
+                self.assertIn("--output-format json", line)
+                self.assertIn("--no-color", line)
+            self.assertNotIn("--silent", text)
+            self.assertNotIn("--stream off", text)
+
+    def test_auth_preflight_and_review_postflight_contract_present(self) -> None:
+        for text in self._both():
+            self.assertIn("COPILOT_PREFLIGHT_OK", text)
+            self.assertIn("COPILOT_PREFLIGHT_TIMEOUT_SECONDS", text)
+            self.assertIn("permission", text.lower())
+            self.assertIn("500", text)
+            self.assertIn("Round", text)
+            self.assertRegex(text, r"(?i)(mtime|LastWriteTimeUtc)")
+            self.assertIn("70", text)
 
     def test_copilot_stays_offline(self) -> None:
         """The Copilot fallback backend has no web access: URL permission is

@@ -6,8 +6,10 @@ and STALL_POLL_INTERVAL_SECONDS=1 so tests complete in seconds.
 """
 from __future__ import annotations
 
+import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -18,8 +20,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS_DIR = ROOT / "skills" / "implement-review" / "scripts"
-STALL_SH = SCRIPTS_DIR / "stall-watch.sh"
-STALL_PS1 = SCRIPTS_DIR / "stall-watch.ps1"
+STALL_SH = Path(os.environ.get(
+    "TEST_STALL_WATCH_SH", SCRIPTS_DIR / "stall-watch.sh"
+))
+STALL_PS1 = Path(os.environ.get(
+    "TEST_STALL_WATCH_PS1", SCRIPTS_DIR / "stall-watch.ps1"
+))
 
 BASH = shutil.which("bash")
 PS_SHELL = shutil.which("pwsh") or shutil.which("powershell")
@@ -49,6 +55,116 @@ def _safe_kill(proc: subprocess.Popen | None) -> None:
                 stream.close()
             except Exception:
                 pass
+
+
+_GRANDCHILD_CODE = "import time; time.sleep(120)"
+_WORKER_CODE = r"""
+import pathlib
+import subprocess
+import sys
+import time
+
+state_dir = pathlib.Path(sys.argv[1])
+grandchild = subprocess.Popen([sys.executable, "-c", sys.argv[2]])
+(state_dir / "grandchild-pid").write_text(str(grandchild.pid), encoding="utf-8")
+while True:
+    grandchild.poll()
+    time.sleep(0.1)
+"""
+_PARENT_CODE = r"""
+import pathlib
+import subprocess
+import sys
+import time
+
+state_dir = pathlib.Path(sys.argv[1])
+worker = subprocess.Popen([
+    sys.executable, "-c", sys.argv[2], str(state_dir), sys.argv[3]
+])
+(state_dir / "worker-pid").write_text(str(worker.pid), encoding="utf-8")
+while True:
+    worker.poll()
+    time.sleep(0.1)
+"""
+
+
+def _wait_for(predicate, message: str, timeout: float = 12.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.1)
+    raise AssertionError(message)
+
+
+def _spawn_worker_tree(state_dir: Path) -> tuple[subprocess.Popen, int, int]:
+    parent = subprocess.Popen(
+        [
+            sys.executable, "-c", _PARENT_CODE, str(state_dir),
+            _WORKER_CODE, _GRANDCHILD_CODE,
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        _wait_for(
+            lambda: (state_dir / "worker-pid").exists()
+            and (state_dir / "grandchild-pid").exists(),
+            "worker tree did not publish its process IDs",
+        )
+        worker_pid = int((state_dir / "worker-pid").read_text(encoding="utf-8"))
+        grandchild_pid = int(
+            (state_dir / "grandchild-pid").read_text(encoding="utf-8")
+        )
+        return parent, worker_pid, grandchild_pid
+    except Exception:
+        _safe_kill(parent)
+        raise
+
+
+def _pid_alive(pid: int) -> bool:
+    if sys.platform.startswith("win"):
+        import ctypes
+
+        synchronize = 0x00100000
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        handle = kernel32.OpenProcess(synchronize, False, pid)
+        if not handle:
+            return False
+        try:
+            return kernel32.WaitForSingleObject(handle, 0) == 258
+        finally:
+            kernel32.CloseHandle(handle)
+
+    try:
+        os.kill(pid, 0)
+    except (ProcessLookupError, PermissionError):
+        return False
+    proc_stat = Path(f"/proc/{pid}/stat")
+    if proc_stat.exists():
+        try:
+            return proc_stat.read_text(encoding="utf-8").split()[2] != "Z"
+        except (OSError, IndexError):
+            pass
+    return True
+
+
+def _safe_kill_pid(pid: int | None) -> None:
+    if not pid or not _pid_alive(pid):
+        return
+    if sys.platform.startswith("win"):
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        return
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
 
 
 class _StallContractMixin:
@@ -149,32 +265,180 @@ class _StallContractMixin:
                 _safe_kill(watch)
                 _safe_kill(parent)
 
-    def test_never_kills_other_processes(self) -> None:
-        """stall-watch must never kill any process under any circumstance."""
+    def test_silence_and_midstream_error_preserve_processes_then_terminal_error_reaps(self) -> None:
+        """Only a terminal stream-death suffix reaps the captured worker tree."""
         with tempfile.TemporaryDirectory() as td:
             state_dir = Path(td)
-            (state_dir / "tail").write_text("x\n", encoding="utf-8")
+            tail = state_dir / "tail"
+            tail.write_text("initial progress\n", encoding="utf-8")
 
-            parent = _spawn_long_running()
-            codex_mimic = _spawn_long_running()
+            parent = None
+            worker_pid = None
+            grandchild_pid = None
+            unrelated = _spawn_long_running()
             watch = None
             try:
+                parent, worker_pid, grandchild_pid = _spawn_worker_tree(state_dir)
                 watch = self._spawn_watch(state_dir, parent.pid,
-                                          threshold=2, interval=1)
-                # Run through several stall windows so it has many opportunities
-                time.sleep(6)
-                self.assertIsNone(
-                    parent.poll(),
-                    "parent must still be alive -- stall-watch must NEVER kill its parent",
+                                          threshold=1, interval=1)
+                worker_roots = state_dir / "worker-roots"
+                _wait_for(
+                    lambda: worker_roots.exists()
+                    and str(worker_pid) in worker_roots.read_text(encoding="utf-8"),
+                    "stall-watch did not capture the worker root",
                 )
-                self.assertIsNone(
-                    codex_mimic.poll(),
-                    "codex-mimic must still be alive -- stall-watch must NEVER kill any process",
+                _wait_for(
+                    lambda: (state_dir / "stall-warning").exists(),
+                    "silence threshold did not produce stall-warning",
+                )
+
+                for pid, label in (
+                    (parent.pid, "dispatcher"),
+                    (worker_pid, "captured worker"),
+                    (grandchild_pid, "captured grandchild"),
+                    (unrelated.pid, "unrelated process"),
+                ):
+                    self.assertTrue(_pid_alive(pid), f"silence killed {label}")
+                self.assertFalse(
+                    (state_dir / "reap-reason").exists(),
+                    "silence must never invoke worker reaping",
+                )
+
+                error_line = (
+                    "ERROR: stream disconnected before completion: "
+                    "https://chatgpt.com/backend-api/codex/responses/test-response"
+                )
+                middle = [error_line, "tokens used", "123"]
+                middle.extend(f'{{"type":"progress","step":{i}}}' for i in range(6))
+                middle.extend(["tokens used", "456"])
+                with tail.open("a", encoding="utf-8") as stream:
+                    stream.write("\n".join(middle) + "\n")
+                time.sleep(2.5)
+
+                self.assertFalse(
+                    (state_dir / "stream-death").exists(),
+                    "the same disconnect text mid-transcript must not match",
+                )
+                self.assertTrue(_pid_alive(worker_pid),
+                                "mid-transcript error reaped the worker")
+                self.assertTrue(_pid_alive(unrelated.pid),
+                                "mid-transcript error killed an unrelated process")
+
+                with tail.open("a", encoding="utf-8") as stream:
+                    stream.write(f"{error_line}\ntokens used\n1,234\n")
+                _wait_for(
+                    lambda: (state_dir / "stream-death").exists(),
+                    "terminal stream-death suffix was not detected",
+                )
+                _wait_for(
+                    lambda: not _pid_alive(worker_pid)
+                    and not _pid_alive(grandchild_pid),
+                    "stream-death did not reap the captured worker tree",
+                )
+
+                marker = (state_dir / "stream-death").read_text(encoding="utf-8")
+                self.assertRegex(
+                    marker,
+                    r"^STREAM-DEATH \S+ codex-response-stream-disconnected$",
+                )
+                self.assertEqual(
+                    (state_dir / "reap-reason").read_text(encoding="utf-8").strip(),
+                    "stream-death",
+                )
+                self.assertIsNone(parent.poll(),
+                                  "stream-death must not kill the dispatcher")
+                self.assertIsNone(unrelated.poll(),
+                                  "stream-death killed an unrelated process")
+            finally:
+                _safe_kill(watch)
+                _safe_kill(parent)
+                _safe_kill(unrelated)
+                _safe_kill_pid(worker_pid)
+                _safe_kill_pid(grandchild_pid)
+
+    def test_stream_death_suffix_allows_two_filler_lines(self) -> None:
+        """Both implementations inspect three slots before the trailer."""
+        with tempfile.TemporaryDirectory() as td:
+            state_dir = Path(td)
+            error_line = (
+                "ERROR: stream disconnected before completion: "
+                "https://chatgpt.com/backend-api/codex/responses/test-response"
+            )
+            (state_dir / "tail").write_text(
+                "initial progress\n"
+                f"{error_line}\n"
+                '{"type":"progress","step":1}\n'
+                '{"type":"progress","step":2}\n'
+                "tokens used\n"
+                "1,234\n",
+                encoding="utf-8",
+            )
+
+            parent = _spawn_long_running()
+            watch = None
+            try:
+                watch = self._spawn_watch(
+                    state_dir, parent.pid, threshold=999, interval=1
+                )
+                _wait_for(
+                    lambda: (state_dir / "stream-death").exists(),
+                    "two-filler terminal stream-death suffix was not detected",
+                )
+                marker = (state_dir / "stream-death").read_text(
+                    encoding="utf-8"
+                )
+                self.assertRegex(
+                    marker,
+                    r"^STREAM-DEATH \S+ codex-response-stream-disconnected$",
                 )
             finally:
                 _safe_kill(watch)
                 _safe_kill(parent)
-                _safe_kill(codex_mimic)
+
+    def test_parent_exit_reaps_only_the_captured_worker_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            state_dir = Path(td)
+            (state_dir / "tail").write_text("active\n", encoding="utf-8")
+
+            parent = None
+            worker_pid = None
+            grandchild_pid = None
+            unrelated = _spawn_long_running()
+            watch = None
+            try:
+                parent, worker_pid, grandchild_pid = _spawn_worker_tree(state_dir)
+                watch = self._spawn_watch(state_dir, parent.pid,
+                                          threshold=999, interval=1)
+                worker_roots = state_dir / "worker-roots"
+                _wait_for(
+                    lambda: worker_roots.exists()
+                    and str(worker_pid) in worker_roots.read_text(encoding="utf-8"),
+                    "stall-watch did not capture the worker before parent exit",
+                )
+
+                parent.kill()
+                parent.wait(timeout=5)
+                watch.wait(timeout=12)
+                self.assertEqual(watch.returncode, 0)
+                _wait_for(
+                    lambda: not _pid_alive(worker_pid)
+                    and not _pid_alive(grandchild_pid),
+                    "parent-exited did not reap the captured worker tree",
+                )
+                self.assertEqual(
+                    (state_dir / "reap-reason").read_text(encoding="utf-8").strip(),
+                    "parent-exited",
+                )
+                self.assertIsNone(
+                    unrelated.poll(),
+                    "parent-exited reaping killed an unrelated process",
+                )
+            finally:
+                _safe_kill(watch)
+                _safe_kill(parent)
+                _safe_kill(unrelated)
+                _safe_kill_pid(worker_pid)
+                _safe_kill_pid(grandchild_pid)
 
     def test_growth_resets_stall_period_and_relogs(self) -> None:
         """A second stall period after a growth burst is logged separately."""
@@ -270,15 +534,53 @@ class StallScriptsTracked(unittest.TestCase):
 
 
 class StallSafetyInvariants(unittest.TestCase):
-    """Source-level checks that stall-watch never kills any process.
+    """Source checks for reason-bounded, identity-checked worker reaping."""
 
-    The SKILL.md contract is absolute: 'stall-watch must never kill codex
-    exec under any circumstance.' Verify this at the source level so a
-    later edit can't silently break the invariant.
-    """
+    @staticmethod
+    def _shell_function(body: str, name: str) -> str:
+        match = re.search(
+            rf"(?ms)^{re.escape(name)}\(\) \{{\n(.*?)^\}}",
+            body,
+        )
+        if not match:
+            raise AssertionError(f"missing shell function: {name}")
+        return match.group(1)
 
-    def test_sh_kill_invocations_are_signal_zero_only(self) -> None:
+    @staticmethod
+    def _powershell_function(body: str, name: str) -> str:
+        match = re.search(
+            rf"(?ms)^function {re.escape(name)} \{{\n(.*?)^\}}",
+            body,
+        )
+        if not match:
+            raise AssertionError(f"missing PowerShell function: {name}")
+        return match.group(1)
+
+    def test_sh_reaping_is_reason_bounded_tree_scoped_and_identity_checked(self) -> None:
         body = STALL_SH.read_text(encoding="utf-8")
+        reap_body = self._shell_function(body, "_reap_worker_roots")
+
+        call_reasons = re.findall(
+            r"(?m)^\s*_reap_worker_roots\s+([^\s#]+)", body
+        )
+        self.assertCountEqual(
+            call_reasons,
+            ["stream-death", "parent-exited"],
+            "only stream-death and parent-exited may invoke worker reaping",
+        )
+        self.assertIn(
+            'if _same_process "$root_pid" "$root_start"; then', reap_body,
+            "captured worker roots must be checked against recorded start identity",
+        )
+        self.assertIn('_collect_tree "$root_pid"', reap_body)
+        self.assertIn(
+            '_same_process "$target_pid" "$target_start" || continue',
+            reap_body,
+            "each tree member must be identity-checked immediately before a signal",
+        )
+        self.assertIn('tail -n 16 "$TAIL_FILE"', body)
+
+        destructive = []
         for line_num, line in enumerate(body.splitlines(), 1):
             stripped = line.lstrip()
             if stripped.startswith("#"):
@@ -286,29 +588,53 @@ class StallSafetyInvariants(unittest.TestCase):
             for match in re.finditer(r"\bkill\b\s+(\S+)", line):
                 first_arg = match.group(1).strip("\"'")
                 if first_arg != "-0":
-                    self.fail(
-                        f"stall-watch.sh line {line_num}: "
-                        f"kill invocation must use -0 (liveness only), "
-                        f"got: {line.strip()!r}"
-                    )
+                    destructive.append((line_num, line.strip()))
+        self.assertEqual(
+            [line for _, line in destructive],
+            [
+                'kill -TERM "$target_pid" 2>/dev/null || true',
+                'kill -KILL "$target_pid" 2>/dev/null || true',
+            ],
+            "destructive signals must target only identity-checked tree members",
+        )
         for forbidden in ("pkill", "killall"):
             self.assertNotIn(
                 forbidden, body,
-                f"stall-watch.sh must not contain {forbidden!r}",
+                f"stall-watch.sh must not use unbounded {forbidden!r}",
             )
 
-    def test_ps1_has_no_process_killing_calls(self) -> None:
+    def test_ps1_reaping_is_reason_bounded_tree_scoped_and_identity_checked(self) -> None:
         body = STALL_PS1.read_text(encoding="utf-8")
+        reap_body = self._powershell_function(body, "Invoke-WorkerReap")
+
+        call_reasons = re.findall(
+            r"(?m)^\s*Invoke-WorkerReap\s+'([^']+)'", body
+        )
+        self.assertCountEqual(
+            call_reasons,
+            ["stream-death", "parent-exited"],
+            "only stream-death and parent-exited may invoke worker reaping",
+        )
+        self.assertIn(
+            "Test-SameWorkerProcess ([int]$_.Key) ([int64]$_.Value)",
+            reap_body,
+            "worker PID must match its captured creation identity",
+        )
+        self.assertIn("taskkill /PID %1 /T /F", reap_body)
+        self.assertIn("$reapCmd ([int]$victim.Key)", reap_body)
+        self.assertIn("Get-Content -LiteralPath $tailPath -Tail 16", body)
+        self.assertEqual(
+            body.count("taskkill /PID"), 1,
+            "taskkill must appear only in the bounded worker-reap helper",
+        )
         for forbidden in (
             "Stop-Process",
             ".Kill(",
             "TerminateProcess",
-            "taskkill",
         ):
             self.assertNotIn(
                 forbidden, body,
-                f"stall-watch.ps1 must not contain {forbidden!r} "
-                f"(never kills processes)",
+                f"stall-watch.ps1 must not contain unbounded {forbidden!r}",
             )
 
 

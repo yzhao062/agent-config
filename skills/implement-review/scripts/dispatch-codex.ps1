@@ -9,6 +9,7 @@
 #
 # Env:
 #   CODEX_BIN                      Codex binary name or path (default: codex)
+#   ANYWHERE_AGENTS_PYTHON         Explicit Python interpreter override
 #   TMPDIR / TEMP / TMP            Temp dir for state-dir (Windows uses TEMP by default)
 #
 # Stdout:
@@ -22,6 +23,50 @@
 #   Returns 2 on usage errors (missing/invalid args).
 
 $ErrorActionPreference = 'Stop'
+
+# Release the deployed path before the review child can invoke bootstrap.
+# PowerShell closes parsed script files, so the parent can wait for the copy,
+# remove it deterministically, and propagate the copied script's exit status.
+if ($env:IMPLEMENT_REVIEW_DISPATCH_REEXEC -ne '1') {
+    $reexecTmpBase = $env:TMPDIR
+    if (-not $reexecTmpBase) { $reexecTmpBase = $env:TEMP }
+    if (-not $reexecTmpBase) { $reexecTmpBase = $env:TMP }
+    if (-not $reexecTmpBase) { $reexecTmpBase = [System.IO.Path]::GetTempPath() }
+    $reexecTmpBase = $reexecTmpBase.TrimEnd('\', '/')
+    $reexecDir = Join-Path $reexecTmpBase "implement-review-dispatch-codex-reexec-$PID"
+    $reexecCopy = Join-Path $reexecDir 'dispatch-codex.ps1'
+
+    try {
+        New-Item -ItemType Directory -Path $reexecDir | Out-Null
+        Copy-Item -LiteralPath $PSCommandPath -Destination $reexecCopy
+    } catch {
+        [Console]::Error.WriteLine("dispatch-codex: failed to create re-exec copy: $reexecCopy")
+        if (Test-Path -LiteralPath $reexecCopy -PathType Leaf) {
+            Remove-Item -LiteralPath $reexecCopy -Force -ErrorAction SilentlyContinue
+        }
+        Remove-Item -LiteralPath $reexecDir -Force -ErrorAction SilentlyContinue
+        exit 2
+    }
+
+    $env:IMPLEMENT_REVIEW_DISPATCH_REEXEC = '1'
+    $env:IMPLEMENT_REVIEW_DISPATCH_SOURCE_DIR = $PSScriptRoot
+    $reexecHost = if ($PSVersionTable.PSEdition -eq 'Core') {
+        Join-Path $PSHOME 'pwsh.exe'
+    } else {
+        Join-Path $PSHOME 'powershell.exe'
+    }
+    $reexecExit = 2
+    try {
+        & $reexecHost -NoProfile -ExecutionPolicy Bypass -File $reexecCopy @args
+        $reexecExit = $LASTEXITCODE
+    } catch {
+        [Console]::Error.WriteLine("dispatch-codex: failed to launch re-exec copy: $reexecCopy")
+    } finally {
+        Remove-Item -LiteralPath $reexecCopy -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $reexecDir -Force -ErrorAction SilentlyContinue
+    }
+    exit $reexecExit
+}
 
 # Parse args manually to support --foo style (cross-platform parity with .sh)
 $PromptFile = $null
@@ -61,6 +106,205 @@ if (-not (Test-Path -LiteralPath $PromptFile -PathType Leaf)) {
 
 if (-not ($Round -match '^\d+$')) {
     [Console]::Error.WriteLine("dispatch-codex: --round must be a positive integer, got: $Round")
+    exit 2
+}
+
+# Resolve a Python interpreter for the reviewer before spending a Codex round.
+# App Execution Aliases are discoverable zero-length reparse points, so path
+# lookup alone is insufficient. Each candidate must execute isolated code,
+# report an absolute sys.executable, and pass a second direct execution probe.
+function Resolve-ProbedPython {
+    param(
+        [Parameter(Mandatory = $true)][string]$Exe,
+        [string[]]$PrefixArgs = @()
+    )
+
+    if (-not $Exe -or $Exe -match '(?i)[\\/]WindowsApps[\\/]') { return $null }
+
+    $launchPath = $Exe
+    if (-not (Test-Path -LiteralPath $launchPath -PathType Leaf)) {
+        $command = Get-Command -Name $launchPath -CommandType Application -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if (-not $command -or -not $command.Source) { return $null }
+        $launchPath = [string]$command.Source
+    }
+    if ($launchPath -match '(?i)[\\/]WindowsApps[\\/]') { return $null }
+
+    try {
+        $probeArgs = @($PrefixArgs) + @(
+            '-I', '-c',
+            'import os,sys;print("IMPLEMENT_REVIEW_PYTHON="+sys.executable);print("IMPLEMENT_REVIEW_REALPATH="+os.path.realpath(sys.executable))'
+        )
+        $probeOutput = @(& $launchPath @probeArgs 2>$null)
+        $probeExit = $LASTEXITCODE
+    } catch {
+        return $null
+    }
+    if ($probeExit -ne 0) { return $null }
+
+    $resolvedPath = $null
+    $resolvedRealPath = $null
+    foreach ($line in $probeOutput) {
+        $text = ([string]$line).Trim()
+        if ($text.StartsWith('IMPLEMENT_REVIEW_PYTHON=')) {
+            $resolvedPath = $text.Substring('IMPLEMENT_REVIEW_PYTHON='.Length)
+        } elseif ($text.StartsWith('IMPLEMENT_REVIEW_REALPATH=')) {
+            $resolvedRealPath = $text.Substring('IMPLEMENT_REVIEW_REALPATH='.Length)
+        }
+    }
+    if (-not $resolvedPath -or -not $resolvedRealPath -or
+        -not [System.IO.Path]::IsPathRooted($resolvedPath)) {
+        return $null
+    }
+    if ($resolvedPath -match '(?i)[\\/]WindowsApps[\\/]') { return $null }
+    # Canonicalization is only an alias-location check. Keep the selected
+    # sys.executable unchanged so POSIX venv symlinks retain their environment.
+    if ($resolvedRealPath -match '(?i)[\\/]WindowsApps[\\/]') { return $null }
+
+    $resolvedItem = Get-Item -LiteralPath $resolvedPath -ErrorAction SilentlyContinue
+    if (-not $resolvedItem -or $resolvedItem.PSIsContainer -or $resolvedItem.Length -le 0) {
+        return $null
+    }
+    try {
+        & $resolvedPath -I -c 'import sys; sys.exit(0)' >$null 2>&1
+        $directExit = $LASTEXITCODE
+    } catch {
+        return $null
+    }
+    if ($directExit -ne 0) { return $null }
+    return $resolvedPath
+}
+
+function Use-PythonPath {
+    param([string]$Candidate)
+    if (-not $Candidate -or -not (Test-Path -LiteralPath $Candidate -PathType Leaf)) {
+        return $false
+    }
+    $resolved = Resolve-ProbedPython -Exe $Candidate
+    if (-not $resolved) { return $false }
+    $script:pythonBin = $resolved
+    return $true
+}
+
+$pythonBin = $null
+
+# 1. Explicit shared override. A broken configured override is a hard preflight
+# failure so machine drift cannot be hidden by a lower-priority interpreter.
+if ($env:ANYWHERE_AGENTS_PYTHON) {
+    $pythonBin = Resolve-ProbedPython -Exe $env:ANYWHERE_AGENTS_PYTHON
+    if (-not $pythonBin) {
+        [Console]::Error.WriteLine("dispatch-codex: ANYWHERE_AGENTS_PYTHON is not an executable Python interpreter: $($env:ANYWHERE_AGENTS_PYTHON)")
+        exit 2
+    }
+}
+
+# 2. Project virtual environments, then an activated virtual environment.
+if (-not $pythonBin) {
+    foreach ($candidate in @(
+        (Join-Path (Get-Location).Path '.venv\Scripts\python.exe'),
+        (Join-Path (Get-Location).Path '.venv/bin/python'),
+        (Join-Path (Get-Location).Path 'venv\Scripts\python.exe'),
+        (Join-Path (Get-Location).Path 'venv/bin/python')
+    )) {
+        if (Use-PythonPath $candidate) { break }
+    }
+}
+if (-not $pythonBin -and $env:VIRTUAL_ENV) {
+    foreach ($candidate in @(
+        (Join-Path $env:VIRTUAL_ENV 'Scripts\python.exe'),
+        (Join-Path $env:VIRTUAL_ENV 'bin/python')
+    )) {
+        if (Use-PythonPath $candidate) { break }
+    }
+}
+
+# 3. Active conda environment, then discovered Miniforge/conda roots and envs.
+$condaRoots = @()
+if (-not $pythonBin -and $env:CONDA_PREFIX) {
+    foreach ($candidate in @(
+        (Join-Path $env:CONDA_PREFIX 'python.exe'),
+        (Join-Path $env:CONDA_PREFIX 'bin/python'),
+        (Join-Path $env:CONDA_PREFIX 'bin/python3')
+    )) {
+        if (Use-PythonPath $candidate) { break }
+    }
+}
+if ($env:CONDA_PREFIX) {
+    $prefixParent = Split-Path $env:CONDA_PREFIX -Parent
+    if ($prefixParent -and (Split-Path $prefixParent -Leaf) -eq 'envs') {
+        $condaRoots += (Split-Path $prefixParent -Parent)
+    } else {
+        $condaRoots += $env:CONDA_PREFIX
+    }
+}
+if ($env:CONDA_ROOT) { $condaRoots += $env:CONDA_ROOT }
+if ($env:MAMBA_ROOT_PREFIX) { $condaRoots += $env:MAMBA_ROOT_PREFIX }
+foreach ($managerName in @('conda', 'mamba')) {
+    $manager = Get-Command -Name $managerName -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($manager -and $manager.Source) {
+        $managerRoot = Split-Path (Split-Path ([string]$manager.Source) -Parent) -Parent
+        if ($managerRoot) { $condaRoots += $managerRoot }
+    }
+}
+foreach ($homeDir in @($HOME, $env:USERPROFILE)) {
+    if (-not $homeDir -or -not (Test-Path -LiteralPath $homeDir -PathType Container)) {
+        continue
+    }
+    Get-ChildItem -LiteralPath $homeDir -Directory -Force -ErrorAction SilentlyContinue |
+        ForEach-Object {
+            if (Test-Path -LiteralPath (Join-Path $_.FullName 'conda-meta') -PathType Container) {
+                $condaRoots += $_.FullName
+            }
+        }
+}
+if (-not $pythonBin) {
+    :rootLoop foreach ($root in ($condaRoots | Where-Object { $_ } | Select-Object -Unique)) {
+        foreach ($candidate in @(
+            (Join-Path $root 'python.exe'),
+            (Join-Path $root 'bin/python'),
+            (Join-Path $root 'bin/python3')
+        )) {
+            if (Use-PythonPath $candidate) { break rootLoop }
+        }
+        $envsDir = Join-Path $root 'envs'
+        if (Test-Path -LiteralPath $envsDir -PathType Container) {
+            foreach ($environment in (Get-ChildItem -LiteralPath $envsDir -Directory -ErrorAction SilentlyContinue)) {
+                foreach ($candidate in @(
+                    (Join-Path $environment.FullName 'python.exe'),
+                    (Join-Path $environment.FullName 'bin/python'),
+                    (Join-Path $environment.FullName 'bin/python3')
+                )) {
+                    if (Use-PythonPath $candidate) { break rootLoop }
+                }
+            }
+        }
+    }
+}
+
+# 4. Windows Python launcher. Resolve through sys.executable so the reviewer
+# receives an absolute interpreter path rather than the launcher command.
+if (-not $pythonBin) {
+    foreach ($candidate in @(Get-Command -Name py -All -CommandType Application -ErrorAction SilentlyContinue)) {
+        if (-not $candidate.Source) { continue }
+        $pythonBin = Resolve-ProbedPython -Exe ([string]$candidate.Source) -PrefixArgs @('-3')
+        if ($pythonBin) { break }
+    }
+}
+
+# 5. Enumerate all PATH entries so a first-position Store alias cannot hide a
+# later interpreter. Functional execution remains the deciding test.
+if (-not $pythonBin) {
+    :pathLoop foreach ($commandName in @('python3', 'python')) {
+        foreach ($candidate in @(Get-Command -Name $commandName -All -CommandType Application -ErrorAction SilentlyContinue)) {
+            if (-not $candidate.Source) { continue }
+            $pythonBin = Resolve-ProbedPython -Exe ([string]$candidate.Source)
+            if ($pythonBin) { break pathLoop }
+        }
+    }
+}
+
+if (-not $pythonBin) {
+    [Console]::Error.WriteLine('dispatch-codex: no working Python interpreter found (checked ANYWHERE_AGENTS_PYTHON, project virtualenvs, conda/Miniforge, py -3, and non-WindowsApps PATH entries)')
     exit 2
 }
 
@@ -113,6 +357,26 @@ if (Test-Path -LiteralPath $ExpectedReviewFile -PathType Leaf) {
 $nowUnix = [int]([DateTimeOffset]::UtcNow).ToUnixTimeSeconds()
 [System.IO.File]::WriteAllText((Join-Path $stateDir 'timestamp'), "$nowUnix`n")
 
+# One logical dispatch may retry only a confirmed response-stream death. The
+# state directory stays stable so the single STATE-DIR stdout contract remains
+# valid; failed attempts are archived under attempt-N.
+$streamRetryLimit = 1
+$parsedStreamRetryLimit = 0
+if ([int]::TryParse(
+        [string]$env:IMPLEMENT_REVIEW_STREAM_RETRY_LIMIT,
+        [ref]$parsedStreamRetryLimit
+    ) -and $parsedStreamRetryLimit -ge 0) {
+    $streamRetryLimit = $parsedStreamRetryLimit
+}
+$streamRetryCount = 0
+$streamRetryLimitPath = Join-Path $stateDir 'stream-retry-limit'
+$streamRetryCountPath = Join-Path $stateDir 'stream-retry-count'
+[System.IO.File]::WriteAllText($streamRetryLimitPath, "$streamRetryLimit`n")
+[System.IO.File]::WriteAllText($streamRetryCountPath, "0`n")
+
+# Record exactly what was passed to the reviewer for caller diagnostics.
+[System.IO.File]::WriteAllText((Join-Path $stateDir 'python-interpreter'), "$pythonBin`n")
+
 # Emit STATE-DIR on stdout (first and only machine-readable line)
 [Console]::Out.WriteLine("STATE-DIR $stateDir")
 [Console]::Out.Flush()
@@ -122,15 +386,25 @@ $nowUnix = [int]([DateTimeOffset]::UtcNow).ToUnixTimeSeconds()
 # instead of Split-Path $PSCommandPath, which can fail with "Parameter set
 # cannot be resolved" if PowerShell sees $PSCommandPath as null under some
 # invocation contexts.
-$scriptDir = $PSScriptRoot
+$scriptDir = if ($env:IMPLEMENT_REVIEW_DISPATCH_SOURCE_DIR) {
+    $env:IMPLEMENT_REVIEW_DISPATCH_SOURCE_DIR
+} else {
+    $PSScriptRoot
+}
 $stallWatch = Join-Path $scriptDir 'stall-watch.ps1'
 $stallProc = $null
-if (Test-Path -LiteralPath $stallWatch -PathType Leaf) {
-    $stallProc = Start-Process -FilePath 'powershell.exe' `
-        -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $stallWatch,
-                        '--state-dir', $stateDir, '--parent-pid', $PID) `
-        -WindowStyle Hidden -PassThru -ErrorAction SilentlyContinue
+function Start-StallWatch {
+    $script:stallProc = $null
+    if (Test-Path -LiteralPath $stallWatch -PathType Leaf) {
+        $script:stallProc = Start-Process -FilePath 'powershell.exe' `
+            -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $stallWatch,
+                            '--state-dir', $stateDir, '--parent-pid', $PID) `
+            -WindowStyle Hidden -PassThru -ErrorAction SilentlyContinue
+    }
 }
+Start-StallWatch
+Remove-Item Env:IMPLEMENT_REVIEW_DISPATCH_REEXEC -ErrorAction SilentlyContinue
+Remove-Item Env:IMPLEMENT_REVIEW_DISPATCH_SOURCE_DIR -ErrorAction SilentlyContinue
 
 # Resolve codex binary -----------------------------------------------------
 # Two real-world Windows pitfalls covered:
@@ -229,12 +503,96 @@ $sandboxModeEsc = $sandboxMode -replace '%', '%%'
 # (model uses codex's default). See dispatch-codex.sh for what is not kept.
 $reasoning = if ($env:CODEX_DISPATCH_REASONING) { $env:CODEX_DISPATCH_REASONING } else { 'xhigh' }
 $isolateArg = if ($env:CODEX_DISPATCH_ISOLATE_MCP -eq 'off') { '' } else { "--ignore-user-config -c model_reasoning_effort=$reasoning " }
-$cmdBody = "@echo off`r`nchcp 65001 >NUL`r`n""$codexBinEsc"" exec --sandbox $sandboxModeEsc $isolateArg- > ""$tailPathEsc"" 2>&1 < ""$promptFileEsc""`r`n"
+$childSessionInstructions = "The parent agent session already completed the repository bootstrap at startup. Skip bootstrap and shared configuration refresh commands in this child review session. Use the shared configuration currently on disk. Follow all other project instructions. A working Python interpreter was execution-probed before dispatch. Use this exact absolute path for every Python command: $pythonBin. Do not invoke bare python, python3, or py. Before issuing a PASS or BLOCK commit verdict, execute relevant verification commands. In $ExpectedReviewFile, add one standalone line exactly 'Verification status: VERIFIED' if at least one relevant verification command completed, otherwise add 'Verification status: UNVERIFIED'. If the status is UNVERIFIED, write 'Commit verdict: UNVERIFIED'; never issue PASS or BLOCK. Verification notes must list the exact commands and outcomes."
+$childSessionInstructionsEsc = $childSessionInstructions -replace '%', '%%'
+$childSessionArg = "-c ""developer_instructions=$childSessionInstructionsEsc"" "
+$cmdBody = "@echo off`r`nchcp 65001 >NUL`r`n""$codexBinEsc"" exec --sandbox $sandboxModeEsc $isolateArg$childSessionArg- > ""$tailPathEsc"" 2>&1 < ""$promptFileEsc""`r`n"
 $utf8NoBom = New-Object System.Text.UTF8Encoding $false
 [System.IO.File]::WriteAllText($cmdHelper, $cmdBody, $utf8NoBom)
 
-& $cmdHelper
-$codexExit = $LASTEXITCODE
+function Save-StreamDeathAttempt {
+    param([int]$AttemptNumber)
+    $attemptDir = Join-Path $stateDir "attempt-$AttemptNumber"
+    $activeFiles = @(
+        'tail', 'tail.stderr-tmp', 'stall-warning', 'stream-death',
+        'stream-retry-request', 'stream-reap-complete', 'worker-roots',
+        'reap-targets', 'reap-reason', 'reap-worker.cmd'
+    )
+    try {
+        New-Item -ItemType Directory -Path $attemptDir -ErrorAction Stop | Out-Null
+        foreach ($name in @('pre-mtime', 'timestamp', 'stream-retry-limit', 'stream-retry-count')) {
+            Copy-Item -LiteralPath (Join-Path $stateDir $name) `
+                -Destination (Join-Path $attemptDir $name) -ErrorAction Stop
+        }
+        foreach ($name in $activeFiles) {
+            $sourcePath = Join-Path $stateDir $name
+            if (Test-Path -LiteralPath $sourcePath -PathType Leaf) {
+                Copy-Item -LiteralPath $sourcePath `
+                    -Destination (Join-Path $attemptDir $name) -ErrorAction Stop
+            }
+        }
+        foreach ($name in @('tail', 'stream-death', 'stream-retry-request', 'stream-reap-complete')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $attemptDir $name) -PathType Leaf)) {
+                return $false
+            }
+        }
+        foreach ($name in $activeFiles) {
+            Remove-Item -LiteralPath (Join-Path $stateDir $name) `
+                -Force -ErrorAction SilentlyContinue
+        }
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+while ($true) {
+    & $cmdHelper
+    $codexExit = $LASTEXITCODE
+
+    $streamDeathPath = Join-Path $stateDir 'stream-death'
+    $streamRetryRequestPath = Join-Path $stateDir 'stream-retry-request'
+    $streamReapCompletePath = Join-Path $stateDir 'stream-reap-complete'
+    if (-not (Test-Path -LiteralPath $streamDeathPath -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $streamRetryRequestPath -PathType Leaf) -or
+        $streamRetryCount -ge $streamRetryLimit) {
+        break
+    }
+
+    $handoffDeadline = [DateTime]::UtcNow.AddSeconds(10)
+    while (-not (Test-Path -LiteralPath $streamReapCompletePath -PathType Leaf) -and
+        [DateTime]::UtcNow -lt $handoffDeadline) {
+        Start-Sleep -Milliseconds 200
+    }
+    if (-not (Test-Path -LiteralPath $streamReapCompletePath -PathType Leaf)) {
+        [Console]::Error.WriteLine(
+            "AUTO-REDISPATCH-SKIPPED reason=stream-reap-handoff-timeout state-dir=$stateDir"
+        )
+        break
+    }
+    if ($stallProc -and -not $stallProc.WaitForExit(5000)) {
+        [Console]::Error.WriteLine(
+            "AUTO-REDISPATCH-SKIPPED reason=stall-watch-did-not-exit state-dir=$stateDir"
+        )
+        break
+    }
+    if (-not (Save-StreamDeathAttempt ($streamRetryCount + 1))) {
+        [Console]::Error.WriteLine(
+            "AUTO-REDISPATCH-SKIPPED reason=attempt-archive-failed state-dir=$stateDir"
+        )
+        break
+    }
+
+    $streamRetryCount += 1
+    [System.IO.File]::WriteAllText($streamRetryCountPath, "$streamRetryCount`n")
+    $retryStart = [int]([DateTimeOffset]::UtcNow).ToUnixTimeSeconds()
+    [System.IO.File]::WriteAllText((Join-Path $stateDir 'timestamp'), "$retryStart`n")
+    [Console]::Error.WriteLine(
+        "AUTO-REDISPATCH attempt=$($streamRetryCount + 1)/$($streamRetryLimit + 1) " +
+        "reason=codex-response-stream-disconnected state-dir=$stateDir"
+    )
+    Start-StallWatch
+}
 
 Remove-Item -LiteralPath $cmdHelper -Force -ErrorAction SilentlyContinue
 

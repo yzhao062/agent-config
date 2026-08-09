@@ -6,9 +6,11 @@
 # and exits 0. Times out after 60 minutes by default with ``TIMEOUT``
 # and exit 2.
 #
-# Stdout schema is exactly two lines:
+# Stdout starts with WATCH-START and ends with one terminal line. A confirmed
+# automatic retry adds one visible AUTO-REDISPATCH line between them:
 #   WATCH-START round=<N> reviewers=<csv> timeout=<seconds>s
-#   DONE <abs-path>     |     TIMEOUT
+#   AUTO-REDISPATCH attempt=<N>/<total> reason=codex-response-stream-disconnected state-dir=<abs-path>
+#   DONE <abs-path> | TIMEOUT | STREAM-DEAD <state-dir> | STALL <state-dir>
 #
 # Usage:
 #   auto-watch.sh FILE_GLOB ROUND EXPECTED_REVIEWERS
@@ -27,8 +29,63 @@
 # Env:
 #   AGENT_CONFIG_AUTO_WATCH_TIMEOUT  override timeout in seconds. Used by
 #                                    tests; production paths use 3600.
+#   IMPLEMENT_REVIEW_STREAM_RETRY_LIMIT
+#                                    maximum automatic redispatches after a
+#                                    confirmed stream death (default 1; 0
+#                                    disables). The dispatcher records the
+#                                    effective value in the state directory.
+#
+# Exit codes: 0 = DONE, 2 = TIMEOUT, 3 = dispatch failure/stall surfaced.
+# A retry keeps the original state directory so the dispatcher's single
+# STATE-DIR line stays valid. Failed-attempt files are archived under
+# <state-dir>/attempt-N before the same logical dispatch starts again.
 
 set -eu
+
+# Release the deployed path before either session can refresh the shared
+# scripts. Exec preserves the caller-visible background PID. A janitor waits
+# for that PID to exit, then removes the temporary copy and directory.
+if [ "${IMPLEMENT_REVIEW_AUTO_WATCH_REEXEC:-}" != "1" ]; then
+  REEXEC_TMP_BASE="${TMPDIR:-/tmp}"
+  REEXEC_TMP_BASE="${REEXEC_TMP_BASE%/}"
+  REEXEC_DIR="${REEXEC_TMP_BASE}/implement-review-auto-watch-reexec-$$"
+  REEXEC_COPY="${REEXEC_DIR}/auto-watch.sh"
+
+  umask 077
+  if ! mkdir "$REEXEC_DIR"; then
+    echo "auto-watch: failed to create re-exec dir: $REEXEC_DIR" >&2
+    exit 2
+  fi
+  if ! cp -- "$0" "$REEXEC_COPY"; then
+    rmdir -- "$REEXEC_DIR" 2>/dev/null || true
+    echo "auto-watch: failed to create re-exec copy: $REEXEC_COPY" >&2
+    exit 2
+  fi
+  chmod u+x "$REEXEC_COPY" 2>/dev/null || true
+
+  export IMPLEMENT_REVIEW_AUTO_WATCH_REEXEC=1
+  export IMPLEMENT_REVIEW_AUTO_WATCH_SOURCE_DIR
+  IMPLEMENT_REVIEW_AUTO_WATCH_SOURCE_DIR=$(dirname -- "$0")
+
+  "${BASH:-bash}" -c '
+    watched_pid=$1
+    reexec_copy=$2
+    reexec_dir=$3
+    while kill -0 "$watched_pid" 2>/dev/null; do sleep 1; done
+    rm -f -- "$reexec_copy"
+    rmdir -- "$reexec_dir" 2>/dev/null || true
+  ' auto-watch-cleanup "$$" "$REEXEC_COPY" "$REEXEC_DIR" >/dev/null 2>&1 &
+
+  exec "${BASH:-bash}" "$REEXEC_COPY" "$@"
+
+  echo "auto-watch: failed to launch re-exec copy: $REEXEC_COPY" >&2
+  rm -f -- "$REEXEC_COPY"
+  rmdir -- "$REEXEC_DIR" 2>/dev/null || true
+  exit 2
+fi
+
+SCRIPT_DIR="${IMPLEMENT_REVIEW_AUTO_WATCH_SOURCE_DIR:-$(dirname -- "$0")}"
+unset IMPLEMENT_REVIEW_AUTO_WATCH_REEXEC IMPLEMENT_REVIEW_AUTO_WATCH_SOURCE_DIR
 
 FILE_GLOB="${1:?usage: auto-watch.sh FILE_GLOB ROUND EXPECTED_REVIEWERS}"
 ROUND="${2:?usage: auto-watch.sh FILE_GLOB ROUND EXPECTED_REVIEWERS}"
@@ -61,7 +118,9 @@ _in_expected() {
 # round marker (e.g., user re-launched a round mid-way) would fire
 # immediately, defeating the "wait for the reviewer to write" intent.
 SNAPFILE="$(mktemp -t auto-watch.XXXXXX 2>/dev/null || mktemp)"
-trap 'rm -f "$SNAPFILE"' EXIT INT TERM
+STATEFILE="$(mktemp -t auto-watch-state.XXXXXX 2>/dev/null || mktemp)"
+RETRYFILE="$(mktemp -t auto-watch-retry.XXXXXX 2>/dev/null || mktemp)"
+trap 'rm -f "$SNAPFILE" "$STATEFILE" "$RETRYFILE"' EXIT INT TERM
 for f in $FILE_GLOB; do
   [ -e "$f" ] || continue
   printf '%s\t%s\n' "$f" "$(_mtime "$f")" >> "$SNAPFILE"
@@ -71,10 +130,44 @@ _pre_mtime() {
   awk -F'\t' -v f="$1" '$1==f{print $2; exit}' "$SNAPFILE" 2>/dev/null
 }
 
+_state_counter() {
+  local path="$1" value
+  [ -f "$path" ] || return 1
+  value="$(head -n 1 "$path" 2>/dev/null | tr -d '[:space:]')"
+  case "$value" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s\n' "$value"
+}
+
 printf 'WATCH-START round=%s reviewers=%s timeout=%ss\n' \
   "$ROUND" "$REVIEWERS" "$TIMEOUT"
 
 start_epoch="$(date +%s)"
+
+# Auto-terminal dispatch creates its state directory immediately before this
+# watcher starts. Capture only same-repo/same-round directories started within
+# 30 seconds, so old rounds and parallel work in other repositories cannot
+# trigger a failure signal. Terminal-relay normally captures none.
+repo_hash=""
+if command -v sha256sum >/dev/null 2>&1; then
+  repo_hash="$(pwd | sha256sum 2>/dev/null | cut -c1-8)"
+elif command -v shasum >/dev/null 2>&1; then
+  repo_hash="$(pwd | shasum -a 256 2>/dev/null | cut -c1-8)"
+fi
+tmp_base="${TMPDIR:-/tmp}"
+tmp_base="${tmp_base%/}"
+if [ -n "$repo_hash" ]; then
+  for state_dir in "$tmp_base"/implement-review-*-${repo_hash}-round${ROUND}-*; do
+    [ -d "$state_dir" ] || continue
+    [ -f "$state_dir/timestamp" ] || continue
+    state_start="$(head -n 1 "$state_dir/timestamp" 2>/dev/null | tr -d '[:space:]')"
+    case "$state_start" in ''|*[!0-9]*) continue ;; esac
+    if [ "$state_start" -ge $((start_epoch - 30)) ] && \
+       [ "$state_start" -le $((start_epoch + 5)) ]; then
+      printf '%s\n' "$state_dir" >> "$STATEFILE"
+    fi
+  done
+fi
+
 while :; do
   now="$(date +%s)"
   if [ $((now - start_epoch)) -ge "$TIMEOUT" ]; then
@@ -110,6 +203,41 @@ while :; do
     printf 'DONE %s/%s\n' "$abs_dir" "$(basename "$f")"
     exit 0
   done
+
+  while IFS= read -r state_dir; do
+    [ -n "$state_dir" ] || continue
+    retry_limit="$(_state_counter "$state_dir/stream-retry-limit" || true)"
+    retry_count="$(_state_counter "$state_dir/stream-retry-count" || true)"
+    if [ -n "$retry_limit" ] && [ -n "$retry_count" ] && \
+       [ "$retry_count" -gt 0 ]; then
+      retry_key="${state_dir}\t${retry_count}"
+      if ! grep -Fqx -- "$retry_key" "$RETRYFILE" 2>/dev/null; then
+        printf '%s\n' "$retry_key" >> "$RETRYFILE"
+        printf 'AUTO-REDISPATCH attempt=%s/%s reason=codex-response-stream-disconnected state-dir=%s\n' \
+          "$((retry_count + 1))" "$((retry_limit + 1))" "$state_dir"
+      fi
+    fi
+    if [ -f "$state_dir/stream-death" ]; then
+      # A retry-capable dispatcher archives the failed attempt and clears the
+      # request before incrementing stream-retry-count. Give that handoff 30s;
+      # if it does not complete, surface the original failure normally.
+      if [ -f "$state_dir/stream-retry-request" ] && \
+         [ -n "$retry_limit" ] && [ -n "$retry_count" ] && \
+         [ "$retry_count" -lt "$retry_limit" ]; then
+        request_mtime="$(_mtime "$state_dir/stream-retry-request")"
+        request_age=$((now - request_mtime))
+        if [ "$request_mtime" -gt 0 ] && [ "$request_age" -lt 30 ]; then
+          continue
+        fi
+      fi
+      printf 'STREAM-DEAD %s\n' "$state_dir"
+      exit 3
+    fi
+    if [ -f "$state_dir/stall-warning" ]; then
+      printf 'STALL %s\n' "$state_dir"
+      exit 3
+    fi
+  done < "$STATEFILE"
 
   sleep "$POLL"
 done
