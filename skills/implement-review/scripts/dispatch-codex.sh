@@ -239,9 +239,14 @@ if [ -z "$PYTHON_BIN" ]; then
     done
 fi
 
+# Not finding an interpreter is a degradation, not a dispatch failure. The
+# probe exists to keep a reviewer from claiming verification it never ran, and
+# health check 10 already enforces that independently by refusing a PASS or
+# BLOCK verdict without a VERIFIED status. Reviews also run on repositories
+# whose verification is not Python at all (LaTeX, Node, docs), so a missing
+# interpreter must not make those repositories unreviewable.
 if [ -z "$PYTHON_BIN" ]; then
-    echo "dispatch-codex: no working Python interpreter found (checked ANYWHERE_AGENTS_PYTHON, project virtualenvs, conda/Miniforge, py -3, and non-WindowsApps PATH entries)" >&2
-    exit 2
+    echo "dispatch-codex: no working Python interpreter found (checked ANYWHERE_AGENTS_PYTHON, project virtualenvs, conda/Miniforge, py -3, and non-WindowsApps PATH entries); dispatching without a pre-resolved interpreter" >&2
 fi
 
 # Build unique state-dir under TMPDIR
@@ -307,7 +312,11 @@ printf '%s\n' "$STREAM_RETRY_LIMIT" > "$STATE_DIR/stream-retry-limit"
 printf '0\n' > "$STATE_DIR/stream-retry-count"
 
 # Record exactly what was passed to the reviewer for caller diagnostics.
-printf '%s\n' "$PYTHON_BIN" > "$STATE_DIR/python-interpreter"
+# Absence of the marker means the probe resolved nothing. Writing a sentinel
+# instead would let a reader mistake it for a path.
+if [ -n "$PYTHON_BIN" ]; then
+    printf '%s\n' "$PYTHON_BIN" > "$STATE_DIR/python-interpreter"
+fi
 
 # Emit STATE-DIR on stdout (first and only machine-readable line)
 printf 'STATE-DIR %s\n' "$STATE_DIR"
@@ -378,7 +387,13 @@ fi
 # that setup inside every review child adds latency and can mutate the deployed
 # dispatcher mid-run. This developer instruction outranks AGENTS.md's generic
 # new-session bootstrap rule while preserving every other project instruction.
-CHILD_SESSION_INSTRUCTIONS="The parent agent session already completed the repository bootstrap at startup. Skip bootstrap and shared configuration refresh commands in this child review session. Use the shared configuration currently on disk. Follow all other project instructions. A working Python interpreter was execution-probed before dispatch. Use this exact absolute path for every Python command: $PYTHON_BIN. Do not invoke bare python, python3, or py. Before issuing a PASS or BLOCK commit verdict, execute relevant verification commands. In $EXPECTED_REVIEW_FILE, add one standalone line exactly 'Verification status: VERIFIED' if at least one relevant verification command completed, otherwise add 'Verification status: UNVERIFIED'. If the status is UNVERIFIED, write 'Commit verdict: UNVERIFIED'; never issue PASS or BLOCK. Verification notes must list the exact commands and outcomes."
+if [ -n "$PYTHON_BIN" ]; then
+    PYTHON_INSTRUCTION="A working Python interpreter was execution-probed before dispatch. Use this exact absolute path for every Python command: $PYTHON_BIN. Do not invoke bare python, python3, or py."
+else
+    PYTHON_INSTRUCTION="No Python interpreter could be pre-resolved on this machine. If a verification command needs Python, locate a working interpreter yourself first; if none exists, verify by whatever means this repository actually uses."
+fi
+
+CHILD_SESSION_INSTRUCTIONS="The parent agent session already completed the repository bootstrap at startup. Skip bootstrap and shared configuration refresh commands in this child review session. Use the shared configuration currently on disk. Follow all other project instructions. $PYTHON_INSTRUCTION Before issuing a PASS or BLOCK commit verdict, execute relevant verification commands. In $EXPECTED_REVIEW_FILE, add one standalone line exactly 'Verification status: VERIFIED' if at least one relevant verification command completed, otherwise add 'Verification status: UNVERIFIED'. If the status is UNVERIFIED, write 'Commit verdict: UNVERIFIED'; never issue PASS or BLOCK. Verification notes must list the exact commands and outcomes."
 CODEX_CHILD_ARGS=(-c "developer_instructions=$CHILD_SESSION_INSTRUCTIONS")
 _archive_stream_attempt() {
     local attempt_number="$1" attempt_dir name

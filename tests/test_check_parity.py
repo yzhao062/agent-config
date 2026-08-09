@@ -99,6 +99,10 @@ def _build_fake_tree(base: pathlib.Path):
         "tests/test_pointer_files.py",
         "tests/test_prompt_byte_parity.py",
         "tests/test_bootstrap_preflight.py",
+        # v0.7.10: both test STRICT-shared code (dispatch-codex.{sh,ps1} and
+        # scripts/statusline.py) but were ac-local, so aa CI never ran them.
+        "tests/test_dispatch_path_resolution.py",
+        "tests/test_codex_usage.py",
     )
     for repo in (ac, aa):
         (repo / "tests").mkdir(exist_ok=True)

@@ -810,6 +810,95 @@ class DispatchInterpreterResolutionContract(unittest.TestCase):
             "& $resolvedPath -I -c 'import sys; sys.exit(0)'", ps1
         )
 
+    def test_unresolved_interpreter_degrades_instead_of_aborting(self) -> None:
+        """Finding no interpreter must not abort dispatch.
+
+        The probe keeps a reviewer from claiming verification it never ran,
+        but check 10 enforces that independently by refusing PASS or BLOCK
+        without a VERIFIED status. Reviews also run on repositories whose
+        verification is not Python (LaTeX, Node, docs). Aborting there made
+        those repositories unreviewable on any machine without a discoverable
+        interpreter, which is what agent-config CI reproduced on
+        windows-latest: nine dispatch fixtures failed with exit 2.
+        """
+        unresolved = "no working Python interpreter found"
+        degraded = "dispatching without a pre-resolved interpreter"
+
+        for script_name, body in (
+            ("dispatch-codex.sh", DISPATCH_SH.read_text(encoding="utf-8")),
+            ("dispatch-codex.ps1", DISPATCH_PS1.read_text(encoding="utf-8")),
+        ):
+            with self.subTest(script=script_name):
+                self.assertIn(unresolved, body)
+                self.assertIn(
+                    degraded, body,
+                    f"{script_name} must say it is proceeding degraded",
+                )
+                # The branch that reports the miss must not terminate. Scan
+                # from the message to the end of its enclosing block.
+                start = body.index(unresolved)
+                tail = body[start:start + 600]
+                self.assertNotIn(
+                    "exit 2", tail,
+                    f"{script_name} must not abort when the probe resolves "
+                    f"nothing",
+                )
+
+                # A configured but broken override stays a hard failure: the
+                # user named an interpreter and it does not work.
+                override_msg = (
+                    "ANYWHERE_AGENTS_PYTHON is not an executable Python "
+                    "interpreter"
+                )
+                self.assertIn(override_msg, body)
+                override_tail = body[body.index(override_msg):][:400]
+                self.assertIn(
+                    "exit 2", override_tail,
+                    f"{script_name} must still abort on a broken explicit "
+                    f"ANYWHERE_AGENTS_PYTHON",
+                )
+
+    def test_unresolved_interpreter_omits_the_state_dir_marker(self) -> None:
+        """Absence of the marker is the unambiguous signal.
+
+        Writing a sentinel string would let a reader mistake it for a path.
+        """
+        sh = DISPATCH_SH.read_text(encoding="utf-8")
+        ps1 = DISPATCH_PS1.read_text(encoding="utf-8")
+
+        self.assertIn(
+            'if [ -n "$PYTHON_BIN" ]; then\n'
+            '    printf \'%s\\n\' "$PYTHON_BIN" > "$STATE_DIR/python-interpreter"\n'
+            'fi',
+            sh,
+        )
+        self.assertIn(
+            "if ($pythonBin) {\n"
+            "    [System.IO.File]::WriteAllText((Join-Path $stateDir "
+            "'python-interpreter'), \"$pythonBin`n\")\n"
+            "}",
+            ps1,
+        )
+
+    def test_child_instructions_branch_on_interpreter_availability(self) -> None:
+        """The reviewer is told which situation it is in, either way."""
+        sh = DISPATCH_SH.read_text(encoding="utf-8")
+        ps1 = DISPATCH_PS1.read_text(encoding="utf-8")
+
+        resolved = "A working Python interpreter was execution-probed"
+        unresolved = "No Python interpreter could be pre-resolved on this machine"
+
+        for script_name, body in (("dispatch-codex.sh", sh),
+                                  ("dispatch-codex.ps1", ps1)):
+            with self.subTest(script=script_name):
+                self.assertIn(resolved, body)
+                self.assertIn(unresolved, body)
+                # The verification contract itself is unconditional.
+                self.assertEqual(
+                    body.count("Verification status: VERIFIED"), 1,
+                    f"{script_name} must state the contract exactly once",
+                )
+
 
 class DispatchReexecContract(unittest.TestCase):
     def test_sh_reexec_copy_is_guarded_scrubbed_and_cleaned(self) -> None:

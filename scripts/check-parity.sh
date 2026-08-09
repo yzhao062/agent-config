@@ -27,7 +27,8 @@
 #               as recursive trees, and the shared-contract test files
 #               tests/test_{dispatch_codex,dispatch_copilot,dispatch_claude,
 #               health_check,guard,session_bootstrap,pointer_files,
-#               prompt_byte_parity,bootstrap_preflight}.py (added
+#               prompt_byte_parity,bootstrap_preflight,
+#               dispatch_path_resolution,codex_usage}.py (added
 #               incrementally since 2026-05-16 to close the drift gap that
 #               broke aa CI on every shared-skill change; see the comment
 #               block above the strict_test_files loop for the rationale).
@@ -163,6 +164,14 @@ strict_test_files=(
   tests/test_pointer_files.py
   tests/test_prompt_byte_parity.py
   tests/test_bootstrap_preflight.py
+  # Added after the v0.7.9 incident. Both test STRICT-shared code
+  # (dispatch-codex.{sh,ps1} and scripts/statusline.py) but were ac-local, so
+  # aa CI never ran them. A dispatch-codex change that aborted on machines
+  # without a discoverable Python interpreter passed aa CI on windows-latest
+  # and shipped; the same commit turned ac CI red on nine fixtures. A test of
+  # strict-shared code has to live on both sides or it guards only one repo.
+  tests/test_dispatch_path_resolution.py
+  tests/test_codex_usage.py
 )
 for f in "${strict_test_files[@]}"; do
   if [ ! -f "$AC_ROOT/$f" ] || [ ! -f "$AA_ROOT/$f" ]; then

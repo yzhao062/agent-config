@@ -303,9 +303,14 @@ if (-not $pythonBin) {
     }
 }
 
+# Not finding an interpreter is a degradation, not a dispatch failure. The
+# probe exists to keep a reviewer from claiming verification it never ran, and
+# health check 10 already enforces that independently by refusing a PASS or
+# BLOCK verdict without a VERIFIED status. Reviews also run on repositories
+# whose verification is not Python at all (LaTeX, Node, docs), so a missing
+# interpreter must not make those repositories unreviewable.
 if (-not $pythonBin) {
-    [Console]::Error.WriteLine('dispatch-codex: no working Python interpreter found (checked ANYWHERE_AGENTS_PYTHON, project virtualenvs, conda/Miniforge, py -3, and non-WindowsApps PATH entries)')
-    exit 2
+    [Console]::Error.WriteLine('dispatch-codex: no working Python interpreter found (checked ANYWHERE_AGENTS_PYTHON, project virtualenvs, conda/Miniforge, py -3, and non-WindowsApps PATH entries); dispatching without a pre-resolved interpreter')
 }
 
 # Resolve temp base (TMPDIR > TEMP > TMP > sane fallback)
@@ -375,7 +380,11 @@ $streamRetryCountPath = Join-Path $stateDir 'stream-retry-count'
 [System.IO.File]::WriteAllText($streamRetryCountPath, "0`n")
 
 # Record exactly what was passed to the reviewer for caller diagnostics.
-[System.IO.File]::WriteAllText((Join-Path $stateDir 'python-interpreter'), "$pythonBin`n")
+# Absence of the marker means the probe resolved nothing. Writing a sentinel
+# instead would let a reader mistake it for a path.
+if ($pythonBin) {
+    [System.IO.File]::WriteAllText((Join-Path $stateDir 'python-interpreter'), "$pythonBin`n")
+}
 
 # Emit STATE-DIR on stdout (first and only machine-readable line)
 [Console]::Out.WriteLine("STATE-DIR $stateDir")
@@ -503,7 +512,12 @@ $sandboxModeEsc = $sandboxMode -replace '%', '%%'
 # (model uses codex's default). See dispatch-codex.sh for what is not kept.
 $reasoning = if ($env:CODEX_DISPATCH_REASONING) { $env:CODEX_DISPATCH_REASONING } else { 'xhigh' }
 $isolateArg = if ($env:CODEX_DISPATCH_ISOLATE_MCP -eq 'off') { '' } else { "--ignore-user-config -c model_reasoning_effort=$reasoning " }
-$childSessionInstructions = "The parent agent session already completed the repository bootstrap at startup. Skip bootstrap and shared configuration refresh commands in this child review session. Use the shared configuration currently on disk. Follow all other project instructions. A working Python interpreter was execution-probed before dispatch. Use this exact absolute path for every Python command: $pythonBin. Do not invoke bare python, python3, or py. Before issuing a PASS or BLOCK commit verdict, execute relevant verification commands. In $ExpectedReviewFile, add one standalone line exactly 'Verification status: VERIFIED' if at least one relevant verification command completed, otherwise add 'Verification status: UNVERIFIED'. If the status is UNVERIFIED, write 'Commit verdict: UNVERIFIED'; never issue PASS or BLOCK. Verification notes must list the exact commands and outcomes."
+$pythonInstruction = if ($pythonBin) {
+    "A working Python interpreter was execution-probed before dispatch. Use this exact absolute path for every Python command: $pythonBin. Do not invoke bare python, python3, or py."
+} else {
+    'No Python interpreter could be pre-resolved on this machine. If a verification command needs Python, locate a working interpreter yourself first; if none exists, verify by whatever means this repository actually uses.'
+}
+$childSessionInstructions = "The parent agent session already completed the repository bootstrap at startup. Skip bootstrap and shared configuration refresh commands in this child review session. Use the shared configuration currently on disk. Follow all other project instructions. $pythonInstruction Before issuing a PASS or BLOCK commit verdict, execute relevant verification commands. In $ExpectedReviewFile, add one standalone line exactly 'Verification status: VERIFIED' if at least one relevant verification command completed, otherwise add 'Verification status: UNVERIFIED'. If the status is UNVERIFIED, write 'Commit verdict: UNVERIFIED'; never issue PASS or BLOCK. Verification notes must list the exact commands and outcomes."
 $childSessionInstructionsEsc = $childSessionInstructions -replace '%', '%%'
 $childSessionArg = "-c ""developer_instructions=$childSessionInstructionsEsc"" "
 $cmdBody = "@echo off`r`nchcp 65001 >NUL`r`n""$codexBinEsc"" exec --sandbox $sandboxModeEsc $isolateArg$childSessionArg- > ""$tailPathEsc"" 2>&1 < ""$promptFileEsc""`r`n"
