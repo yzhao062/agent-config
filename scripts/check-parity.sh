@@ -172,6 +172,10 @@ strict_test_files=(
   # strict-shared code has to live on both sides or it guards only one repo.
   tests/test_dispatch_path_resolution.py
   tests/test_codex_usage.py
+  # v0.7.11: guards the byte-comparison gates themselves. A CRLF working
+  # copy makes this script's own `diff -q` report drift on every line of
+  # a file whose content is identical.
+  tests/test_line_endings.py
 )
 for f in "${strict_test_files[@]}"; do
   if [ ! -f "$AC_ROOT/$f" ] || [ ! -f "$AA_ROOT/$f" ]; then

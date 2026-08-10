@@ -103,6 +103,7 @@ def _build_fake_tree(base: pathlib.Path):
         # scripts/statusline.py) but were ac-local, so aa CI never ran them.
         "tests/test_dispatch_path_resolution.py",
         "tests/test_codex_usage.py",
+        "tests/test_line_endings.py",
     )
     for repo in (ac, aa):
         (repo / "tests").mkdir(exist_ok=True)
