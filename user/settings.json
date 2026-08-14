@@ -60,6 +60,16 @@
             "statusMessage": "Checking PowerShell auto-allow patterns..."
           }
         ]
+      },
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$HOME/.claude/hooks/_python\" \"$HOME/.claude/hooks/guard.py\"",
+            "statusMessage": "Checking prose writes for banned AI-tell words..."
+          }
+        ]
       }
     ],
     "SessionStart": [

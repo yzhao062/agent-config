@@ -53,7 +53,13 @@ jobs:
         # composer opt-in path). The composer itself also auto-installs
         # PyYAML at bootstrap time; CI pre-installs it so test discovery
         # does not hit the import-time exit(2) in scripts/compose_rule_packs.py.
-        run: python -m pip install --quiet pyyaml
+        #
+        # agent-style backs guard.py's advisory. It is optional at runtime and
+        # the hook degrades silently without it, so AgentStyleAdvisoryTests
+        # skips itself when the import fails. That makes it required here
+        # rather than optional: without the package those tests would report
+        # green while running nothing, which is how a feature ships broken.
+        run: python -m pip install --quiet pyyaml agent-style
 
       - name: Run validation tests
         run: python -B -m unittest discover -s tests -p "test_*.py" -v

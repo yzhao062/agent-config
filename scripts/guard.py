@@ -14,6 +14,13 @@ Dispatches by tool_name. Shared checks:
 1. Writing-style gate — Write/Edit/MultiEdit on prose files (.md/.tex/.rst/.txt)
    is denied when the outgoing content contains a banned AI-tell word from
    AGENTS.md Writing Defaults. Skips code files.
+1b. agent-style advisory — the same writes are additionally scanned by the
+   agent-style package's mechanical detectors when it is importable, and any
+   findings are reported to both the model and the user while the write
+   proceeds. Runs only when step 1 did not deny, so a blocked write yields one
+   message rather than two. See advise_writing_style() for why this reports
+   instead of denying, and make_advisory_response() for how it reaches each
+   reader.
 2. Banner gate — every tool call except the exempt observation tools
    (Read/Grep/Glob/Skill/Task/TodoWrite/BashOutput/WebFetch/WebSearch/ToolSearch/LS/NotebookRead)
    and Write/Edit/MultiEdit whose target is exactly
@@ -38,8 +45,10 @@ Dispatches by tool_name. Shared checks:
 
 Escape hatches (v0.7.0):
 
-- AGENT_CONFIG_GATES=off (legacy blanket): disables writing-style + banner only.
-- AGENT_STYLE_HOOK=off (per-guard): disables writing-style only.
+- AGENT_CONFIG_GATES=off (legacy blanket): disables writing-style (with its
+  advisory) + banner only.
+- AGENT_STYLE_HOOK=off (per-guard): disables writing-style and the agent-style
+  advisory, which share the gate because they scan the same writes.
 - AGENT_COMPOUND_CD_HOOK=off (per-guard): disables compound cd only.
 
 Destructive git/gh `ask` checks have NO agent-side reroute (commit/push/reset/merge
@@ -63,6 +72,29 @@ def make_response(decision, reason):
             "permissionDecision": decision,
             "permissionDecisionReason": reason,
         }
+    })
+
+
+def make_advisory_response(message):
+    """Report `message` without touching the permission decision.
+
+    Two fields because they reach two different readers, and the choice was
+    measured rather than assumed (Claude Code 2.1.229): `additionalContext`
+    is the only one of the three candidate channels that reaches the model,
+    which is the reader that can act on a style finding while it drafts.
+    Writing to stderr and exiting 0, the shape the banner re-arm advisory
+    uses, reached neither reader in a probe. `systemMessage` puts the same
+    line in front of the human.
+
+    Omitting `permissionDecision` leaves the normal permission flow intact,
+    so this neither grants nor blocks anything.
+    """
+    return json.dumps({
+        "systemMessage": message,
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "additionalContext": message,
+        },
     })
 
 
@@ -542,6 +574,123 @@ def check_writing_style(tool_name, tool_input):
         )
 
     return None
+
+
+# Cap on advisory findings per write. RULE-12 alone reports 268 hits on a
+# large CHANGELOG, and a wall of findings is one the reader learns to skip.
+_STYLE_ADVISORY_LIMIT = 5
+
+
+# The rules the advisory promises, in AGENTS.md and in the docs both repos
+# ship. Reaching into private names is a bet on a package the hook does not
+# own, so the set is spelled once here and the loader below refuses a partial
+# match: advertising six rules while silently running one is worse than
+# running none, because the reader cannot tell the difference from the output.
+_ADVISORY_RULE_ATTRS = (
+    "_rule_05", "_rule_06", "_rule_12", "_rule_b", "_rule_d", "_rule_i",
+)
+
+
+def _agent_style_mechanical():
+    """Return agent-style's mechanical detectors, or None when unavailable.
+
+    Imported lazily and defensively. This hook runs on every tool call in
+    every repository, most of which have no reason to carry the package, so a
+    missing or broken `agent_style` must cost nothing and block nothing. The
+    banned-word gate above is independent of it and keeps working either way.
+
+    All of `_ADVISORY_RULE_ATTRS` or nothing. An earlier version kept whatever
+    subset it found, so a release that renamed five of the six private
+    functions would have left the hook running one rule, the documentation
+    promising six, and every behaviour test green.
+    """
+    try:
+        from agent_style.review import detectors_mech
+    except Exception:
+        return None
+    # RULE-G (headings must be title case) is deliberately absent. Measured over
+    # the 155 markdown files in this repo it produced 1018 of 2561 findings, and
+    # a 15-hit random sample contained nothing worth acting on: it flags the
+    # sentence-case headings this corpus writes on purpose ("## Non-goals",
+    # "### Empirical note") and lowercase project names ("agent-config") that
+    # cannot be title-cased at all. At 40% of all findings it would fill the cap
+    # below with headings the author already decided. The style-review skill
+    # still runs it, where a human asked for the full audit.
+    rules = []
+    for name in _ADVISORY_RULE_ATTRS:
+        fn = getattr(detectors_mech, name, None)
+        if not callable(fn):
+            # An installed but incompatible agent-style. Treated exactly like
+            # an absent one: silent, and the banned-word gate is unaffected.
+            return None
+        rules.append((name.replace("_rule_", "RULE-").upper(), fn))
+    return rules
+
+
+def advise_writing_style(tool_name, tool_input):
+    """Report agent-style's deterministic findings without blocking the write.
+
+    Advisory rather than deny, deliberately. The banned-word gate denies
+    because each hit has a one-word substitution; these rules do not. RULE-12
+    fires on any sentence over thirty words, which is a judgement call in
+    prose a human is typing and a mechanical fix only when an agent is
+    drafting. Denying on it would make the hook something to switch off.
+
+    Returns a message, or None. The caller passes the tool call through
+    either way and hands any message to make_advisory_response().
+    """
+    if tool_name not in ("Write", "Edit", "MultiEdit"):
+        return None
+
+    file_path = tool_input.get("file_path", "")
+    _, ext = os.path.splitext(file_path.lower())
+    if ext not in PROSE_EXTENSIONS:
+        return None
+
+    rules = _agent_style_mechanical()
+    if not rules:
+        return None
+
+    content = _content_for_write(tool_name, tool_input)
+    if not content:
+        return None
+
+    # Same stripping the banned-word gate uses, so fenced examples and inline
+    # code do not produce findings the author cannot act on.
+    scan_target = _content_for_style_check(content, ext)
+
+    findings = []
+    for label, fn in rules:
+        try:
+            rule_findings = [
+                f"{label}: {getattr(v, 'detail', None) or str(v)}"
+                for v in fn(scan_target)
+            ]
+        except Exception:
+            # All six ran or none did. Skipping the rule that raised and
+            # keeping the rest is the same hidden partial coverage the loader
+            # refuses at import time, one layer down: a changed signature or
+            # an input the detector cannot handle would quietly narrow the
+            # advisory, and the output would look exactly like a clean pass on
+            # those rules. A broken detector is treated as a broken package.
+            return None
+        findings.extend(rule_findings)
+
+    if not findings:
+        return None
+
+    shown = findings[:_STYLE_ADVISORY_LIMIT]
+    more = len(findings) - len(shown)
+    tail = f" (+{more} more)" if more else ""
+    return (
+        # "did not block" rather than "was allowed": this response omits
+        # permissionDecision, so the native permission layer and any other
+        # PreToolUse hook still get their say. Claiming the write happened
+        # would be a promise this hook is not in a position to make.
+        f"[agent-style] {len(findings)} finding(s) in {os.path.basename(file_path)}"
+        f"{tail}: " + "; ".join(shown) +
+        ". Advisory only; this hook did not block the write."
+    )
 
 
 def _read_ts(path):
@@ -1468,16 +1617,31 @@ def main():
     if tool_name and gates_enabled():
         # Check 1 (new): writing-style gate on Write/Edit/MultiEdit to prose files.
         # Honors the AGENT_STYLE_HOOK per-guard env in addition to AGENT_CONFIG_GATES.
+        advice = None
         if writing_style_enabled():
             deny = check_writing_style(tool_name, tool_input)
             if deny:
                 print(make_response("deny", deny))
                 return
+            # Advisory pass: agent-style's deterministic findings, reported and
+            # then allowed. Computed here, next to the gate it shares an escape
+            # hatch with, but held until every deny-style gate below has passed.
+            # stdout carries exactly one JSON document, so printing it now would
+            # concatenate a second one ahead of the banner deny and cost the
+            # reader that decision.
+            advice = advise_writing_style(tool_name, tool_input)
 
         # Check 2 (new): banner gate on most tool calls until banner acknowledged.
         deny = check_banner_emission(tool_name, tool_input)
         if deny:
             print(make_response("deny", deny))
+            return
+
+        # No gate above claimed stdout, so the advisory can have it. A blocked
+        # write drops its advisory on purpose: the write is not happening, and
+        # two complaints about one call read as two unrelated problems.
+        if advice:
+            print(make_advisory_response(advice))
             return
 
     # Shell-tool checks below apply to Bash AND PowerShell. Legacy payloads

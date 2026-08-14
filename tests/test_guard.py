@@ -1,10 +1,14 @@
 """Tests for guard.py hook. Discovers guard.py relative to the repo root."""
 from __future__ import annotations
 
+import builtins
+import importlib.util
 import json
+import os
 import subprocess
 import sys
 import unittest
+import unittest.mock
 from pathlib import Path
 
 
@@ -587,6 +591,477 @@ class WritingStyleGateTests(unittest.TestCase):
             "tool_input": {"file_path": "/tmp/x.md", "content": "An embargo was placed."},
         })
         self.assertIsNone(resp)
+
+
+# Deliberately over RULE-12's thirty-word threshold. Counted, not eyeballed:
+# an earlier version of this fixture sat at twenty-nine words and silently
+# tested nothing, which is the failure mode the paired clean-prose test above
+# exists to catch.
+_LONG_SENTENCE = (
+    "This is a deliberately long sentence written purely so that it will "
+    "comfortably exceed the thirty word threshold that RULE-12 enforces on "
+    "prose, and therefore reach the advisory code path that is under test in "
+    "this particular case."
+)
+
+
+def _load_guard_module():
+    """Import guard.py as a module so its helpers can be called directly."""
+    spec = importlib.util.spec_from_file_location("guard_under_test", GUARD)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _write_fake_agent_style(root: Path) -> str:
+    """Plant a stand-in `agent_style` and return a PYTHONPATH entry for it.
+
+    The one-response contract belongs to guard.py's control flow, not to the
+    detectors, so the test for it should not sit behind an optional
+    third-party import. This fake reports one finding on any text, which is
+    all that path needs, and it makes that test run on a machine with no
+    agent-style installed. PYTHONPATH precedes site-packages, so it also
+    shadows a real installation and keeps the test deterministic either way.
+    """
+    pkg = root / "agent_style" / "review"
+    pkg.mkdir(parents=True)
+    (root / "agent_style" / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "detectors_mech.py").write_text(
+        "class _V:\n"
+        "    def __init__(self, detail):\n"
+        "        self.detail = detail\n"
+        "\n"
+        "def _rule_12(text):\n"
+        "    return [_V('sentence length 99 words (>30)')]\n"
+        "\n"
+        "def _nothing(text):\n"
+        "    return []\n"
+        "\n"
+        "_rule_05 = _rule_06 = _rule_b = _rule_d = _rule_i = _nothing\n",
+        encoding="utf-8",
+    )
+    return str(root)
+
+
+class AgentStyleAdvisoryTests(unittest.TestCase):
+    """agent-style's deterministic findings are reported, never blocking.
+
+    The banned-word gate denies because each hit has a one-word substitution.
+    These rules do not: RULE-12 fires on any sentence over thirty words, which
+    is a judgement call in hand-written prose. Denying on it would make the
+    hook something to switch off, so the contract under test is report the
+    findings and set no permission decision.
+    """
+
+    def _require_agent_style(self) -> None:
+        """Skip on a developer machine, fail in CI.
+
+        These tests exist to exercise the advisory, and the advisory needs the
+        package. Skipping when it is absent is right locally, where most
+        checkouts have no reason to carry it. In CI the same skip turns the
+        whole feature green while running none of it, which is how the gate
+        this change repairs went unnoticed for a release line.
+
+        Asserting on the import is what makes that load-bearing. An earlier
+        version instead scanned `validate.yml` for the package name, and a
+        mutation probe passed it by adding a commented-out install line: the
+        workflow was broken and the test agreed with it.
+        """
+        try:
+            from agent_style.review import detectors_mech  # noqa: F401
+        except Exception as exc:
+            if os.environ.get("CI"):
+                self.fail(
+                    f"agent_style must be importable in CI or these tests "
+                    f"cover nothing; the workflow is expected to install it. "
+                    f"Import failed with: {exc!r}"
+                )
+            self.skipTest("agent_style not importable in this environment")
+
+    @staticmethod
+    def _advice(resp) -> str:
+        """The advisory text a response carries, or "" for a silent response.
+
+        Reads the model-facing field. The paired channel test below is what
+        keeps the human-facing one from being dropped.
+        """
+        if not resp:
+            return ""
+        return resp.get("hookSpecificOutput", {}).get("additionalContext", "")
+
+    def test_long_sentence_is_reported_without_a_permission_decision(self) -> None:
+        self._require_agent_style()
+        resp = run_guard_with_payload({
+            "tool_name": "Write",
+            "tool_input": {"file_path": "/tmp/probe.md", "content": _LONG_SENTENCE},
+        })
+        advice = self._advice(resp)
+        self.assertIn("[agent-style]", advice)
+        self.assertIn("RULE-12", advice)
+        self.assertIn("Advisory only", advice)
+        self.assertNotIn(
+            "permissionDecision", resp["hookSpecificOutput"],
+            "an advisory must leave the permission flow alone; carrying a "
+            "decision here would silently grant or block the write",
+        )
+
+    def test_the_advisory_reaches_both_readers(self) -> None:
+        """Two fields, two readers, and neither is redundant.
+
+        `additionalContext` is what reaches the model, the reader that can act
+        on a finding while it drafts. `systemMessage` is what reaches the
+        human. Probing Claude Code 2.1.229 found that writing to stderr and
+        exiting 0 reached neither, so dropping either field here would put the
+        advisory back in front of one audience only.
+        """
+        self._require_agent_style()
+        resp = run_guard_with_payload({
+            "tool_name": "Write",
+            "tool_input": {"file_path": "/tmp/probe.md", "content": _LONG_SENTENCE},
+        })
+        self.assertIn("[agent-style]", resp.get("systemMessage", ""))
+        self.assertEqual(
+            resp["systemMessage"], self._advice(resp),
+            "both readers should be told the same thing",
+        )
+
+    def test_clean_prose_is_silent(self) -> None:
+        """No finding, no response. Paired with the test above so an advisory
+        that fired unconditionally could not pass the suite."""
+        self._require_agent_style()
+        resp = run_guard_with_payload({
+            "tool_name": "Write",
+            "tool_input": {"file_path": "/tmp/probe.md", "content": "Short and clean.\n"},
+        })
+        self.assertIsNone(resp)
+
+    def test_sentence_case_headings_are_not_reported(self) -> None:
+        """RULE-G is deliberately out of the advisory's rule set.
+
+        Measured over this repo it produced 40% of all findings and flagged
+        the sentence-case headings the corpus writes on purpose, so it would
+        crowd the cap with nothing to act on. Asserting the behaviour rather
+        than the absence of a name means re-adding the rule fails here.
+        """
+        self._require_agent_style()
+        resp = run_guard_with_payload({
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": "/tmp/probe.md",
+                "content": "## Non-goals\n\nShort and clean.\n\n### Empirical note\n\nAlso fine.\n",
+            },
+        })
+        self.assertIsNone(resp, f"unexpected finding: {self._advice(resp)}")
+
+    def test_code_files_are_not_scanned(self) -> None:
+        resp = run_guard_with_payload({
+            "tool_name": "Write",
+            "tool_input": {"file_path": "/tmp/probe.py", "content": f"# {_LONG_SENTENCE}\n"},
+        })
+        self.assertIsNone(resp)
+
+    def test_a_denied_write_emits_one_message_not_two(self) -> None:
+        """The advisory runs only after the banned-word gate declines to deny.
+
+        Content that trips both would otherwise produce a deny plus a separate
+        advisory about the same write, which reads as two unrelated complaints.
+        """
+        resp = run_guard_with_payload({
+            "tool_name": "Write",
+            "tool_input": {
+                "file_path": "/tmp/probe.md",
+                "content": "This pivotal and " + _LONG_SENTENCE,
+            },
+        })
+        self.assertEqual(
+            resp["hookSpecificOutput"]["permissionDecision"], "deny",
+        )
+        self.assertNotIn("[agent-style]", json.dumps(resp))
+
+    def test_stdout_carries_one_json_document_when_the_banner_also_denies(self) -> None:
+        """A pending banner plus an advisory-worthy write is one call, so it
+        gets one response.
+
+        This failed silently when first written. The advisory printed where it
+        was computed, then the banner deny printed after it, and stdout held
+        two concatenated JSON documents. A reader taking the first would act on
+        an advisory and lose the deny, which is a gate rather than a note. The
+        subprocess harness parses stdout, so it raises here rather than
+        reporting a diff.
+
+        Runs against the fake detector rather than the real package: this is
+        guard.py's control flow, and it should not go untested on a machine
+        that happens not to have agent-style installed.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            consumer = Path(tmp) / "consumer"
+            (consumer / ".agent-config").mkdir(parents=True)
+            (consumer / ".agent-config" / "bootstrap.sh").write_text("", encoding="utf-8")
+            (consumer / ".agent-config" / "session-event.json").write_text(
+                json.dumps({"ts": 9999999999}), encoding="utf-8"
+            )
+            fake = _write_fake_agent_style(Path(tmp) / "fakepkg")
+            resp = run_guard_with_payload(
+                {
+                    "tool_name": "Write",
+                    "tool_input": {"file_path": "/tmp/probe.md", "content": _LONG_SENTENCE},
+                },
+                cwd=str(consumer),
+                env={"PYTHONPATH": fake},
+            )
+        self.assertEqual(
+            resp["hookSpecificOutput"]["permissionDecision"], "deny",
+            "the banner gate outranks the advisory; a blocked write gets no note",
+        )
+        self.assertNotIn("[agent-style]", json.dumps(resp))
+
+    def test_style_hook_off_silences_the_advisory(self) -> None:
+        """The advisory shares the writing-style escape hatch rather than
+        introducing a second env var, which the literal-scan test would
+        otherwise require registering."""
+        resp = run_guard_with_payload(
+            {
+                "tool_name": "Write",
+                "tool_input": {"file_path": "/tmp/probe.md", "content": _LONG_SENTENCE},
+            },
+            env={"AGENT_STYLE_HOOK": "off"},
+        )
+        self.assertIsNone(resp)
+
+    def test_exactly_the_six_documented_rules_are_selected(self) -> None:
+        """The rule list is a documented contract, so it is asserted as one.
+
+        Every other test here checks behaviour, and behaviour cannot see the
+        difference between six rules and one that happens to fire. AGENTS.md
+        and the shipped docs name these six, so a release that renamed the
+        private functions behind five of them should fail here rather than
+        quietly narrow what the advisory covers.
+        """
+        self._require_agent_style()
+        guard = _load_guard_module()
+        labels = {label for label, _ in guard._agent_style_mechanical()}
+        self.assertEqual(
+            labels,
+            {"RULE-05", "RULE-06", "RULE-12", "RULE-B", "RULE-D", "RULE-I"},
+        )
+
+    def test_a_detector_that_raises_disables_the_whole_advisory(self) -> None:
+        """Incompatibility that only shows up at call time gets the same
+        treatment as incompatibility visible at load time.
+
+        The loader's all-or-nothing check catches a renamed or removed
+        function. It cannot catch a callable whose signature changed, whose
+        return value is no longer iterable, or that fails on some particular
+        input. Skipping the rule that raised and reporting the rest produces
+        an advisory that looks complete and covers five rules, which is the
+        state the loader refuses one layer up.
+        """
+        self._require_agent_style()
+        guard = _load_guard_module()
+        from agent_style.review import detectors_mech
+
+        def boom(_text):
+            raise RuntimeError("simulated incompatible detector")
+
+        # Three positions, because each catches a different way of getting
+        # this wrong. RULE-12 is the only rule that fires on this content, so:
+        # `_rule_05` raises before anything is collected, `_rule_12` removes
+        # the one finding-producing rule, and `_rule_i` raises after RULE-12
+        # has already contributed. Only the last distinguishes discarding the
+        # collected findings from stopping at the failure and reporting them,
+        # which is partial coverage wearing a complete advisory's output.
+        for broken in ("_rule_05", "_rule_12", "_rule_i"):
+            with self.subTest(broken=broken):
+                with unittest.mock.patch.object(detectors_mech, broken, boom):
+                    self.assertIsNone(guard.advise_writing_style(
+                        "Write",
+                        {"file_path": "/tmp/probe.md", "content": _LONG_SENTENCE},
+                    ))
+
+    def test_an_incompatible_package_disables_the_whole_advisory(self) -> None:
+        """Partial coverage is worse than none, because it looks the same.
+
+        If a future agent-style keeps `_rule_12` and renames the rest, a
+        subset loader would report one rule's findings under documentation
+        promising six, and no output would reveal the gap. All or nothing.
+        """
+        self._require_agent_style()
+        guard = _load_guard_module()
+        from agent_style.review import detectors_mech
+
+        for missing in ("_rule_12", "_rule_i"):
+            with self.subTest(missing=missing):
+                with unittest.mock.patch.object(detectors_mech, missing, None):
+                    self.assertIsNone(guard._agent_style_mechanical())
+                    self.assertIsNone(guard.advise_writing_style(
+                        "Write",
+                        {"file_path": "/tmp/probe.md", "content": _LONG_SENTENCE},
+                    ))
+
+    def test_the_workflow_installs_what_ci_will_require(self) -> None:
+        """Fail here, before the push, rather than in CI.
+
+        `_require_agent_style` is the guarantee: it turns a missing package
+        into a CI failure instead of a skip. This is the earlier and clearer
+        signal for the same problem, so a maintainer who drops the install
+        learns about it from a local run.
+
+        The workflow is read through a YAML parser and only active `run`
+        values are inspected. Two weaker versions failed a mutation probe
+        first: a whole-file search was satisfied by the explanatory comment,
+        and a line scanner was satisfied by a commented-out install sitting
+        beside a broken command.
+        """
+        try:
+            import yaml
+        except ImportError:
+            self.skipTest("PyYAML not available to parse the workflow")
+        workflow = ROOT / ".github" / "workflows" / "validate.yml"
+        parsed = yaml.safe_load(workflow.read_text(encoding="utf-8"))
+        installed = set()
+        for job in parsed.get("jobs", {}).values():
+            for step in job.get("steps", []) or []:
+                run = step.get("run") if isinstance(step, dict) else None
+                if not run:
+                    continue
+                for line in run.splitlines():
+                    _, sep, args = line.partition("pip install")
+                    if sep:
+                        installed.update(
+                            a for a in args.split() if not a.startswith("-")
+                        )
+        self.assertIn(
+            "agent-style", installed,
+            f"{workflow.name} must install agent-style, or _require_agent_style "
+            f"fails every advisory test in CI. Packages installed by active "
+            f"run steps: {sorted(installed)}",
+        )
+
+    def test_missing_agent_style_degrades_silently(self) -> None:
+        """This hook runs in every repository, most of which have no reason to
+        carry the package. An unimportable `agent_style` must cost nothing and
+        block nothing.
+
+        Exercised against the helper directly rather than through the
+        subprocess harness, because the import has to be made to fail
+        deterministically regardless of what is installed on the machine
+        running the suite.
+        """
+        spec = importlib.util.spec_from_file_location("guard_under_test", GUARD)
+        guard = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = guard
+        spec.loader.exec_module(guard)
+
+        real_import = builtins.__import__
+
+        def blocked(name, *args, **kwargs):
+            if name.startswith("agent_style"):
+                raise ImportError("blocked by test")
+            return real_import(name, *args, **kwargs)
+
+        with unittest.mock.patch.object(builtins, "__import__", blocked):
+            self.assertIsNone(guard._agent_style_mechanical())
+            self.assertIsNone(guard.advise_writing_style(
+                "Write",
+                {"file_path": "/tmp/probe.md", "content": _LONG_SENTENCE},
+            ))
+
+    def test_the_advisory_is_capped(self) -> None:
+        """A wall of findings is one the reader learns to skip.
+
+        RULE-12 alone reports hundreds of hits on a large CHANGELOG, so the
+        line is capped and says how many it withheld.
+        """
+        self._require_agent_style()
+        many = "\n\n".join(f"{_LONG_SENTENCE}" for _ in range(12))
+        resp = run_guard_with_payload({
+            "tool_name": "Write",
+            "tool_input": {"file_path": "/tmp/probe.md", "content": many},
+        })
+        advice = self._advice(resp)
+        self.assertIn("[agent-style]", advice)
+        self.assertIn("more)", advice, "a truncated list must say what it withheld")
+        self.assertLessEqual(
+            advice.count("RULE-12"), 5 + 1,
+            "at most the cap should be listed",
+        )
+
+
+class HookReachabilityTests(unittest.TestCase):
+    """Every tool guard.py gates must be wired to it in `user/settings.json`.
+
+    This closes a gap that shipped the writing-style gate dead. `PreToolUse`
+    listed `Bash` and `PowerShell` only, while `check_writing_style` acts on
+    `Write` / `Edit` / `MultiEdit` alone, so a write carrying a banned word was
+    denied in the suite and sailed through in a real session. Everything else
+    about that feature was correct: the gate, its tests, its documentation, and
+    the escape hatch. Nothing connected them to a running agent, and nothing
+    noticed for the length of a release line.
+
+    The probes below are behavioural rather than a list of tool names copied
+    from guard.py, since a copied list agrees with itself no matter what the
+    hook does. Each probe asserts the decision it expects before checking
+    coverage, so a probe that stops triggering fails here instead of quietly
+    testing nothing.
+    """
+
+    PROBES = (
+        ("Write", {"file_path": "/tmp/probe.md", "content": "A pivotal idea.\n"}, "deny"),
+        ("Edit", {"file_path": "/tmp/probe.md", "new_string": "A pivotal idea.\n"}, "deny"),
+        ("MultiEdit", {"file_path": "/tmp/probe.md",
+                       "edits": [{"new_string": "A pivotal idea.\n"}]}, "deny"),
+        ("Bash", {"command": "git push origin main"}, "ask"),
+        ("PowerShell", {"command": "Remove-Item -Recurse -Force C:\\tmp\\x"}, "ask"),
+    )
+
+    @staticmethod
+    def _matchers():
+        settings = json.loads(
+            (ROOT / "user" / "settings.json").read_text(encoding="utf-8")
+        )
+        return [
+            entry.get("matcher", "")
+            for entry in settings.get("hooks", {}).get("PreToolUse", [])
+            if "guard.py" in json.dumps(entry.get("hooks", []))
+        ]
+
+    def test_every_gated_tool_is_wired_to_the_hook(self) -> None:
+        # `fullmatch` is an approximation of Claude Code's matcher handling,
+        # not a model of it: a matcher like `Write|Edit|MultiEdit` is read as
+        # a list of exact tool names, and other supported spellings
+        # (comma-separated lists, unanchored patterns) would not survive this
+        # check. The approximation errs toward reporting a live matcher as
+        # uncovered, never the reverse, so it cannot pass while a gated tool
+        # is genuinely unreachable. Widen it if a matcher spelling that this
+        # repo actually ships starts failing here.
+        import re as _re
+
+        matchers = self._matchers()
+        self.assertTrue(matchers, "no PreToolUse entry invokes guard.py")
+        for tool, tool_input, expected in self.PROBES:
+            with self.subTest(tool=tool):
+                resp = run_guard_with_payload(
+                    {"tool_name": tool, "tool_input": tool_input}
+                )
+                self.assertIsNotNone(
+                    resp, f"probe for {tool} no longer triggers a gate"
+                )
+                self.assertEqual(
+                    resp["hookSpecificOutput"]["permissionDecision"], expected,
+                    f"probe for {tool} no longer produces {expected}",
+                )
+                covered = any(
+                    m in ("", "*") or _re.fullmatch(m, tool)
+                    for m in matchers
+                )
+                self.assertTrue(
+                    covered,
+                    f"guard.py gates {tool} but no PreToolUse matcher in "
+                    f"user/settings.json selects it, so the gate cannot fire "
+                    f"in a real session. Matchers present: {matchers}",
+                )
 
 
 class BannerGateTests(unittest.TestCase):
