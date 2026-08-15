@@ -59,6 +59,17 @@ class GeneratorTests(unittest.TestCase):
         self.assertIn("Writing Defaults", text)
         self.assertIn("Git Safety", text)
 
+    def test_generated_files_carry_copy_paste_wrapping_clause(self) -> None:
+        """The copy-paste bullet is shared, so both agents must inherit it.
+
+        Guards against the Formatting Defaults section being moved inside an
+        <!-- agent:claude --> / <!-- agent:codex --> block (anywhere-agents#27).
+        """
+        for path in (CLAUDE_MD, CODEX_MD):
+            text = path.read_text(encoding="utf-8")
+            self.assertIn("treat hard line breaks as semantic", text,
+                          f"{path.name} lost the copy-paste wrapping clause")
+
     def test_claude_md_keeps_claude_block(self) -> None:
         text = CLAUDE_MD.read_text(encoding="utf-8")
         self.assertIn("Claude Code installation", text,

@@ -169,6 +169,34 @@ class RepoValidationTests(unittest.TestCase):
         fetched_agents = project_dir / ".agent-config" / "AGENTS.md"
         local_only_pointer = project_dir / ".claude" / "commands" / "local-only.md"
         project_settings = project_dir / ".claude" / "settings.json"
+        ledger_path = project_dir / ".agent-config" / "last-run.json"
+
+        self.assertTrue(ledger_path.exists(), "Expected bootstrap run ledger")
+        ledger = json.loads(read_text(ledger_path))
+        steps = ledger["steps"]
+        phases = [step["phase"] for step in steps]
+        self.assertIs(ledger["completed"], True)
+        self.assertEqual(ledger["last_phase"], "finalize")
+        self.assertEqual(len(steps), 8)
+        self.assertEqual(
+            phases,
+            [
+                "preflight",
+                "fetch",
+                "compose",
+                "generate",
+                "project_files",
+                "user_files",
+                "external",
+                "finalize",
+            ],
+        )
+        self.assertTrue(all(step["status"] in {"ok", "skipped"} for step in steps))
+        self.assertFalse(any(step["status"] == "failed" for step in steps))
+        self.assertEqual({step["scope"] for step in steps}, {"repo", "user", "external"})
+        steps_by_phase = {step["phase"]: step for step in steps}
+        self.assertIn("AGENTS.md", steps_by_phase["compose"]["targets"])
+        self.assertIn(".claude/settings.json", steps_by_phase["project_files"]["targets"])
 
         self.assertTrue(fetched_agents.exists(), "Expected fetched AGENTS.md")
         self.assertIn("## User Profile", read_text(fetched_agents))
@@ -331,6 +359,30 @@ class RepoValidationTests(unittest.TestCase):
             "should not delete unrelated project-local commands",
             self.agents_text,
         )
+
+    def test_agents_copy_paste_rule_bans_display_wrapping(self) -> None:
+        for fragment in (
+            "treat hard line breaks as semantic",
+            "single unbroken line however long it runs",
+            "wrap to a display width",
+            "do not indent continuation lines",
+            "a postal address or a signature block",
+        ):
+            self.assertIn(fragment, self.agents_text)
+        self.assertNotIn(
+            "copies cleanly with line breaks and formatting intact",
+            self.agents_text,
+            "the old rationale reads as an instruction to preserve every break "
+            "in the block, including display wraps (anywhere-agents#27)",
+        )
+
+    def test_agents_routes_long_drafts_to_a_file(self) -> None:
+        for fragment in (
+            "goes in a `.md` file rather than in the terminal",
+            "arrives in Outlook or Gmail as literal",
+            "rendered view of the file to copy from",
+        ):
+            self.assertIn(fragment, self.agents_text)
 
     def test_gitignore_excludes_local_state(self) -> None:
         for entry in (
