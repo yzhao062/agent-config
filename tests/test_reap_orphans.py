@@ -8,6 +8,7 @@ import subprocess
 import sys
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from test_dispatch_task import (
@@ -32,22 +33,28 @@ def _pid_alive(pid: int) -> bool:
         import ctypes
         from ctypes import wintypes
 
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         process_query_limited_information = 0x1000
         still_active = 259
-        handle = ctypes.windll.kernel32.OpenProcess(
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        handle = kernel32.OpenProcess(
             process_query_limited_information, False, pid
         )
         if not handle:
-            return False
+            error_code = ctypes.get_last_error()
+            if error_code == 87:
+                return False
+            raise ctypes.WinError(error_code)
         try:
             exit_code = wintypes.DWORD()
-            if not ctypes.windll.kernel32.GetExitCodeProcess(
+            if not kernel32.GetExitCodeProcess(
                 handle, ctypes.byref(exit_code)
             ):
-                return False
+                raise ctypes.WinError(ctypes.get_last_error())
             return exit_code.value == still_active
         finally:
-            ctypes.windll.kernel32.CloseHandle(handle)
+            kernel32.CloseHandle(handle)
 
     try:
         os.kill(pid, 0)
@@ -76,18 +83,19 @@ def _windows_handle_start_ticks(handle: int) -> int:
     import ctypes
     from ctypes import wintypes
 
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     creation = wintypes.FILETIME()
     exit_time = wintypes.FILETIME()
     kernel_time = wintypes.FILETIME()
     user_time = wintypes.FILETIME()
-    if not ctypes.windll.kernel32.GetProcessTimes(
+    if not kernel32.GetProcessTimes(
         wintypes.HANDLE(handle),
         ctypes.byref(creation),
         ctypes.byref(exit_time),
         ctypes.byref(kernel_time),
         ctypes.byref(user_time),
     ):
-        raise ctypes.WinError()
+        raise ctypes.WinError(ctypes.get_last_error())
     filetime = (creation.dwHighDateTime << 32) | creation.dwLowDateTime
     return filetime + 504_911_232_000_000_000
 
@@ -98,33 +106,29 @@ def _windows_process_start_ticks(process: subprocess.Popen[str]) -> int:
 
 def _windows_pid_start_ticks(pid: int) -> int | None:
     import ctypes
+    from ctypes import wintypes
 
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     process_query_limited_information = 0x1000
-    handle = ctypes.windll.kernel32.OpenProcess(
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    handle = kernel32.OpenProcess(
         process_query_limited_information, False, pid
     )
     if not handle:
-        return None
+        error_code = ctypes.get_last_error()
+        if error_code == 87:
+            return None
+        raise ctypes.WinError(error_code)
     try:
+        exit_code = wintypes.DWORD()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if exit_code.value != 259:
+            return None
         return _windows_handle_start_ticks(handle)
-    except OSError:
-        return None
     finally:
-        ctypes.windll.kernel32.CloseHandle(handle)
-
-
-def _read_windows_process_identities(path: Path) -> dict[int, int]:
-    if not path.exists():
-        return {}
-    identities = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if line:
-            parts = line.split("\t")
-            if len(parts) != 2:
-                continue
-            pid, start_ticks = parts
-            identities[int(pid)] = int(start_ticks)
-    return identities
+        kernel32.CloseHandle(handle)
 
 
 def _windows_deny_process_terminate(process: subprocess.Popen[str]) -> None:
@@ -529,7 +533,7 @@ class _ReapOrphansContractMixin:
         )
         return state_dir
 
-    def test_orphan_worker_is_reaped(self) -> None:
+    def test_orphan_worker_is_terminated(self) -> None:
         dispatcher = None
         worker_pid = None
         with _temp_dir() as td:
@@ -539,10 +543,14 @@ class _ReapOrphansContractMixin:
                 result = self._run_reaper(tmpdir)
                 reported_pid = self._reported_worker_pid(state_dir)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertIn(f"REAPED {state_dir.name} pid={reported_pid}", result.stdout)
+                self.assertIn(
+                    f"TERMINATED {state_dir.name} pid={reported_pid}", result.stdout
+                )
+                self.assertIn("REAP-DONE terminated=1 left=0", result.stdout)
+                self.assertNotIn("REAPED ", result.stdout)
                 self.assertTrue(
                     _wait_for(lambda: not _pid_alive(worker_pid)),
-                    f"worker PID {worker_pid} survived reap",
+                    f"worker PID {worker_pid} survived termination",
                 )
             finally:
                 _stop_popen(dispatcher)
@@ -574,7 +582,10 @@ class _ReapOrphansContractMixin:
                 result = self._run_reaper(tmpdir)
                 reported_pid = self._reported_worker_pid(state_dir)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertIn(f"REAPED {state_dir.name} pid={reported_pid}", result.stdout)
+                self.assertIn(
+                    f"TERMINATED {state_dir.name} pid={reported_pid}", result.stdout
+                )
+                self.assertNotIn("REAPED ", result.stdout)
                 self.assertTrue(_wait_for(lambda: not _pid_alive(worker_pid)))
                 self.assertIsNone(decoy.poll(), "unreferenced process was terminated")
                 self.assertNotIn(str(decoy.pid), result.stdout)
@@ -583,7 +594,7 @@ class _ReapOrphansContractMixin:
                 _stop_worker_tree(worker_pid)
                 _stop_popen(decoy)
 
-    def test_identity_mismatch_is_not_reaped(self) -> None:
+    def test_identity_mismatch_is_not_terminated(self) -> None:
         dispatcher = None
         worker_pid = None
         with _temp_dir() as td:
@@ -626,7 +637,7 @@ class _ReapOrphansContractMixin:
             finally:
                 _stop_popen(decoy)
 
-    def test_foreign_scheme_is_not_reaped(self) -> None:
+    def test_foreign_scheme_is_not_terminated(self) -> None:
         decoy = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)"])
         with _temp_dir() as td:
             tmpdir = Path(td)
@@ -658,7 +669,7 @@ class _ReapOrphansContractMixin:
             result = self._run_reaper(tmpdir)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn(f"LEFT {state_dir.name} no-worker-record", result.stdout)
-            self.assertIn("REAP-DONE reaped=0 left=1", result.stdout)
+            self.assertIn("REAP-DONE terminated=0 left=1", result.stdout)
 
     def test_dry_run_kills_nothing(self) -> None:
         dispatcher = None
@@ -727,7 +738,7 @@ class ReapOrphansBashTests(_ReapOrphansContractMixin, unittest.TestCase):
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn(f"LEFT {state_dir.name} kill-failed", result.stdout)
-                self.assertIn("REAP-DONE reaped=0 left=1", result.stdout)
+                self.assertIn("REAP-DONE terminated=0 left=1", result.stdout)
                 if not _pid_alive(worker_pid):
                     self.skipTest(
                         "fixture precondition failed: worker exited despite injected "
@@ -823,7 +834,7 @@ class ReapOrphansBashGroupTests(unittest.TestCase):
                 self.assertIn(
                     f"LEFT {state_dir.name} kill-failed", result.stdout
                 )
-                self.assertNotIn(f"REAPED {state_dir.name}", result.stdout)
+                self.assertNotIn(f"TERMINATED {state_dir.name}", result.stdout)
                 if not kill_marker.is_file():
                     self.skipTest(
                         "fixture precondition failed: injected group KILL denial was "
@@ -849,7 +860,7 @@ class ReapOrphansBashGroupTests(unittest.TestCase):
                         pass
                 _stop_popen(root)
 
-    def test_escaped_process_group_descendant_must_be_gone_before_reaped(self) -> None:
+    def test_escaped_observed_descendant_must_be_gone_before_terminated(self) -> None:
         root = None
         root_pid = None
         child_pid = None
@@ -939,7 +950,7 @@ class ReapOrphansBashGroupTests(unittest.TestCase):
 
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn(f"LEFT {state_dir.name} kill-failed", result.stdout)
-                self.assertNotIn(f"REAPED {state_dir.name}", result.stdout)
+                self.assertNotIn(f"TERMINATED {state_dir.name}", result.stdout)
                 if not kill_marker.is_file():
                     self.skipTest(
                         "fixture precondition failed: injected retained-child KILL "
@@ -1057,7 +1068,7 @@ class ReapOrphansBashGroupTests(unittest.TestCase):
 
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn(f"LEFT {state_dir.name} kill-failed", result.stdout)
-                self.assertNotIn(f"REAPED {state_dir.name}", result.stdout)
+                self.assertNotIn(f"TERMINATED {state_dir.name}", result.stdout)
                 if not read_marker.is_file():
                     self.skipTest(
                         "fixture precondition failed: injected unreadable-stat path "
@@ -1088,6 +1099,95 @@ class ReapOrphansPowerShellTests(_ReapOrphansContractMixin, unittest.TestCase):
     DISPATCH_KIND = "powershell"
     REAPER_KIND = "powershell"
 
+    def test_windows_pid_query_failure_is_not_absence(self) -> None:
+        import ctypes
+
+        class FakeCall:
+            def __init__(self, result: int) -> None:
+                self.result = result
+                self.argtypes = None
+                self.restype = None
+
+            def __call__(self, *_args) -> int:
+                return self.result
+
+        fake_kernel32 = type(
+            "FakeKernel32", (), {"OpenProcess": FakeCall(0)}
+        )()
+        with (
+            mock.patch.object(ctypes, "WinDLL", return_value=fake_kernel32),
+            mock.patch.object(ctypes, "get_last_error", return_value=5),
+        ):
+            with self.assertRaises(OSError):
+                _windows_pid_start_ticks(12345)
+
+        with (
+            mock.patch.object(ctypes, "WinDLL", return_value=fake_kernel32),
+            mock.patch.object(ctypes, "get_last_error", return_value=87),
+        ):
+            self.assertIsNone(_windows_pid_start_ticks(12345))
+
+    def test_windows_enumeration_query_is_bounded_by_deadline(self) -> None:
+        worker = None
+        with _temp_dir() as td:
+            tmpdir = Path(td)
+            instrumented_reaper = tmpdir / "reap-orphans-slow-query.ps1"
+            try:
+                worker = subprocess.Popen(
+                    [sys.executable, "-c", "import time; time.sleep(300)"]
+                )
+                state_dir = self._write_windows_orphan_state(
+                    tmpdir, worker, "slow-query"
+                )
+                text = REAP_PS1.read_text(encoding="utf-8")
+                query_needle = "$queryScript = @'\nparam([string]$Filter)\n"
+                deadline_needle = (
+                    "$fixedPointDeadline = [DateTime]::UtcNow.AddSeconds(20)"
+                )
+                self.assertEqual(text.count(query_needle), 1)
+                self.assertEqual(text.count(deadline_needle), 1)
+                text = text.replace(
+                    query_needle,
+                    query_needle + "Start-Sleep -Seconds 60\n",
+                ).replace(
+                    deadline_needle,
+                    "$fixedPointDeadline = [DateTime]::UtcNow.AddMilliseconds(250)",
+                )
+                instrumented_reaper.write_text(text, encoding="utf-8")
+                env = os.environ.copy()
+                env.update({
+                    "TMPDIR": str(tmpdir),
+                    "TEMP": str(tmpdir),
+                    "TMP": str(tmpdir),
+                })
+                started = time.monotonic()
+                result = subprocess.run(
+                    [
+                        PS_SHELL,
+                        "-NoProfile",
+                        "-NonInteractive",
+                        "-ExecutionPolicy",
+                        "Bypass",
+                        "-File",
+                        str(instrumented_reaper),
+                        "--state-dir",
+                        str(state_dir),
+                    ],
+                    cwd=str(tmpdir),
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=10,
+                )
+                elapsed = time.monotonic() - started
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertLess(elapsed, 10)
+                self.assertIn(f"LEFT {state_dir.name} kill-failed", result.stdout)
+                self.assertNotIn(f"TERMINATED {state_dir.name}", result.stdout)
+            finally:
+                _stop_popen(worker)
+
     def test_failed_termination_is_left(self) -> None:
         worker = None
         with _temp_dir() as td:
@@ -1107,8 +1207,8 @@ class ReapOrphansPowerShellTests(_ReapOrphansContractMixin, unittest.TestCase):
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn(f"LEFT {state_dir.name} kill-failed", result.stdout)
-                self.assertNotIn(f"REAPED {state_dir.name}", result.stdout)
-                self.assertIn("REAP-DONE reaped=0 left=1", result.stdout)
+                self.assertNotIn(f"TERMINATED {state_dir.name}", result.stdout)
+                self.assertIn("REAP-DONE terminated=0 left=1", result.stdout)
                 if worker.poll() is not None:
                     self.skipTest(
                         "fixture precondition failed: worker exited despite an access "
@@ -1117,7 +1217,7 @@ class ReapOrphansPowerShellTests(_ReapOrphansContractMixin, unittest.TestCase):
             finally:
                 _stop_popen(worker)
 
-    def test_target_exit_at_termination_boundary_is_worker_exited(self) -> None:
+    def test_worker_that_exits_after_reap_notice_is_worker_exited(self) -> None:
         worker = None
         with _temp_dir() as td:
             tmpdir = Path(td)
@@ -1137,18 +1237,22 @@ class ReapOrphansPowerShellTests(_ReapOrphansContractMixin, unittest.TestCase):
                 state_dir = self._write_windows_orphan_state(
                     tmpdir, worker, "boundary-exit"
                 )
+                self.assertIsNone(
+                    worker.poll(), "worker exited before the reaper was invoked"
+                )
                 _windows_deny_process_terminate(worker)
                 result = self._run_reaper(
                     tmpdir, state_dirs=(state_dir,)
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn(f"LEFT {state_dir.name} worker-exited", result.stdout)
-                self.assertNotIn(f"REAPED {state_dir.name}", result.stdout)
-                if not _wait_for(lambda: worker.poll() is not None):
-                    self.skipTest(
-                        "fixture precondition failed: boundary-exit worker did not "
-                        "finish within 30 seconds after observing reap-reason"
-                    )
+                self.assertNotIn(f"TERMINATED {state_dir.name}", result.stdout)
+                self.assertNotIn("REAPED ", result.stdout)
+                self.assertTrue(reason_path.is_file(), "reap notice was not written")
+                self.assertTrue(
+                    _wait_for(lambda: worker.poll() is not None),
+                    "worker did not exit after observing reap-reason",
+                )
             finally:
                 _stop_popen(worker)
 
@@ -1156,7 +1260,7 @@ class ReapOrphansPowerShellTests(_ReapOrphansContractMixin, unittest.TestCase):
         WINDOWS_POWERSHELL,
         "Windows PowerShell 5.1 is not on PATH.",
     )
-    def test_windows_powershell_51_reaps_verified_worker_tree(self) -> None:
+    def test_windows_powershell_51_terminates_observed_worker_tree(self) -> None:
         worker = None
         child_pid = None
         with _temp_dir() as td:
@@ -1232,176 +1336,21 @@ class ReapOrphansPowerShellTests(_ReapOrphansContractMixin, unittest.TestCase):
 
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn(
-                    f"REAPED {state_dir.name} pid={worker.pid}", result.stdout
+                    f"TERMINATED {state_dir.name} pid={worker.pid}", result.stdout
                 )
+                self.assertNotIn("REAPED ", result.stdout)
                 self.assertNotIn("kill-failed", result.stdout)
                 self.assertTrue(_wait_for(lambda: worker.poll() is not None))
                 self.assertTrue(
                     _wait_for(
                         lambda: _windows_pid_start_ticks(child_pid) != child_start
                     ),
-                    f"child PID {child_pid} survived reap",
+                    f"child PID {child_pid} survived termination",
                 )
             finally:
                 _stop_worker_tree(child_pid)
                 _stop_worker_tree(worker.pid if worker else None)
                 _stop_popen(worker)
-
-    @unittest.skipUnless(
-        WINDOWS_POWERSHELL,
-        "Windows PowerShell 5.1 is not on PATH.",
-    )
-    def test_windows_powershell_51_reaches_spawn_fixed_point(self) -> None:
-        worker = None
-        known_processes: dict[int, int] = {}
-        with _temp_dir() as td:
-            tmpdir = Path(td)
-            reason_path = tmpdir / "prun-task-manual-round3-spawn" / "reap-reason"
-            spawned_path = tmpdir / "spawned-pids"
-            ready_path = tmpdir / "root-ready"
-            identity_script = tmpdir / "process_identity.py"
-            spawner_script = tmpdir / "late-spawner.py"
-            root_script = tmpdir / "spawn-root.py"
-            identity_script.write_text(
-                "import ctypes\n"
-                "from ctypes import wintypes\n"
-                "def start_ticks(process):\n"
-                "    creation=wintypes.FILETIME()\n"
-                "    exit_time=wintypes.FILETIME()\n"
-                "    kernel_time=wintypes.FILETIME()\n"
-                "    user_time=wintypes.FILETIME()\n"
-                "    ok=ctypes.windll.kernel32.GetProcessTimes(\n"
-                "        wintypes.HANDLE(int(process._handle)),\n"
-                "        ctypes.byref(creation),ctypes.byref(exit_time),\n"
-                "        ctypes.byref(kernel_time),ctypes.byref(user_time))\n"
-                "    if not ok: raise ctypes.WinError()\n"
-                "    value=(creation.dwHighDateTime << 32) | creation.dwLowDateTime\n"
-                "    return value + 504911232000000000\n",
-                encoding="utf-8",
-            )
-            spawner_script.write_text(
-                "import pathlib,subprocess,sys,time\n"
-                "sys.path.insert(0,sys.argv[3])\n"
-                "from process_identity import start_ticks\n"
-                "reason=pathlib.Path(sys.argv[1])\n"
-                "pids=pathlib.Path(sys.argv[2])\n"
-                "while not reason.exists(): time.sleep(0.001)\n"
-                "with pids.open('w', encoding='utf-8') as stream:\n"
-                "    for _ in range(50):\n"
-                "        child=subprocess.Popen([sys.executable,'-c',"
-                "'import time; time.sleep(300)'])\n"
-                "        stream.write(f'{child.pid}\\t{start_ticks(child)}\\n')\n"
-                "        stream.flush()\n"
-                "        time.sleep(0.01)\n"
-                "time.sleep(300)\n",
-                encoding="utf-8",
-            )
-            root_script.write_text(
-                "import pathlib,subprocess,sys,time\n"
-                "sys.path.insert(0,sys.argv[5])\n"
-                "from process_identity import start_ticks\n"
-                "spawner=subprocess.Popen([sys.executable,sys.argv[1],"
-                "sys.argv[2],sys.argv[3],sys.argv[5]])\n"
-                "dummies=[subprocess.Popen([sys.executable,'-c',"
-                "'import time; time.sleep(300)']) for _ in range(16)]\n"
-                "pathlib.Path(sys.argv[4]).write_text("
-                "'\\n'.join(f'{p.pid}\\t{start_ticks(p)}' "
-                "for p in [spawner] + dummies),"
-                "encoding='utf-8')\n"
-                "time.sleep(300)\n",
-                encoding="utf-8",
-            )
-            try:
-                worker = subprocess.Popen(
-                    [
-                        sys.executable,
-                        str(root_script),
-                        str(spawner_script),
-                        str(reason_path),
-                        str(spawned_path),
-                        str(ready_path),
-                        str(tmpdir),
-                    ]
-                )
-                if not _wait_for(
-                    lambda: ready_path.exists() and ready_path.stat().st_size > 0
-                ):
-                    self.skipTest(
-                        "fixture precondition failed: worker did not create the "
-                        "enumeration-delay children within 30 seconds"
-                    )
-                if worker.poll() is not None:
-                    self.skipTest(
-                        "fixture precondition failed: spawn-root worker exited before "
-                        "the reaper started"
-                    )
-                known_processes.update(
-                    _read_windows_process_identities(ready_path)
-                )
-                state_dir = self._write_windows_orphan_state(
-                    tmpdir, worker, "round3-spawn"
-                )
-                env = os.environ.copy()
-                env.update({
-                    "TMPDIR": str(tmpdir),
-                    "TEMP": str(tmpdir),
-                    "TMP": str(tmpdir),
-                })
-                result = subprocess.run(
-                    [
-                        WINDOWS_POWERSHELL,
-                        "-NoProfile",
-                        "-NonInteractive",
-                        "-ExecutionPolicy",
-                        "Bypass",
-                        "-File",
-                        str(REAP_PS1),
-                        "--state-dir",
-                        str(state_dir),
-                    ],
-                    cwd=str(tmpdir),
-                    env=env,
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                    timeout=90,
-                )
-                if spawned_path.exists():
-                    known_processes.update(
-                        _read_windows_process_identities(spawned_path)
-                    )
-
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertIn(
-                    f"REAPED {state_dir.name} pid={worker.pid}", result.stdout
-                )
-                spawned_count = len(
-                    spawned_path.read_text(encoding="utf-8").splitlines()
-                    if spawned_path.exists()
-                    else []
-                )
-                if spawned_count != 50:
-                    self.skipTest(
-                        "fixture precondition failed: late spawner created "
-                        f"{spawned_count} of 50 children during enumeration"
-                    )
-                survivors = sorted(
-                    pid
-                    for pid, start_ticks in known_processes.items()
-                    if _windows_pid_start_ticks(pid) == start_ticks
-                )
-                self.assertEqual(survivors, [], f"surviving child PIDs: {survivors}")
-            finally:
-                if spawned_path.exists():
-                    known_processes.update(
-                        _read_windows_process_identities(spawned_path)
-                    )
-                for pid, start_ticks in known_processes.items():
-                    if _windows_pid_start_ticks(pid) == start_ticks:
-                        _stop_worker_tree(pid)
-                _stop_worker_tree(worker.pid if worker else None)
-                _stop_popen(worker)
-
 
 @unittest.skipUnless(
     BASH and PS_SHELL and sys.platform.startswith("win"),
@@ -1473,6 +1422,28 @@ class ReapOrphansStaticContract(unittest.TestCase):
         self.assertIn("Wait-RetainedProcessTree", text)
         self.assertNotIn(".Kill($true)", text)
         self.assertNotIn("taskkill", text.lower())
+
+    def test_reaped_is_reserved_and_terminated_is_reported(self) -> None:
+        for text in self._both():
+            self.assertIn("REAPED is reserved for kernel-backed containment", text)
+            self.assertIn("TERMINATED", text)
+            self.assertIn("REAP-DONE terminated=", text)
+            self.assertNotIn("REAP-DONE reaped=", text)
+        self.assertNotIn("printf 'REAPED ", REAP_SH.read_text(encoding="utf-8"))
+        self.assertNotIn(
+            'WriteLine("REAPED ', REAP_PS1.read_text(encoding="utf-8")
+        )
+
+    def test_windows_enumeration_and_identity_queries_are_indeterminate(self) -> None:
+        text = REAP_PS1.read_text(encoding="utf-8")
+        self.assertIn("[DateTime]$Deadline", text)
+        self.assertIn("$pipeline.BeginInvoke()", text)
+        self.assertIn("$async.AsyncWaitHandle.WaitOne($remaining)", text)
+        self.assertIn("$pipeline.BeginStop($null, $null)", text)
+        self.assertIn("State = 'Gone'", text)
+        self.assertIn("State = 'Matched'", text)
+        self.assertIn("State = 'QueryFailed'", text)
+        self.assertIn("$identity.State -eq 'QueryFailed'", text)
 
     def test_worker_records_are_scheme_tagged(self) -> None:
         dispatch_sh = DISPATCH_SH.read_text(encoding="utf-8")

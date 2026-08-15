@@ -414,7 +414,9 @@ _left() {
     LEFT_COUNT=$((LEFT_COUNT + 1))
 }
 
-REAPED_COUNT=0
+# REAPED is reserved for kernel-backed containment (anywhere-agents#29) and is
+# intentionally unreachable while descendant discovery relies on snapshots.
+TERMINATED_COUNT=0
 LEFT_COUNT=0
 tab="$(printf '\t')"
 
@@ -561,8 +563,8 @@ for state_dir in ${CANDIDATES[@]+"${CANDIDATES[@]}"}; do
             [ "$descendant_scan_complete" -eq 1 ] && \
             [ "$retained_gone" -eq 1 ]; then
         if [ "$signalled" -eq 1 ]; then
-            printf 'REAPED %s pid=%s\n' "$state_name" "$worker_pid"
-            REAPED_COUNT=$((REAPED_COUNT + 1))
+            printf 'TERMINATED %s pid=%s\n' "$state_name" "$worker_pid"
+            TERMINATED_COUNT=$((TERMINATED_COUNT + 1))
         else
             _left "$state_name" "worker-exited"
         fi
@@ -571,5 +573,5 @@ for state_dir in ${CANDIDATES[@]+"${CANDIDATES[@]}"}; do
     fi
 done
 
-printf 'REAP-DONE reaped=%s left=%s\n' "$REAPED_COUNT" "$LEFT_COUNT"
+printf 'REAP-DONE terminated=%s left=%s\n' "$TERMINATED_COUNT" "$LEFT_COUNT"
 exit 0

@@ -63,7 +63,9 @@ if ($StateDirs.Count -gt 0) {
 [Console]::Out.WriteLine("REAP-START base=$tmpBase candidates=$($candidates.Count)")
 
 $utf8NoBom = New-Object System.Text.UTF8Encoding $false
-$reapedCount = 0
+# REAPED is reserved for kernel-backed containment (anywhere-agents#29) and is
+# intentionally unreachable while descendant discovery relies on snapshots.
+$terminatedCount = 0
 $leftCount = 0
 
 function Write-Left {
@@ -72,21 +74,171 @@ function Write-Left {
     $script:leftCount += 1
 }
 
+if (-not ('PrunProcessIdentity' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+public static class PrunProcessIdentity {
+    [StructLayout(LayoutKind.Sequential)]
+    private struct FileTime {
+        public uint Low;
+        public uint High;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr OpenProcess(
+        uint desiredAccess, bool inheritHandle, int processId);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetProcessTimes(
+        IntPtr process, out FileTime creation, out FileTime exit,
+        out FileTime kernel, out FileTime user);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetExitCodeProcess(
+        IntPtr process, out uint exitCode);
+
+    [DllImport("kernel32.dll")]
+    private static extern bool CloseHandle(IntPtr handle);
+
+    public static bool TryGetStartTicks(
+        int processId, out long startTicks, out bool isRunning,
+        out int errorCode) {
+        const uint QueryLimitedInformation = 0x1000;
+        const ulong FileTimeEpochOffset = 504911232000000000UL;
+        const uint StillActive = 259;
+        startTicks = 0;
+        isRunning = false;
+        errorCode = 0;
+        IntPtr handle = OpenProcess(QueryLimitedInformation, false, processId);
+        if (handle == IntPtr.Zero) {
+            errorCode = Marshal.GetLastWin32Error();
+            return false;
+        }
+        try {
+            FileTime creation;
+            FileTime exit;
+            FileTime kernel;
+            FileTime user;
+            if (!GetProcessTimes(handle, out creation, out exit, out kernel, out user)) {
+                errorCode = Marshal.GetLastWin32Error();
+                return false;
+            }
+            uint exitCode;
+            if (!GetExitCodeProcess(handle, out exitCode)) {
+                errorCode = Marshal.GetLastWin32Error();
+                return false;
+            }
+            ulong fileTime = ((ulong)creation.High << 32) | creation.Low;
+            startTicks = (long)(fileTime + FileTimeEpochOffset);
+            isRunning = exitCode == StillActive;
+            return true;
+        } finally {
+            CloseHandle(handle);
+        }
+    }
+}
+'@
+}
+
+function Get-ProcessIdentityState {
+    param([int]$ProcessId, [string]$ExpectedStart)
+
+    [long]$startTicks = 0
+    [bool]$isRunning = $false
+    [int]$errorCode = 0
+    if (-not [PrunProcessIdentity]::TryGetStartTicks(
+        $ProcessId, [ref]$startTicks, [ref]$isRunning, [ref]$errorCode)) {
+        if ($errorCode -eq 87) {
+            return [pscustomobject]@{
+                State = 'Gone'; PidPresent = $false; StartTicks = $null
+            }
+        }
+        return [pscustomobject]@{
+            State = 'QueryFailed'; PidPresent = $null; StartTicks = $null
+        }
+    }
+    if (-not $isRunning) {
+        return [pscustomobject]@{
+            State = 'Gone'; PidPresent = $false; StartTicks = [string]$startTicks
+        }
+    }
+
+    $startText = [string]$startTicks
+    if ($ExpectedStart -and $startText -ne $ExpectedStart) {
+        return [pscustomobject]@{
+            State = 'Gone'; PidPresent = $true; StartTicks = $startText
+        }
+    }
+    return [pscustomobject]@{
+        State = 'Matched'; PidPresent = $true; StartTicks = $startText
+    }
+}
+
+$abandonedQueries = New-Object System.Collections.ArrayList
+
 function Get-Win32ProcessRows {
-    param([string]$Filter)
-    if (Get-Command Get-CimInstance -ErrorAction SilentlyContinue) {
-        if (-not $Filter) {
-            return @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop)
-        }
-        return @(Get-CimInstance -ClassName Win32_Process -Filter $Filter -ErrorAction Stop)
+    param([string]$Filter, [DateTime]$Deadline)
+
+    if ([DateTime]::UtcNow -ge $Deadline) {
+        return [pscustomobject]@{ Rows = @(); Complete = $false }
     }
-    if (Get-Command Get-WmiObject -ErrorAction SilentlyContinue) {
-        if (-not $Filter) {
-            return @(Get-WmiObject -Class Win32_Process -ErrorAction Stop)
-        }
-        return @(Get-WmiObject -Class Win32_Process -Filter $Filter -ErrorAction Stop)
+
+    $queryScript = @'
+param([string]$Filter)
+if (Get-Command Get-CimInstance -ErrorAction SilentlyContinue) {
+    if (-not $Filter) {
+        Get-CimInstance -ClassName Win32_Process -ErrorAction Stop |
+            Select-Object ProcessId, ParentProcessId
+    } else {
+        Get-CimInstance -ClassName Win32_Process -Filter $Filter -ErrorAction Stop |
+            Select-Object ProcessId, ParentProcessId
     }
+} elseif (Get-Command Get-WmiObject -ErrorAction SilentlyContinue) {
+    if (-not $Filter) {
+        Get-WmiObject -Class Win32_Process -ErrorAction Stop |
+            Select-Object ProcessId, ParentProcessId
+    } else {
+        Get-WmiObject -Class Win32_Process -Filter $Filter -ErrorAction Stop |
+            Select-Object ProcessId, ParentProcessId
+    }
+} else {
     throw 'Win32 process enumeration is unavailable'
+}
+'@
+    $pipeline = [PowerShell]::Create()
+    [void]$pipeline.AddScript($queryScript).AddArgument($Filter)
+    try {
+        $async = $pipeline.BeginInvoke()
+    } catch {
+        $pipeline.Dispose()
+        return [pscustomobject]@{ Rows = @(); Complete = $false }
+    }
+
+    $remaining = [int][Math]::Max(
+        0,
+        [Math]::Ceiling(($Deadline - [DateTime]::UtcNow).TotalMilliseconds)
+    )
+    if ($remaining -le 0 -or
+        -not $async.AsyncWaitHandle.WaitOne($remaining)) {
+        try { [void]$pipeline.BeginStop($null, $null) } catch { }
+        [void]$script:abandonedQueries.Add($pipeline)
+        return [pscustomobject]@{ Rows = @(); Complete = $false }
+    }
+
+    try {
+        $rows = @($pipeline.EndInvoke($async))
+        if ($pipeline.HadErrors) {
+            return [pscustomobject]@{ Rows = @(); Complete = $false }
+        }
+        return [pscustomobject]@{ Rows = $rows; Complete = $true }
+    } catch {
+        return [pscustomobject]@{ Rows = @(); Complete = $false }
+    } finally {
+        $async.AsyncWaitHandle.Close()
+        $pipeline.Dispose()
+    }
 }
 
 function Add-NewRetainedDescendants {
@@ -94,14 +246,15 @@ function Add-NewRetainedDescendants {
         [System.Collections.ArrayList]$Retained,
         [hashtable]$Seen,
         [hashtable]$DepthByPid,
-        [int]$MaxRetained
+        [int]$MaxRetained,
+        [DateTime]$Deadline
     )
 
-    try {
-        $rows = @(Get-Win32ProcessRows '')
-    } catch {
+    $rowQuery = Get-Win32ProcessRows '' $Deadline
+    if (-not $rowQuery.Complete) {
         return [pscustomobject]@{ Added = 0; Complete = $false }
     }
+    $rows = @($rowQuery.Rows)
 
     $added = 0
     $complete = $true
@@ -127,19 +280,24 @@ function Add-NewRetainedDescendants {
                 continue
             }
 
-            $child = Get-Process -Id $childPid -ErrorAction SilentlyContinue
-            if ($child) {
-                try {
-                    [void]$child.Handle
-                    if ($child.HasExited) {
-                        $child.Dispose()
-                        continue
-                    }
-                } catch {
-                    $complete = $false
+            $childIdentity = Get-ProcessIdentityState $childPid ''
+            if ($childIdentity.State -eq 'Gone') { continue }
+            if ($childIdentity.State -eq 'QueryFailed') {
+                $complete = $false
+                continue
+            }
+            $child = $null
+            try {
+                $child = Get-Process -Id $childPid -ErrorAction Stop
+                [void]$child.Handle
+                if ($child.HasExited) {
                     $child.Dispose()
                     continue
                 }
+            } catch {
+                $complete = $false
+                if ($child) { $child.Dispose() }
+                continue
             }
             [void]$opened.Add([pscustomobject]@{
                 Process = $child
@@ -147,19 +305,20 @@ function Add-NewRetainedDescendants {
                 Key = $childKey
                 ParentPid = $parentPid
                 ParentKey = $parentKey
+                StartTicks = [string]$childIdentity.StartTicks
             })
         }
 
         if ($opened.Count -eq 0) { break }
-        try {
-            $confirmRows = @(Get-Win32ProcessRows '')
-        } catch {
+        $confirmQuery = Get-Win32ProcessRows '' $Deadline
+        if (-not $confirmQuery.Complete) {
             $complete = $false
             foreach ($candidate in $opened) {
                 if ($candidate.Process) { $candidate.Process.Dispose() }
             }
             break
         }
+        $confirmRows = @($confirmQuery.Rows)
         $confirmByPid = @{}
         foreach ($confirmRow in $confirmRows) {
             try {
@@ -192,13 +351,21 @@ function Add-NewRetainedDescendants {
                     $complete = $false
                     continue
                 }
-                if ($candidate.Process.HasExited) { continue }
+                $identity = Get-ProcessIdentityState `
+                    $candidate.Pid $candidate.StartTicks
+                if ($identity.State -eq 'Gone') { continue }
+                if ($identity.State -eq 'QueryFailed') {
+                    $complete = $false
+                    continue
+                }
 
                 $Seen[$candidate.Key] = $true
                 $DepthByPid[$candidate.Key] = [int]$DepthByPid[$candidate.ParentKey] + 1
                 [void]$Retained.Add([pscustomobject]@{
                     Process = $candidate.Process
                     Depth = [int]$DepthByPid[$candidate.Key]
+                    Pid = $candidate.Pid
+                    StartTicks = $candidate.StartTicks
                 })
                 $keepChild = $true
                 $changed = $true
@@ -230,6 +397,17 @@ function Stop-RetainedProcessTree {
     return $killSent
 }
 
+function Get-RetainedProcessTreeState {
+    param([object[]]$Retained)
+
+    foreach ($entry in $Retained) {
+        $identity = Get-ProcessIdentityState $entry.Pid $entry.StartTicks
+        if ($identity.State -eq 'QueryFailed') { return 'QueryFailed' }
+        if ($identity.State -eq 'Matched') { return 'Alive' }
+    }
+    return 'Gone'
+}
+
 function Wait-RetainedProcessTree {
     param([object[]]$Retained, [DateTime]$Deadline)
 
@@ -242,28 +420,7 @@ function Wait-RetainedProcessTree {
             [void]$entry.Process.WaitForExit($remaining)
         } catch { }
     }
-
-    foreach ($entry in $Retained) {
-        try {
-            if (-not $entry.Process.HasExited) { return $false }
-        } catch {
-            return $false
-        }
-    }
-    return $true
-}
-
-function Test-RetainedProcessTreeExited {
-    param([System.Collections.ArrayList]$Retained)
-
-    foreach ($entry in $Retained) {
-        try {
-            if (-not $entry.Process.HasExited) { return $false }
-        } catch {
-            return $false
-        }
-    }
-    return $true
+    return Get-RetainedProcessTreeState $Retained
 }
 
 foreach ($stateDir in $candidates) {
@@ -388,35 +545,34 @@ foreach ($stateDir in $candidates) {
         continue
     }
 
-    $dispatcher = Get-Process -Id $identityDispatchPid -ErrorAction SilentlyContinue
-    if ($dispatcher) {
-        try { $currentDispatchStart = [string]([int64]$dispatcher.StartTime.ToUniversalTime().Ticks) } catch { $currentDispatchStart = '' }
-        if (-not $currentDispatchStart) {
-            Write-Left $stateName 'unknown-identity'
-            continue
-        }
-        if ($currentDispatchStart -eq $dispatchStart) {
-            Write-Left $stateName 'dispatcher-alive'
-            continue
-        }
+    $dispatchIdentity = Get-ProcessIdentityState $identityDispatchPid $dispatchStart
+    if ($dispatchIdentity.State -eq 'QueryFailed') {
+        Write-Left $stateName 'unknown-identity'
+        continue
+    }
+    if ($dispatchIdentity.State -eq 'Matched') {
+        Write-Left $stateName 'dispatcher-alive'
+        continue
     }
 
-    $worker = Get-Process -Id $workerPid -ErrorAction SilentlyContinue
-    if (-not $worker) {
-        Write-Left $stateName 'worker-exited'
+    $workerIdentity = Get-ProcessIdentityState $workerPid $workerStart
+    if ($workerIdentity.State -eq 'QueryFailed') {
+        Write-Left $stateName 'unknown-identity'
+        continue
+    }
+    if ($workerIdentity.State -eq 'Gone') {
+        if ($workerIdentity.PidPresent) {
+            Write-Left $stateName 'identity-mismatch'
+        } else {
+            Write-Left $stateName 'worker-exited'
+        }
+        continue
+    }
+    try { $worker = Get-Process -Id $workerPid -ErrorAction Stop } catch {
+        Write-Left $stateName 'unknown-identity'
         continue
     }
     try {
-        try { $currentStart = [string]([int64]$worker.StartTime.ToUniversalTime().Ticks) } catch { $currentStart = '' }
-        if (-not $currentStart) {
-            Write-Left $stateName 'unknown-identity'
-            continue
-        }
-        if ($currentStart -ne $workerStart) {
-            Write-Left $stateName 'identity-mismatch'
-            continue
-        }
-
         if ($DryRun) {
             [Console]::Out.WriteLine("WOULD-REAP $stateName pid=$workerPid")
             $leftCount += 1
@@ -440,6 +596,8 @@ foreach ($stateDir in $candidates) {
                 [void]$retained.Add([pscustomobject]@{
                     Process = $worker
                     Depth = 0
+                    Pid = $workerPid
+                    StartTicks = $workerStart
                 })
             }
         } catch {
@@ -468,7 +626,7 @@ foreach ($stateDir in $candidates) {
                     if ([DateTime]::UtcNow -ge $fixedPointDeadline) { break }
 
                     $query = Add-NewRetainedDescendants `
-                        $retained $seen $depthByPid $maxRetained
+                        $retained $seen $depthByPid $maxRetained $fixedPointDeadline
                     if (-not $query.Complete) { $enumerationComplete = $false }
 
                     $live = @()
@@ -486,8 +644,12 @@ foreach ($stateDir in $candidates) {
                         if ($waitDeadline -gt $fixedPointDeadline) {
                             $waitDeadline = $fixedPointDeadline
                         }
-                        $batchExited = Wait-RetainedProcessTree $live $waitDeadline
-                        if (-not $batchExited) { break }
+                        $batchState = Wait-RetainedProcessTree $live $waitDeadline
+                        if ($batchState -eq 'QueryFailed') {
+                            $enumerationComplete = $false
+                            break
+                        }
+                        if ($batchState -ne 'Gone') { break }
                         continue
                     }
 
@@ -496,16 +658,25 @@ foreach ($stateDir in $candidates) {
                         # have created a child. One more complete query is required.
                         continue
                     }
-                    if ($query.Complete -and $enumerationComplete -and
-                        (Test-RetainedProcessTreeExited $retained)) {
+                    $retainedState = Get-RetainedProcessTreeState $retained
+                    if ($retainedState -eq 'QueryFailed') {
+                        $enumerationComplete = $false
+                    } elseif ($query.Complete -and $enumerationComplete -and
+                        $retainedState -eq 'Gone') {
                         $treeGone = $true
                     }
                     break
                 }
             }
-            try {
-                $rootExitedWithoutKill = (-not $killSent -and $worker.HasExited)
-            } catch { }
+            $rootIdentity = Get-ProcessIdentityState $workerPid $workerStart
+            if ($rootIdentity.State -eq 'QueryFailed') {
+                $enumerationComplete = $false
+            } elseif ($rootIdentity.State -eq 'Gone') {
+                $rootExitedWithoutKill = -not $killSent
+                if ($retained.Count -eq 0 -and $enumerationComplete) {
+                    $treeGone = $true
+                }
+            }
         } finally {
             foreach ($entry in $retained) {
                 if (-not [object]::ReferenceEquals($entry.Process, $worker)) {
@@ -515,8 +686,8 @@ foreach ($stateDir in $candidates) {
         }
 
         if ($treeGone -and $killSent) {
-            [Console]::Out.WriteLine("REAPED $stateName pid=$workerPid")
-            $reapedCount += 1
+            [Console]::Out.WriteLine("TERMINATED $stateName pid=$workerPid")
+            $terminatedCount += 1
         } elseif ($treeGone) {
             Write-Left $stateName 'worker-exited'
         } elseif ($rootExitedWithoutKill) {
@@ -529,5 +700,5 @@ foreach ($stateDir in $candidates) {
     }
 }
 
-[Console]::Out.WriteLine("REAP-DONE reaped=$reapedCount left=$leftCount")
+[Console]::Out.WriteLine("REAP-DONE terminated=$terminatedCount left=$leftCount")
 exit 0

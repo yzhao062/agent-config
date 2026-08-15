@@ -234,6 +234,18 @@ scripts/monitor.sh <state-dir-1> <state-dir-2> ...
 scripts/reap-orphans.sh [--dry-run] [--state-dir <path>]...
 ```
 
+Output schema:
+
+```
+REAP-START base=<temp-base> candidates=<N>
+TERMINATED <state-name> pid=<pid>
+WOULD-REAP <state-name> pid=<pid>
+LEFT <state-name> <reason>
+REAP-DONE terminated=<n> left=<m>
+```
+
+Each candidate produces exactly one of the three middle outcome forms.
+
 - Reaps by default. `--dry-run` prints `WOULD-REAP` and leaves the worker running. A reaper that does
   nothing unless given a second action flag encourages callers to bypass it. This tool was added
   after a blanket `Get-Process -Name codex | Stop-Process -Force` killed two live workers.
@@ -254,25 +266,32 @@ scripts/reap-orphans.sh [--dry-run] [--state-dir <path>]...
   unverifiable and is left as `unknown-identity`.
 - Leaves a state directory alone with one of these reasons: `no-dispatch-record`, `dispatcher-alive`,
   `no-worker-record`, `unknown-identity`, `foreign-scheme`, `worker-exited`, `identity-mismatch`, or
-  `kill-failed`.
-  `foreign-scheme` means that the reaper does not own a namespace recorded by that dispatcher. An
-  eligible orphan prints `REAPED` only after the complete observed tree is gone; dry-run prints
-  `WOULD-REAP`. Before signaling, Bash repeatedly scans the complete process table and retains the PID
-  and start time of every reachable descendant, including descendants that entered another process
-  group. It signals both the isolated worker group and each retained identity. `REAPED` requires a
-  complete descendant scan, a complete group scan with no live non-zombie member, and an
-  original-identity-gone check for every retained PID. An unreadable or malformed live `/proc` stat
-  makes either scan indeterminate. The `ps` fallback is used only on platforms such as macOS that have
-  no `/proc`. If the worker has no isolated group, Bash still attempts identity-based termination but
-  reports `kill-failed` because it cannot safely signal or prove the original group gone. PowerShell
-  retains verified root and descendant `Process` objects, kills them leaf-first, waits on every
-  handle, and queries the children of all retained creator PIDs again. It repeats that fixed-point
-  loop until a complete query adds no live process, or a fixed round and time bound is reached. Any
-  query failure or bound exhaustion reports `kill-failed`; the loop works under Windows PowerShell
-  5.1 without the tree-killing `Kill(Boolean)` overload.
+  `kill-failed`. `foreign-scheme` means that the reaper does not own a namespace recorded by that
+  dispatcher. `worker-exited` means the recorded worker exited without a successful termination by
+  this reaper. `kill-failed` means that an identified root or observed descendant could not be
+  confirmed gone after termination was attempted.
+- An eligible orphan prints `TERMINATED` only after the recorded root and every descendant retained
+  from successful process-table snapshots have been signaled as needed and confirmed gone. It makes
+  no assertion about descendants absent from those snapshots. Dry-run prints `WOULD-REAP` and does
+  not signal anything.
+- Before signaling, Bash repeatedly scans the process table and retains the PID and start time of
+  every reachable descendant it observes, including descendants that entered another process group.
+  It signals both the isolated worker group and each retained identity. An unreadable or malformed
+  live `/proc` stat makes a scan indeterminate. The `ps` fallback is used only on platforms such as
+  macOS that have no `/proc`. If the worker has no isolated group, Bash still attempts identity-based
+  termination but reports `kill-failed` because it cannot safely signal or confirm the original group
+  gone. PowerShell retains verified root and descendant `Process` objects, kills them leaf-first,
+  waits on every handle, and queries children of retained creator PIDs again. Each CIM or WMI query is
+  bounded by the remaining deadline. A query timeout, cancellation, identity-query failure, or bound
+  exhaustion is indeterminate and cannot satisfy a gone check. The loop works under Windows
+  PowerShell 5.1 without the tree-killing `Kill(Boolean)` overload.
+- Tree-wide proof requires kernel-backed containment established when the worker is dispatched.
+  Snapshot polling cannot prove that no short-lived intermediate created an unseen descendant.
+  `REAPED` is therefore reserved and never emitted until the containment work in anywhere-agents#29
+  lands.
 - Output starts with `REAP-START base=<temp-base> candidates=<N>`, prints one `LEFT`, `WOULD-REAP`, or
-  `REAPED` line per candidate, and ends with `REAP-DONE reaped=<n> left=<m>`. Reaping nothing is a
-  successful run and is reported with `reaped=0`.
+  `TERMINATED` line per candidate, and ends with `REAP-DONE terminated=<n> left=<m>`. Terminating
+  nothing is a successful run and is reported with `terminated=0`.
 - The POSIX watchdog is inline in `dispatch-task.sh`, so there is intentionally no `reap-watch.sh`.
   Windows keeps its watchdog in `reap-watch.ps1` to preserve the existing AMSI-safe split.
 
