@@ -249,6 +249,29 @@ if [ -z "$PYTHON_BIN" ]; then
     echo "dispatch-codex: no working Python interpreter found (checked ANYWHERE_AGENTS_PYTHON, project virtualenvs, conda/Miniforge, py -3, and non-WindowsApps PATH entries); dispatching without a pre-resolved interpreter" >&2
 fi
 
+# Probe pwsh structurally because a Store execution alias succeeds here but can
+# fail only from Codex's spawn context, so executing it would prove nothing.
+# Unlike the Python probe, this performs only PATH lookups and file stat checks.
+PWSH_BIN=""
+PWSH_REJECTED=""
+while IFS= read -r candidate; do
+    [ -n "$candidate" ] || continue
+    case "$candidate" in
+        *WindowsApps*|*windowsapps*)
+            [ -n "$PWSH_REJECTED" ] || PWSH_REJECTED=$candidate
+            continue ;;
+    esac
+    if [ ! -s "$candidate" ]; then
+        [ -n "$PWSH_REJECTED" ] || PWSH_REJECTED=$candidate
+        continue
+    fi
+    PWSH_BIN=$candidate
+    break
+done < <(type -a -p pwsh 2>/dev/null || true)
+if [ -z "$PWSH_BIN" ]; then
+    echo "dispatch-codex: no usable pwsh found${PWSH_REJECTED:+ (rejected Store-alias or zero-length candidate: $PWSH_REJECTED)}; the reviewer will be told to avoid pwsh" >&2
+fi
+
 # Build unique state-dir under TMPDIR
 TMP_BASE="${TMPDIR:-/tmp}"
 # Strip trailing slashes for clean concat
@@ -316,6 +339,9 @@ printf '0\n' > "$STATE_DIR/stream-retry-count"
 # instead would let a reader mistake it for a path.
 if [ -n "$PYTHON_BIN" ]; then
     printf '%s\n' "$PYTHON_BIN" > "$STATE_DIR/python-interpreter"
+fi
+if [ -n "$PWSH_BIN" ]; then
+    printf '%s\n' "$PWSH_BIN" > "$STATE_DIR/pwsh-interpreter"
 fi
 
 # Emit STATE-DIR on stdout (first and only machine-readable line)
@@ -392,8 +418,13 @@ if [ -n "$PYTHON_BIN" ]; then
 else
     PYTHON_INSTRUCTION="No Python interpreter could be pre-resolved on this machine. If a verification command needs Python, locate a working interpreter yourself first; if none exists, verify by whatever means this repository actually uses."
 fi
+if [ -n "$PWSH_BIN" ]; then
+    PWSH_INSTRUCTION="PowerShell 7 was resolved at this absolute path: $PWSH_BIN. If a command needs it, invoke that exact path rather than bare pwsh."
+else
+    PWSH_INSTRUCTION="No usable PowerShell 7 was found on this machine; a bare pwsh call may be a Microsoft Store execution alias that fails instantly under this spawn context and retries forever. Do not shell out to pwsh. Use bash, Windows PowerShell 5.1 (powershell.exe), or plain git commands instead."
+fi
 
-CHILD_SESSION_INSTRUCTIONS="The parent agent session already completed the repository bootstrap at startup. Skip bootstrap and shared configuration refresh commands in this child review session. Use the shared configuration currently on disk. Follow all other project instructions. $PYTHON_INSTRUCTION Before issuing a PASS or BLOCK commit verdict, execute relevant verification commands. In $EXPECTED_REVIEW_FILE, add one standalone line exactly 'Verification status: VERIFIED' if at least one relevant verification command completed, otherwise add 'Verification status: UNVERIFIED'. If the status is UNVERIFIED, write 'Commit verdict: UNVERIFIED'; never issue PASS or BLOCK. Verification notes must list the exact commands and outcomes."
+CHILD_SESSION_INSTRUCTIONS="The parent agent session already completed the repository bootstrap at startup. Skip bootstrap and shared configuration refresh commands in this child review session. Use the shared configuration currently on disk. Follow all other project instructions. $PYTHON_INSTRUCTION $PWSH_INSTRUCTION Before issuing a PASS or BLOCK commit verdict, execute relevant verification commands. In $EXPECTED_REVIEW_FILE, add one standalone line exactly 'Verification status: VERIFIED' if at least one relevant verification command completed, otherwise add 'Verification status: UNVERIFIED'. If the status is UNVERIFIED, write 'Commit verdict: UNVERIFIED'; never issue PASS or BLOCK. Verification notes must list the exact commands and outcomes."
 CODEX_CHILD_ARGS=(-c "developer_instructions=$CHILD_SESSION_INSTRUCTIONS")
 _archive_stream_attempt() {
     local attempt_number="$1" attempt_dir name

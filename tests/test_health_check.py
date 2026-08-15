@@ -161,6 +161,51 @@ class HealthCheckPython(unittest.TestCase):
             parsed = parse_output(result.stdout)
             self.assertEqual(parsed["check-1"][0], "FAIL")
 
+    def test_check8_scans_tail_when_review_file_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            incident = (
+                '"C:\\Users\\me\\AppData\\Local\\Microsoft\\WindowsApps\\pwsh.exe" '
+                "-Command 'Get-Date -Format o'\n"
+                "ERROR codex_core::tools::router: error=Exit code: -1073741502\n"
+                "exited -1073741502 in 33ms\n"
+            ) * 3
+            state = make_state_dir(td_path, tail_content=incident)
+            result = run_health_py(state, td_path / "Review-Nonexistent.md")
+            self.assertEqual(result.returncode, 1)
+            parsed = parse_output(result.stdout)
+            self.assertEqual(parsed["check-1"][0], "FAIL")
+            self.assertEqual(parsed["check-8"][0], "WARN")
+            self.assertIn("tool-failure-markers", parsed["check-8"][1])
+            self.assertNotIn("tail-present-not-scanned", result.stdout)
+
+    def test_check8_passes_on_clean_tail_when_review_file_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            state = make_state_dir(td_path)
+            result = run_health_py(state, td_path / "Review-Nonexistent.md")
+            self.assertEqual(result.returncode, 1)
+            parsed = parse_output(result.stdout)
+            self.assertEqual(parsed["check-8"][0], "PASS")
+            self.assertIn("0-tool-failure-markers", parsed["check-8"][1])
+
+    def test_check9_reports_stall_periods_when_review_file_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            state = make_state_dir(
+                td_path,
+                with_stall=True,
+                stall_content=(
+                    "STALL 2026-05-15T12:00:00Z tail-no-growth-for-300s\n"
+                    "STALL 2026-05-15T12:05:00Z tail-no-growth-for-300s\n"
+                ),
+            )
+            result = run_health_py(state, td_path / "Review-Nonexistent.md")
+            self.assertEqual(result.returncode, 1)
+            parsed = parse_output(result.stdout)
+            self.assertEqual(parsed["check-9"][0], "WARN")
+            self.assertIn("stall-periods", parsed["check-9"][1])
+
     # ----- Check 2: freshness -----
     def test_check2_stale_review_fails(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -461,6 +506,18 @@ class HealthCheckPython(unittest.TestCase):
             "spawn failed\n"
         )
 
+    def test_check8_warns_on_ntstatus_spawn_exit_code(self) -> None:
+        observed_shapes = (
+            "ERROR codex_core::tools::router: error=Exit code: -1073741502\n",
+            "exited -1073741502 in 33ms\n",
+        )
+        for tail_content in observed_shapes:
+            with self.subTest(tail_content=tail_content):
+                self._assert_check8_warn(tail_content)
+
+    def test_check8_passes_on_benign_small_negative_exit(self) -> None:
+        self._assert_check8_pass("process exited with exit code -1\n")
+
     def test_check8_passes_on_sandbox_word_without_runner_error(self) -> None:
         """Negative fixture: `sandbox` mention without `runner error` or 1312.
 
@@ -490,6 +547,11 @@ class HealthCheckPython(unittest.TestCase):
             "Codex reasoning: I need to scan for `CreateProcessAsUserW failed: 1312`\n"
             "and `windows sandbox: runner error` in the dispatch tail.\n"
             "The pattern `rate limit` is also relevant for 429 surfaces.\n"
+        )
+
+    def test_check8_passes_on_backticked_ntstatus_code(self) -> None:
+        self._assert_check8_pass(
+            "Codex reasoning names the observed code as `-1073741502`.\n"
         )
 
     def test_check8_passes_on_fenced_block_with_pattern_strings(self) -> None:
@@ -556,6 +618,24 @@ class HealthCheckPython(unittest.TestCase):
                 f"breakdown not sorted by count desc: {breakdown_segment!r}",
             )
 
+    def test_check8_breakdown_labels_ntstatus_family(self) -> None:
+        tail = (
+            "exited -1073741502 in 31ms\n"
+            "exited -1073741502 in 32ms\n"
+            "exited -1073741502 in 33ms\n"
+            "ERROR: ECONNRESET\n"
+        )
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            review = td_path / "Review-Codex.md"
+            make_review(review)
+            state = make_state_dir(td_path, tail_content=tail)
+            result = run_health_py(state, review)
+            self.assertEqual(result.returncode, 0)
+            parsed = parse_output(result.stdout)
+            self.assertEqual(parsed["check-8"][0], "WARN")
+            self.assertIn("107374:", parsed["check-8"][1])
+
     def test_check8_warns_when_tail_missing(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             td_path = Path(td)
@@ -611,6 +691,9 @@ class HealthCheckPython(unittest.TestCase):
             '50: r"HTTP/\\S* (?:429|5\\d\\d)",\n'
             '51: r"\\bENOSPC\\b",\n'
         )
+
+    def test_check8_passes_on_literal_ntstatus_regex_source(self) -> None:
+        self._assert_check8_pass(r'52: r"-107374\d{4}",' + "\n")
 
     def test_check8_passes_on_bare_rate_limit_without_frame(self) -> None:
         """Bare `rate limit` in benign prose, with no error-frame token nearby,

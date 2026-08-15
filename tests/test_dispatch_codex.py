@@ -900,6 +900,82 @@ class DispatchInterpreterResolutionContract(unittest.TestCase):
                 )
 
 
+class DispatchPwshResolutionContract(unittest.TestCase):
+    """The pwsh probe rejects Store aliases without executing candidates."""
+
+    def test_pwsh_probe_is_structural_not_execution(self) -> None:
+        sh = DISPATCH_SH.read_text(encoding="utf-8")
+        ps1 = DISPATCH_PS1.read_text(encoding="utf-8")
+
+        self.assertIn("type -a -p pwsh", sh)
+        self.assertIn('[ ! -s "$candidate" ]', sh)
+        sh_probe = sh[sh.index('PWSH_BIN=""'):sh.index("# Build unique state-dir")]
+        self.assertNotRegex(sh_probe, r'(?m)^\s*"\$candidate"\s')
+
+        self.assertIn("Get-Command -Name pwsh -All", ps1)
+        self.assertIn("$candidateItem.Length -le 0", ps1)
+        ps1_probe = ps1[
+            ps1.index("$pwshBin = $null"):ps1.index("# Resolve temp base")
+        ]
+        self.assertNotIn("& $candidatePath", ps1_probe)
+
+    def test_unusable_pwsh_degrades_instead_of_aborting(self) -> None:
+        unresolved = "no usable pwsh found"
+        for script_name, body in (
+            ("dispatch-codex.sh", DISPATCH_SH.read_text(encoding="utf-8")),
+            ("dispatch-codex.ps1", DISPATCH_PS1.read_text(encoding="utf-8")),
+        ):
+            with self.subTest(script=script_name):
+                self.assertIn(unresolved, body)
+                start = body.index(unresolved)
+                tail = body[start:start + 600]
+                self.assertNotIn(
+                    "exit 2", tail,
+                    f"{script_name} must not abort when pwsh is unusable",
+                )
+
+    def test_pwsh_state_dir_marker_omitted_when_unusable(self) -> None:
+        sh = DISPATCH_SH.read_text(encoding="utf-8")
+        ps1 = DISPATCH_PS1.read_text(encoding="utf-8")
+
+        self.assertIn(
+            'if [ -n "$PWSH_BIN" ]; then\n'
+            '    printf \'%s\\n\' "$PWSH_BIN" > "$STATE_DIR/pwsh-interpreter"\n'
+            'fi',
+            sh,
+        )
+        self.assertIn(
+            "if ($pwshBin) {\n"
+            "    [System.IO.File]::WriteAllText((Join-Path $stateDir "
+            "'pwsh-interpreter'), \"$pwshBin`n\")\n"
+            "}",
+            ps1,
+        )
+
+    def test_child_instructions_branch_on_pwsh_availability(self) -> None:
+        resolved = "PowerShell 7 was resolved at this absolute path"
+        unresolved = "Do not shell out to pwsh"
+        for script_name, body in (
+            ("dispatch-codex.sh", DISPATCH_SH.read_text(encoding="utf-8")),
+            ("dispatch-codex.ps1", DISPATCH_PS1.read_text(encoding="utf-8")),
+        ):
+            with self.subTest(script=script_name):
+                self.assertIn(resolved, body)
+                self.assertIn(unresolved, body)
+                self.assertEqual(
+                    body.count("Verification status: VERIFIED"), 1,
+                    f"{script_name} must state the contract exactly once",
+                )
+
+    def test_pwsh_instruction_does_not_embed_the_ntstatus_code(self) -> None:
+        for script_name, body in (
+            ("dispatch-codex.sh", DISPATCH_SH.read_text(encoding="utf-8")),
+            ("dispatch-codex.ps1", DISPATCH_PS1.read_text(encoding="utf-8")),
+        ):
+            with self.subTest(script=script_name):
+                self.assertNotIn("-1073741502", body)
+
+
 class DispatchReexecContract(unittest.TestCase):
     def test_sh_reexec_copy_is_guarded_scrubbed_and_cleaned(self) -> None:
         text = DISPATCH_SH.read_text(encoding="utf-8")

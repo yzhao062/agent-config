@@ -69,6 +69,13 @@ INTRINSIC_FAILURE_PATTERNS = [
     r"context_length_exceeded",
     r"maximum context length",
     r"CreateProcessAsUserW failed: 1312",
+    # Windows NTSTATUS 0xC000xxxx values printed as signed decimal exit codes.
+    # The observed Store-alias pwsh shape is `-1073741502` (STATUS_DLL_INIT_FAILED);
+    # this family also covers DLL-not-found and access-violation exits.
+    # The number stays inside a code span so strip_code_spans removes it before
+    # Check 8 scans; an unquoted literal here matches the pattern on the line
+    # below and makes this file trip its own scanner.
+    r"-107374\d{4}",
     r"windows sandbox: runner error",
     r"sandbox.*runner error",
     r"\bENOSPC\b",
@@ -126,6 +133,7 @@ REGEX_SOURCE_MARKERS = [
     r"\bECONNRESET\b",
     r"\bECONNREFUSED\b",
     r"tool .* failed",
+    r"-107374\d{4}",
 ]
 
 # Documentation source sentences (W1b). These are exact prose fragments from
@@ -483,125 +491,7 @@ def read_int_file(path: Path) -> int | None:
         return None
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv if argv is not None else sys.argv[1:])
-
-    state_dir: Path = args.state_dir
-    review_path: Path = args.review_file
-
-    if not state_dir.is_dir():
-        emit("FAIL", "state-contract", f"state-dir-missing:{state_dir}")
-        return 1
-
-    pre_mtime_file = state_dir / "pre-mtime"
-    timestamp_file = state_dir / "timestamp"
-    tail_file = state_dir / "tail"
-    tail_stderr_file = state_dir / "tail.stderr-tmp"
-    stall_warning_file = state_dir / "stall-warning"
-
-    pre_mtime = read_int_file(pre_mtime_file)
-    dispatch_time = read_int_file(timestamp_file)
-    if pre_mtime is None or dispatch_time is None:
-        emit("FAIL", "state-contract",
-             f"missing-or-unreadable pre-mtime={pre_mtime_file.exists()} "
-             f"timestamp={timestamp_file.exists()}")
-        return 1
-
-    any_fail = False
-
-    # ----- Check 1: review file exists -----
-    if not review_path.exists():
-        emit("FAIL", "check-1", f"review-file-missing:{review_path}")
-        # Cannot do file-content checks; still surface state of Check 8, 9
-        if not tail_file.exists():
-            emit("WARN", "check-8", "1", "missing-dispatch-tail")
-        else:
-            emit("PASS", "check-8", "tail-present-not-scanned")
-        emit("PASS" if not stall_warning_file.exists() else "WARN",
-             "check-9",
-             "no-stall-warning" if not stall_warning_file.exists() else "stall-warning-present")
-        return 1
-
-    emit("PASS", "check-1", "review-file-exists")
-
-    review_text = review_path.read_text(encoding="utf-8", errors="replace")
-    review_mtime = int(review_path.stat().st_mtime)
-
-    # ----- Check 2: freshness -----
-    if review_mtime > dispatch_time and review_mtime > pre_mtime:
-        emit("PASS", "check-2", f"fresh review-mtime={review_mtime}")
-    else:
-        emit("FAIL", "check-2",
-             f"mtime-not-fresh review-mtime={review_mtime} "
-             f"dispatch={dispatch_time} pre={pre_mtime}")
-        any_fail = True
-
-    # ----- Check 3: round marker -----
-    lines = review_text.splitlines()
-    first = lines[0].rstrip() if lines else ""
-    expected_marker = f"<!-- Round {args.round_num} -->"
-    if first == expected_marker:
-        emit("PASS", "check-3", "round-marker")
-    else:
-        emit("FAIL", "check-3", f"first-line={first!r} expected={expected_marker!r}")
-        any_fail = True
-
-    # ----- Check 4: size -----
-    size = len(review_text)
-    if size >= 500:
-        emit("PASS", "check-4", f"size={size}")
-    else:
-        emit("FAIL", "check-4", f"size-too-small={size}")
-        any_fail = True
-
-    # ----- Check 5: Verification notes -----
-    vn_patterns = [
-        r"^#{1,6}\s+Verification notes\b",
-        r"^\*\*Verification notes[.:]?\*\*",
-        r"Verification notes[.:]",
-    ]
-    if any(re.search(p, review_text, re.MULTILINE | re.IGNORECASE) for p in vn_patterns):
-        emit("PASS", "check-5", "verification-notes-present")
-    else:
-        emit("FAIL", "check-5", "verification-notes-missing")
-        any_fail = True
-
-    # ----- Check 6: scope correspondence (optional, depends on --prompt-file) -----
-    prompt_text = ""
-    if args.prompt_file is not None and args.prompt_file.exists():
-        prompt_text = args.prompt_file.read_text(encoding="utf-8", errors="replace")
-
-    if prompt_text:
-        plan_refs = re.findall(r"\bPLAN-[\w\-]+\.md\b", prompt_text)
-        # Backticked filenames in prompt; conservative pattern -- avoid matching whole sentences.
-        file_refs = re.findall(r"`([^`\s]+\.(?:md|py|sh|ps1|tex|rst|toml|yaml|yml|json))`", prompt_text)
-        all_refs = sorted(set(plan_refs) | set(file_refs))
-        if all_refs:
-            matched = [r for r in all_refs if r in review_text]
-            if matched:
-                emit("PASS", "check-6", f"scope-mentions={len(matched)}/{len(all_refs)}")
-            else:
-                emit("FAIL", "check-6",
-                     f"no-scope-files-mentioned prompt-refs={','.join(all_refs)}")
-                any_fail = True
-        else:
-            emit("PASS", "check-6", "no-explicit-files-in-prompt")
-    else:
-        emit("PASS", "check-6", "no-prompt-file-provided")
-
-    # ----- Check 7: review-text suspicious phrases (exclude code spans) -----
-    review_no_code = strip_code_spans(review_text)
-    pattern_7 = re.compile("|".join(SUSPICIOUS_PHRASES), re.IGNORECASE)
-    check7_hits: list[int] = []
-    for line_num, line in enumerate(review_no_code.splitlines(), 1):
-        if pattern_7.search(line):
-            check7_hits.append(line_num)
-    if check7_hits:
-        emit("WARN", "check-7", str(len(check7_hits)),
-             "lines=" + ",".join(str(n) for n in check7_hits))
-    else:
-        emit("PASS", "check-7", "0-suspicious-phrases")
-
+def emit_check_8(tail_file: Path, tail_stderr_file: Path) -> None:
     # ----- Check 8: dispatch-tail tool failures (line classifier + two-tier) -----
     # Fix A (echo classifier) + Fix B (intrinsic/generic) per SKILL.md Phase 2.0
     # and the W3 plan. Scan line by line: skip modeled pattern-echo lines, count
@@ -686,13 +576,136 @@ def main(argv: list[str] | None = None) -> int:
         else:
             emit("PASS", "check-8", "0-tool-failure-markers")
 
-    # ----- Check 9: stall-warning file absence -----
+
+def emit_check_9(stall_warning_file: Path) -> None:
     if stall_warning_file.exists():
         stall_text = stall_warning_file.read_text(encoding="utf-8")
         stall_count = stall_text.count("STALL ")
         emit("WARN", "check-9", str(stall_count), "stall-periods")
     else:
         emit("PASS", "check-9", "no-stall-warning")
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv if argv is not None else sys.argv[1:])
+
+    state_dir: Path = args.state_dir
+    review_path: Path = args.review_file
+
+    if not state_dir.is_dir():
+        emit("FAIL", "state-contract", f"state-dir-missing:{state_dir}")
+        return 1
+
+    pre_mtime_file = state_dir / "pre-mtime"
+    timestamp_file = state_dir / "timestamp"
+    tail_file = state_dir / "tail"
+    tail_stderr_file = state_dir / "tail.stderr-tmp"
+    stall_warning_file = state_dir / "stall-warning"
+
+    pre_mtime = read_int_file(pre_mtime_file)
+    dispatch_time = read_int_file(timestamp_file)
+    if pre_mtime is None or dispatch_time is None:
+        emit("FAIL", "state-contract",
+             f"missing-or-unreadable pre-mtime={pre_mtime_file.exists()} "
+             f"timestamp={timestamp_file.exists()}")
+        return 1
+
+    any_fail = False
+
+    # ----- Check 1: review file exists -----
+    if not review_path.exists():
+        emit("FAIL", "check-1", f"review-file-missing:{review_path}")
+        # A missing review is the failure mode Check 8 exists to diagnose: the
+        # tail can fill with repeated spawn failures while no review is written.
+        emit_check_8(tail_file, tail_stderr_file)
+        emit_check_9(stall_warning_file)
+        return 1
+
+    emit("PASS", "check-1", "review-file-exists")
+
+    review_text = review_path.read_text(encoding="utf-8", errors="replace")
+    review_mtime = int(review_path.stat().st_mtime)
+
+    # ----- Check 2: freshness -----
+    if review_mtime > dispatch_time and review_mtime > pre_mtime:
+        emit("PASS", "check-2", f"fresh review-mtime={review_mtime}")
+    else:
+        emit("FAIL", "check-2",
+             f"mtime-not-fresh review-mtime={review_mtime} "
+             f"dispatch={dispatch_time} pre={pre_mtime}")
+        any_fail = True
+
+    # ----- Check 3: round marker -----
+    lines = review_text.splitlines()
+    first = lines[0].rstrip() if lines else ""
+    expected_marker = f"<!-- Round {args.round_num} -->"
+    if first == expected_marker:
+        emit("PASS", "check-3", "round-marker")
+    else:
+        emit("FAIL", "check-3", f"first-line={first!r} expected={expected_marker!r}")
+        any_fail = True
+
+    # ----- Check 4: size -----
+    size = len(review_text)
+    if size >= 500:
+        emit("PASS", "check-4", f"size={size}")
+    else:
+        emit("FAIL", "check-4", f"size-too-small={size}")
+        any_fail = True
+
+    # ----- Check 5: Verification notes -----
+    vn_patterns = [
+        r"^#{1,6}\s+Verification notes\b",
+        r"^\*\*Verification notes[.:]?\*\*",
+        r"Verification notes[.:]",
+    ]
+    if any(re.search(p, review_text, re.MULTILINE | re.IGNORECASE) for p in vn_patterns):
+        emit("PASS", "check-5", "verification-notes-present")
+    else:
+        emit("FAIL", "check-5", "verification-notes-missing")
+        any_fail = True
+
+    # ----- Check 6: scope correspondence (optional, depends on --prompt-file) -----
+    prompt_text = ""
+    if args.prompt_file is not None and args.prompt_file.exists():
+        prompt_text = args.prompt_file.read_text(encoding="utf-8", errors="replace")
+
+    if prompt_text:
+        plan_refs = re.findall(r"\bPLAN-[\w\-]+\.md\b", prompt_text)
+        # Backticked filenames in prompt; conservative pattern -- avoid matching whole sentences.
+        file_refs = re.findall(r"`([^`\s]+\.(?:md|py|sh|ps1|tex|rst|toml|yaml|yml|json))`", prompt_text)
+        all_refs = sorted(set(plan_refs) | set(file_refs))
+        if all_refs:
+            matched = [r for r in all_refs if r in review_text]
+            if matched:
+                emit("PASS", "check-6", f"scope-mentions={len(matched)}/{len(all_refs)}")
+            else:
+                emit("FAIL", "check-6",
+                     f"no-scope-files-mentioned prompt-refs={','.join(all_refs)}")
+                any_fail = True
+        else:
+            emit("PASS", "check-6", "no-explicit-files-in-prompt")
+    else:
+        emit("PASS", "check-6", "no-prompt-file-provided")
+
+    # ----- Check 7: review-text suspicious phrases (exclude code spans) -----
+    review_no_code = strip_code_spans(review_text)
+    pattern_7 = re.compile("|".join(SUSPICIOUS_PHRASES), re.IGNORECASE)
+    check7_hits: list[int] = []
+    for line_num, line in enumerate(review_no_code.splitlines(), 1):
+        if pattern_7.search(line):
+            check7_hits.append(line_num)
+    if check7_hits:
+        emit("WARN", "check-7", str(len(check7_hits)),
+             "lines=" + ",".join(str(n) for n in check7_hits))
+    else:
+        emit("PASS", "check-7", "0-suspicious-phrases")
+
+    # ----- Check 8: dispatch-tail tool failures (line classifier + two-tier) -----
+    emit_check_8(tail_file, tail_stderr_file)
+
+    # ----- Check 9: stall-warning file absence -----
+    emit_check_9(stall_warning_file)
 
     # ----- Check 10: a verdict must carry machine-readable verification -----
     # The dispatcher requires one standalone Verification status marker. This

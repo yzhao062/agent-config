@@ -313,6 +313,28 @@ if (-not $pythonBin) {
     [Console]::Error.WriteLine('dispatch-codex: no working Python interpreter found (checked ANYWHERE_AGENTS_PYTHON, project virtualenvs, conda/Miniforge, py -3, and non-WindowsApps PATH entries); dispatching without a pre-resolved interpreter')
 }
 
+$pwshBin = $null
+$pwshRejected = $null
+foreach ($candidate in @(Get-Command -Name pwsh -All -CommandType Application -ErrorAction SilentlyContinue)) {
+    if (-not $candidate.Source) { continue }
+    $candidatePath = [string]$candidate.Source
+    if ($candidatePath -match '(?i)[\\/]WindowsApps[\\/]') {
+        if (-not $pwshRejected) { $pwshRejected = $candidatePath }
+        continue
+    }
+    $candidateItem = Get-Item -LiteralPath $candidatePath -ErrorAction SilentlyContinue
+    if (-not $candidateItem -or $candidateItem.PSIsContainer -or $candidateItem.Length -le 0) {
+        if (-not $pwshRejected) { $pwshRejected = $candidatePath }
+        continue
+    }
+    $pwshBin = $candidatePath
+    break
+}
+if (-not $pwshBin) {
+    $rejectedNote = if ($pwshRejected) { " (rejected Store-alias or zero-length candidate: $pwshRejected)" } else { '' }
+    [Console]::Error.WriteLine("dispatch-codex: no usable pwsh found$rejectedNote; the reviewer will be told to avoid pwsh")
+}
+
 # Resolve temp base (TMPDIR > TEMP > TMP > sane fallback)
 $tmpBase = $env:TMPDIR
 if (-not $tmpBase) { $tmpBase = $env:TEMP }
@@ -384,6 +406,9 @@ $streamRetryCountPath = Join-Path $stateDir 'stream-retry-count'
 # instead would let a reader mistake it for a path.
 if ($pythonBin) {
     [System.IO.File]::WriteAllText((Join-Path $stateDir 'python-interpreter'), "$pythonBin`n")
+}
+if ($pwshBin) {
+    [System.IO.File]::WriteAllText((Join-Path $stateDir 'pwsh-interpreter'), "$pwshBin`n")
 }
 
 # Emit STATE-DIR on stdout (first and only machine-readable line)
@@ -517,7 +542,12 @@ $pythonInstruction = if ($pythonBin) {
 } else {
     'No Python interpreter could be pre-resolved on this machine. If a verification command needs Python, locate a working interpreter yourself first; if none exists, verify by whatever means this repository actually uses.'
 }
-$childSessionInstructions = "The parent agent session already completed the repository bootstrap at startup. Skip bootstrap and shared configuration refresh commands in this child review session. Use the shared configuration currently on disk. Follow all other project instructions. $pythonInstruction Before issuing a PASS or BLOCK commit verdict, execute relevant verification commands. In $ExpectedReviewFile, add one standalone line exactly 'Verification status: VERIFIED' if at least one relevant verification command completed, otherwise add 'Verification status: UNVERIFIED'. If the status is UNVERIFIED, write 'Commit verdict: UNVERIFIED'; never issue PASS or BLOCK. Verification notes must list the exact commands and outcomes."
+$pwshInstruction = if ($pwshBin) {
+    "PowerShell 7 was resolved at this absolute path: $pwshBin. If a command needs it, invoke that exact path rather than bare pwsh."
+} else {
+    'No usable PowerShell 7 was found on this machine; a bare pwsh call may be a Microsoft Store execution alias that fails instantly under this spawn context and retries forever. Do not shell out to pwsh. Use bash, Windows PowerShell 5.1 (powershell.exe), or plain git commands instead.'
+}
+$childSessionInstructions = "The parent agent session already completed the repository bootstrap at startup. Skip bootstrap and shared configuration refresh commands in this child review session. Use the shared configuration currently on disk. Follow all other project instructions. $pythonInstruction $pwshInstruction Before issuing a PASS or BLOCK commit verdict, execute relevant verification commands. In $ExpectedReviewFile, add one standalone line exactly 'Verification status: VERIFIED' if at least one relevant verification command completed, otherwise add 'Verification status: UNVERIFIED'. If the status is UNVERIFIED, write 'Commit verdict: UNVERIFIED'; never issue PASS or BLOCK. Verification notes must list the exact commands and outcomes."
 $childSessionInstructionsEsc = $childSessionInstructions -replace '%', '%%'
 $childSessionArg = "-c ""developer_instructions=$childSessionInstructionsEsc"" "
 $cmdBody = "@echo off`r`nchcp 65001 >NUL`r`n""$codexBinEsc"" exec --sandbox $sandboxModeEsc $isolateArg$childSessionArg- > ""$tailPathEsc"" 2>&1 < ""$promptFileEsc""`r`n"
