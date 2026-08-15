@@ -17,19 +17,123 @@ function Find-RealPython {
     $override = Resolve-Path -LiteralPath $env:ANYWHERE_AGENTS_PYTHON -ErrorAction SilentlyContinue
     if ($override) {
       $cmd = Get-Command $override.ProviderPath -ErrorAction SilentlyContinue
-      if ($cmd) { return $cmd }
+      if ($cmd -and (Test-PythonRuns $cmd.Path)) { return $cmd }
     }
+    [Console]::Error.WriteLine("[anywhere-agents] ANYWHERE_AGENTS_PYTHON did not execute Python 3 successfully: $($env:ANYWHERE_AGENTS_PYTHON); trying automatic discovery.")
   }
   $candidates = @()
   $candidates += Get-Command python3 -All -ErrorAction SilentlyContinue
   $candidates += Get-Command python -All -ErrorAction SilentlyContinue
   foreach ($c in $candidates) {
     if (-not $c) { continue }
-    if ($c.Source -and ($c.Source -notmatch 'WindowsApps')) {
+    if ($c.Source -and ($c.Source -notmatch 'WindowsApps') -and (Test-PythonRuns $c.Path)) {
       return $c
     }
   }
   return $null
+}
+
+function Write-Ledger([string]$LastPhase, [bool]$Completed) {
+  try {
+    $ledgerDir = Join-Path (Get-Location).Path '.agent-config'
+    New-Item -ItemType Directory -Force -Path $ledgerDir -ErrorAction Stop | Out-Null
+    $path = Join-Path $ledgerDir 'last-run.json'
+    $tempPath = Join-Path $ledgerDir 'last-run.json.tmp'
+    $document = [ordered]@{
+      schema = 1
+      emitted_by = 'bootstrap.ps1'
+      run_id = $script:LedgerRunId
+      started_at = $script:LedgerStarted
+      upstream = $script:LedgerUpstream
+      completed = $Completed
+      last_phase = $LastPhase
+      steps = @($script:LedgerSteps)
+    }
+    $json = $document | ConvertTo-Json -Depth 6
+    [System.IO.File]::WriteAllText(
+      $tempPath,
+      $json + [Environment]::NewLine,
+      (New-Object System.Text.UTF8Encoding $false)
+    )
+    Move-Item -LiteralPath $tempPath -Destination $path -Force -ErrorAction Stop
+  } catch {
+    # The ledger must never change bootstrap's outcome.
+  }
+}
+
+function Initialize-Ledger {
+  try {
+    $script:LedgerSteps = @()
+    $script:LedgerTargets = @()
+    $script:LedgerRunId = "$PID-" + [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    $script:LedgerStarted = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
+    # Coalesce to a string. bootstrap.sh emits "" for an unset upstream, and
+    # ConvertTo-Json renders $null as JSON null, so leaving it unset would give
+    # the two entry points different types for the same field.
+    $script:LedgerUpstream = if ($Upstream) { $Upstream } elseif ($env:AGENT_CONFIG_UPSTREAM) { $env:AGENT_CONFIG_UPSTREAM } else { '' }
+    Write-Ledger 'start' $false
+  } catch {}
+}
+
+function Add-LedgerTarget([string]$TargetPath) {
+  try {
+    $script:LedgerTargets += $TargetPath
+  } catch {}
+}
+
+function Add-LedgerStep {
+  param(
+    [string]$Phase,
+    [string]$Scope,
+    [string]$Status,
+    [Nullable[int]]$Rc = $null
+  )
+  try {
+    $stepRc = if ($PSBoundParameters.ContainsKey('Rc')) { [int]$Rc } else { $null }
+    $step = [ordered]@{
+      phase = $Phase
+      scope = $Scope
+      status = $Status
+      rc = $stepRc
+      targets = @($script:LedgerTargets)
+    }
+    $script:LedgerSteps += [pscustomobject]$step
+    $script:LedgerTargets = @()
+    Write-Ledger $Phase $false
+  } catch {}
+}
+
+$script:GeneratorStatus = 'skipped'
+$script:GeneratorRc = $null
+
+function Invoke-AgentConfigGenerator($PythonCommand) {
+  try {
+    if (-not $PythonCommand -or -not (Test-Path .agent-config/repo/scripts/generate_agent_configs.py)) {
+      return
+    }
+    $global:LASTEXITCODE = $null
+    & $PythonCommand.Path .agent-config/repo/scripts/generate_agent_configs.py --root . --quiet
+    $rc = if ($LASTEXITCODE -ne $null) { [int]$LASTEXITCODE } elseif (-not $?) { 1 } else { 0 }
+    $script:GeneratorRc = $rc
+    $script:GeneratorStatus = if ($rc -eq 0) { 'ok' } else { 'failed' }
+  } catch {
+    $script:GeneratorRc = 1
+    $script:GeneratorStatus = 'failed'
+  }
+}
+
+function Add-GeneratorLedgerStep {
+  try {
+    if ($script:GeneratorStatus -eq 'ok') {
+      Add-LedgerTarget 'CLAUDE.md'
+      Add-LedgerTarget 'agents/codex.md'
+      Add-LedgerStep 'generate' 'repo' 'ok'
+    } elseif ($script:GeneratorStatus -eq 'failed') {
+      Add-LedgerStep 'generate' 'repo' 'failed' $script:GeneratorRc
+    } else {
+      Add-LedgerStep 'generate' 'repo' 'skipped'
+    }
+  } catch {}
 }
 
 # Detect git binary and reject pre-2.25 versions before any git invocation
@@ -105,6 +209,7 @@ After committing agent-config.yaml, run:
     exit 0
 }
 
+try { Initialize-Ledger } catch {}
 Invoke-GitPreflight
 if ($env:AGENT_CONFIG_PREFLIGHT_TEST) { exit 0 }
 
@@ -143,6 +248,11 @@ if (-not $Upstream -and (Test-Path .agent-config/upstream)) {
 if (-not $Upstream) { $Upstream = 'yzhao062/anywhere-agents' }
 New-Item -ItemType Directory -Force -Path .agent-config | Out-Null
 Set-Content -Path .agent-config/upstream -Value $Upstream -NoNewline
+try {
+  $script:LedgerUpstream = $Upstream
+  Add-LedgerTarget '.agent-config/upstream'
+  Add-LedgerStep 'preflight' 'repo' 'ok'
+} catch {}
 
 function Merge-Json($base, $over) {
   foreach ($p in $over.PSObject.Properties) {
@@ -220,6 +330,11 @@ if (Test-Path .agent-config/repo/.git) {
   git clone --depth 1 --filter=blob:none --sparse $RepoUrl .agent-config/repo
 }
 git -C .agent-config/repo sparse-checkout set skills .claude scripts user bootstrap
+try {
+  Add-LedgerTarget '.agent-config/AGENTS.md'
+  Add-LedgerTarget '.agent-config/repo'
+  Add-LedgerStep 'fetch' 'repo' 'ok'
+} catch {}
 
 # Compose root AGENTS.md. Default-on: every aa consumer gets the agent-style
 # writing rule pack unless they explicitly opt out via `rule_packs: []` in
@@ -234,10 +349,20 @@ git -C .agent-config/repo sparse-checkout set skills .claude scripts user bootst
 # $LASTEXITCODE the way this script would otherwise rely on. Probe every
 # candidate with an import-and-exit test, and gate subsequent checks on both
 # $? (native launch success) AND $LASTEXITCODE (the program's own exit).
+# Exit status alone is not proof that Python ran. A command that ignores its
+# arguments and exits 0, such as true.exe or a .cmd containing only `exit /b 0`,
+# passes an exit-status probe while executing nothing. Require the interpreter
+# to echo a sentinel, so only something that actually evaluated the -c program
+# is accepted.
 function Test-PythonRuns([string]$PythonPath) {
+  try {
     $global:LASTEXITCODE = $null
-    & $PythonPath -c "import sys; raise SystemExit(0 if sys.version_info[0] >= 3 else 1)" 2>$null
-    return ($? -and $LASTEXITCODE -eq 0)
+    $probeOutput = & $PythonPath -c 'import sys; sys.stdout.write("__ANYWHERE_AGENTS_PY3__" if sys.version_info[0] >= 3 else "")' 2>$null
+    $launched = $?
+    return ($launched -and $LASTEXITCODE -eq 0 -and ([string]$probeOutput).Trim() -eq '__ANYWHERE_AGENTS_PY3__')
+  } catch {
+    return $false
+  }
 }
 
 function Test-PythonHasYaml([string]$PythonPath) {
@@ -247,9 +372,8 @@ function Test-PythonHasYaml([string]$PythonPath) {
 }
 
 $pyCmd = Find-RealPython
-if ($pyCmd -and -not (Test-PythonRuns $pyCmd.Path)) {
-    $pyCmd = $null
-}
+# Candidate discovery is stable after the sparse clone, so reuse this probed
+# result for every later Python-backed phase in the same bootstrap run.
 
 $composeOk = $false
 if ($pyCmd) {
@@ -287,14 +411,20 @@ if ($composeOk) {
     $global:LASTEXITCODE = $null
     & $pyCmd.Path $composer @composeArgs
     $composerRc = if ($LASTEXITCODE -ne $null) { [int]$LASTEXITCODE } elseif (-not $?) { 1 } else { 0 }
-    if (Test-Path .agent-config/repo/scripts/generate_agent_configs.py) {
-        $global:LASTEXITCODE = $null
-        & $pyCmd.Path .agent-config/repo/scripts/generate_agent_configs.py --root . --quiet
-    }
+    Invoke-AgentConfigGenerator $pyCmd
     if ($composerRc -ne 0) {
         [Console]::Error.WriteLine("[anywhere-agents] pack composition did not complete (rc=$composerRc); generated files (CLAUDE.md, agents/codex.md) refreshed from current AGENTS.md. Re-run ``anywhere-agents`` after addressing the failure.")
+        try {
+          Add-LedgerTarget 'AGENTS.md'
+          Add-LedgerStep 'compose' 'repo' 'failed' $composerRc
+          Add-GeneratorLedgerStep
+        } catch {}
         exit $composerRc
     }
+    try {
+      Add-LedgerTarget 'AGENTS.md'
+      Add-LedgerStep 'compose' 'repo' 'ok'
+    } catch {}
 } else {
     Copy-Item .agent-config/AGENTS.md AGENTS.md -Force
     $rpAware = $false
@@ -311,20 +441,22 @@ if ($composeOk) {
         [Console]::Error.WriteLine("     but this run skipped them (Python 3 with PyYAML unavailable).")
         [Console]::Error.WriteLine("     install Python + PyYAML to enable, or silence with 'rule_packs: []' in agent-config.yaml.")
     }
+    try {
+      Add-LedgerTarget 'AGENTS.md'
+      Add-LedgerStep 'compose' 'repo' 'skipped'
+    } catch {}
 }
 # Generate per-agent config files (CLAUDE.md, agents/codex.md) from AGENTS.md.
 # Generator preserves hand-authored files (no GENERATED header) and warns loudly.
-# v0.5.8: in the composeOk path the generator already ran above (always, whether
-# composition succeeded or failed). Only run here for the fallback path
-# (Python/PyYAML unavailable) where $composeOk is false.
-if (-not $composeOk -and (Test-Path .agent-config/repo/scripts/generate_agent_configs.py)) {
-  $genPy = Find-RealPython
-  if ($genPy) {
-    & $genPy.Path .agent-config/repo/scripts/generate_agent_configs.py --root . --quiet
-  }
+# v0.5.8: in the composeOk path the generator already ran above. Only run here
+# for the fallback path (Python/PyYAML unavailable) where $composeOk is false.
+if (-not $composeOk) {
+  Invoke-AgentConfigGenerator $pyCmd
 }
+Add-GeneratorLedgerStep
 if (Test-Path .agent-config/repo/.claude/commands) {
   Copy-Item .agent-config/repo/.claude/commands/*.md .claude/commands/ -Force
+  try { Add-LedgerTarget '.claude/commands' } catch {}
 }
 if (Test-Path .agent-config/repo/.claude/settings.json) {
   if (Test-Path .claude/settings.json) {
@@ -335,7 +467,9 @@ if (Test-Path .agent-config/repo/.claude/settings.json) {
   } else {
     Copy-Item .agent-config/repo/.claude/settings.json .claude/settings.json -Force
   }
+  try { Add-LedgerTarget '.claude/settings.json' } catch {}
 }
+try { Add-LedgerStep 'project_files' 'repo' 'ok' } catch {}
 # --- User-level setup: hooks and settings ---
 # This section modifies ~/.claude/ (user-level, not project-level).
 # It deploys a PreToolUse hook guard and merges shared permission settings.
@@ -345,24 +479,29 @@ if (Test-Path .agent-config/repo/scripts/_python) {
   $hooksDir = Join-Path $userClaude 'hooks'
   New-Item -ItemType Directory -Force -Path $hooksDir | Out-Null
   Copy-Item .agent-config/repo/scripts/_python (Join-Path $hooksDir '_python') -Force
+  try { Add-LedgerTarget '~/.claude/hooks/_python' } catch {}
 }
 if (Test-Path .agent-config/repo/scripts/guard.py) {
   $hooksDir = Join-Path $userClaude 'hooks'
   New-Item -ItemType Directory -Force -Path $hooksDir | Out-Null
   Copy-Item .agent-config/repo/scripts/guard.py (Join-Path $hooksDir 'guard.py') -Force
+  try { Add-LedgerTarget '~/.claude/hooks/guard.py' } catch {}
 }
 if (Test-Path .agent-config/repo/scripts/session_bootstrap.py) {
   $hooksDir = Join-Path $userClaude 'hooks'
   New-Item -ItemType Directory -Force -Path $hooksDir | Out-Null
   Copy-Item .agent-config/repo/scripts/session_bootstrap.py (Join-Path $hooksDir 'session_bootstrap.py') -Force
+  try { Add-LedgerTarget '~/.claude/hooks/session_bootstrap.py' } catch {}
 }
 if (Test-Path .agent-config/repo/scripts/statusline.py) {
   New-Item -ItemType Directory -Force -Path $userClaude | Out-Null
   Copy-Item .agent-config/repo/scripts/statusline.py (Join-Path $userClaude 'statusline.py') -Force
+  try { Add-LedgerTarget '~/.claude/statusline.py' } catch {}
 }
 if (Test-Path .agent-config/repo/scripts/agent-quota.py) {
   New-Item -ItemType Directory -Force -Path $userClaude | Out-Null
   Copy-Item .agent-config/repo/scripts/agent-quota.py (Join-Path $userClaude 'agent-quota.py') -Force
+  try { Add-LedgerTarget '~/.claude/agent-quota.py' } catch {}
 }
 if (Test-Path .agent-config/repo/user/settings.json) {
   New-Item -ItemType Directory -Force -Path $userClaude | Out-Null
@@ -375,6 +514,7 @@ if (Test-Path .agent-config/repo/user/settings.json) {
   } else {
     Copy-Item .agent-config/repo/user/settings.json $userSettings -Force
   }
+  try { Add-LedgerTarget '~/.claude/settings.json' } catch {}
 }
 # Heal legacy autoUpdates: false in ~/.claude.json. When the flag was already
 # false at Claude Code native-install launch, the updater daemon never spawns
@@ -403,12 +543,20 @@ if (Test-Path $claudeJson) {
     # ~/.claude.json is runtime-managed by Claude Code; skip on any read/parse error.
     if ($tmp -and (Test-Path $tmp)) { Remove-Item -Force $tmp }
   }
+  try { Add-LedgerTarget '~/.claude.json' } catch {}
 }
+try { Add-LedgerStep 'user_files' 'user' 'ok' } catch {}
 
 # Codex CLI has no native updater like Claude Code. If Codex is installed as
 # the global npm package that this config recommends, keep it current during
 # bootstrap. Set ANYWHERE_AGENTS_CODEX_AUTO_UPDATE=off to disable.
 Invoke-CodexAutoUpdate
+# No target here: Invoke-CodexAutoUpdate no-ops when Codex is not the global
+# npm install or when ANYWHERE_AGENTS_CODEX_AUTO_UPDATE=off, so naming the
+# package would imply an update that may not have happened.
+try {
+  Add-LedgerStep 'external' 'external' 'ok'
+} catch {}
 
 if (-not (Test-Path .gitignore) -or -not (Select-String -Quiet -Pattern '^\/?\.agent-config/' .gitignore)) {
   Add-Content -Path .gitignore -Value "`n.agent-config/"
@@ -441,3 +589,10 @@ if (Test-Path .agent-config/repo/bootstrap/bootstrap.sh) {
     Write-Warning "Could not copy .agent-config/bootstrap.sh: $($_.Exception.Message)"
   }
 }
+try {
+  Add-LedgerTarget '.gitignore'
+  Add-LedgerTarget '.agent-config/bootstrap.sh'
+  Add-LedgerTarget '.agent-config/bootstrap.ps1'
+  Add-LedgerStep 'finalize' 'repo' 'ok'
+  Write-Ledger 'finalize' $true
+} catch {}

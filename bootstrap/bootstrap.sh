@@ -90,14 +90,27 @@ fi
 # "Python was not found; install from Store" and exits non-zero on call).
 # Order: env override > deployed wrapper > sparse-clone wrapper > PATH lookup
 # with shim skip. See https://github.com/yzhao062/anywhere-agents/issues/2.
+# Exit status alone is not proof that Python ran. A command that ignores its
+# arguments and exits 0, such as `true` or a .cmd containing only `exit /b 0`,
+# passes an exit-status probe while executing nothing. Require the interpreter
+# to echo a sentinel, so only something that actually evaluated the -c program
+# is accepted.
+_python_runs() {
+  _probe_output="$("$1" -c 'import sys; sys.stdout.write("__ANYWHERE_AGENTS_PY3__" if sys.version_info[0] >= 3 else "")' 2>/dev/null)" || return 1
+  [ "$_probe_output" = "__ANYWHERE_AGENTS_PY3__" ]
+}
+
 _find_python() {
-  if [ -n "${ANYWHERE_AGENTS_PYTHON:-}" ] && [ -x "$ANYWHERE_AGENTS_PYTHON" ]; then
-    echo "$ANYWHERE_AGENTS_PYTHON"; return 0
+  if [ -n "${ANYWHERE_AGENTS_PYTHON:-}" ]; then
+    if [ -x "$ANYWHERE_AGENTS_PYTHON" ] && _python_runs "$ANYWHERE_AGENTS_PYTHON"; then
+      echo "$ANYWHERE_AGENTS_PYTHON"; return 0
+    fi
+    printf '%s\n' "[anywhere-agents] ANYWHERE_AGENTS_PYTHON did not execute Python 3 successfully: $ANYWHERE_AGENTS_PYTHON; trying automatic discovery." >&2
   fi
-  if [ -x "$HOME/.claude/hooks/_python" ]; then
+  if [ -x "$HOME/.claude/hooks/_python" ] && _python_runs "$HOME/.claude/hooks/_python"; then
     echo "$HOME/.claude/hooks/_python"; return 0
   fi
-  if [ -x ".agent-config/repo/scripts/_python" ]; then
+  if [ -x ".agent-config/repo/scripts/_python" ] && _python_runs ".agent-config/repo/scripts/_python"; then
     echo ".agent-config/repo/scripts/_python"; return 0
   fi
   for cmd in python3 python; do
@@ -111,10 +124,137 @@ _find_python() {
       case "$resolved" in
         *WindowsApps*|*windowsapps*) continue ;;
       esac
-      echo "$candidate"; return 0
+      if _python_runs "$candidate"; then
+        echo "$candidate"; return 0
+      fi
     done < <(type -a -p "$cmd" 2>/dev/null || true)
   done
   return 1
+}
+
+# Best-effort bootstrap ledger. This script runs without set -e, so every
+# helper must finish successfully rather than relying on error propagation.
+_ledger_esc() {
+  local LC_ALL=C
+  local _ledger_input=$1
+  local _ledger_output=""
+  local _ledger_char _ledger_code _ledger_encoded
+  local _ledger_index=0
+  while [ "$_ledger_index" -lt "${#_ledger_input}" ]; do
+    _ledger_char=${_ledger_input:$_ledger_index:1}
+    case "$_ledger_char" in
+      $'\b') _ledger_output="${_ledger_output}\\b" ;;
+      $'\t') _ledger_output="${_ledger_output}\\t" ;;
+      $'\n') _ledger_output="${_ledger_output}\\n" ;;
+      $'\f') _ledger_output="${_ledger_output}\\f" ;;
+      $'\r') _ledger_output="${_ledger_output}\\r" ;;
+      '"') _ledger_output="${_ledger_output}\\\"" ;;
+      '\') _ledger_output="${_ledger_output}\\\\" ;;
+      *)
+        if ! printf -v _ledger_code '%d' "'$_ledger_char" 2>/dev/null; then
+          _ledger_output=""
+          break
+        fi
+        if [ "$_ledger_code" -lt 32 ]; then
+          if ! printf -v _ledger_encoded '\\u%04x' "$_ledger_code" 2>/dev/null; then
+            _ledger_output=""
+            break
+          fi
+          _ledger_output="${_ledger_output}${_ledger_encoded}"
+        else
+          _ledger_output="${_ledger_output}${_ledger_char}"
+        fi
+        ;;
+    esac
+    _ledger_index=$((_ledger_index + 1))
+  done
+  printf '%s' "$_ledger_output" 2>/dev/null || true
+  return 0
+}
+
+_ledger_write() {
+  _ledger_last_phase=$1
+  _ledger_completed=$2
+  mkdir -p .agent-config 2>/dev/null || return 0
+  _ledger_upstream=$(_ledger_esc "${_LEDGER_UPSTREAM:-}")
+  _ledger_run_id=$(_ledger_esc "${_LEDGER_RUN_ID:-}")
+  _ledger_started=$(_ledger_esc "${_LEDGER_STARTED:-}")
+  _ledger_phase=$(_ledger_esc "$_ledger_last_phase")
+  printf '{"schema":1,"emitted_by":"bootstrap.sh","run_id":"%s","started_at":"%s","upstream":"%s","completed":%s,"last_phase":"%s","steps":[%s]}\n' \
+    "$_ledger_run_id" "$_ledger_started" "$_ledger_upstream" "$_ledger_completed" \
+    "$_ledger_phase" "${_LEDGER_STEPS:-}" > .agent-config/last-run.json.tmp 2>/dev/null &&
+    mv -f .agent-config/last-run.json.tmp .agent-config/last-run.json 2>/dev/null || true
+}
+
+_ledger_init() {
+  _LEDGER_RUN_ID="$$-$(date -u +%s 2>/dev/null || echo 0)"
+  _LEDGER_STARTED="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)"
+  _LEDGER_UPSTREAM="${_POS_UPSTREAM:-${AGENT_CONFIG_UPSTREAM:-}}"
+  _LEDGER_STEPS=""
+  _LEDGER_TARGETS=""
+  _ledger_write start false
+  return 0
+}
+
+_ledger_target() {
+  _ledger_target_value=$(_ledger_esc "$1")
+  if [ -n "${_LEDGER_TARGETS:-}" ]; then
+    _LEDGER_TARGETS="${_LEDGER_TARGETS},"
+  fi
+  _LEDGER_TARGETS="${_LEDGER_TARGETS}\"${_ledger_target_value}\""
+  return 0
+}
+
+_ledger_step() {
+  _ledger_step_phase=$1
+  _ledger_step_scope=$2
+  _ledger_step_status=$3
+  _ledger_step_rc=${4:-null}
+  _ledger_step_phase_json=$(_ledger_esc "$_ledger_step_phase")
+  _ledger_step_scope_json=$(_ledger_esc "$_ledger_step_scope")
+  _ledger_step_status_json=$(_ledger_esc "$_ledger_step_status")
+  _ledger_step_value="{\"phase\":\"${_ledger_step_phase_json}\",\"scope\":\"${_ledger_step_scope_json}\",\"status\":\"${_ledger_step_status_json}\",\"rc\":${_ledger_step_rc},\"targets\":[${_LEDGER_TARGETS:-}]}"
+  if [ -n "${_LEDGER_STEPS:-}" ]; then
+    _LEDGER_STEPS="${_LEDGER_STEPS},"
+  fi
+  _LEDGER_STEPS="${_LEDGER_STEPS}${_ledger_step_value}"
+  _LEDGER_TARGETS=""
+  _ledger_write "$_ledger_step_phase" false
+  return 0
+}
+
+_generator_status=skipped
+_generator_rc=null
+
+_run_generator() {
+  _generator_python=$1
+  [ -n "$_generator_python" ] || return 0
+  [ -f .agent-config/repo/scripts/generate_agent_configs.py ] || return 0
+  "$_generator_python" .agent-config/repo/scripts/generate_agent_configs.py --root . --quiet
+  _generator_rc=$?
+  if [ "$_generator_rc" -eq 0 ]; then
+    _generator_status=ok
+  else
+    _generator_status=failed
+  fi
+  return 0
+}
+
+_record_generator_step() {
+  case "$_generator_status" in
+    ok)
+      _ledger_target CLAUDE.md
+      _ledger_target agents/codex.md
+      _ledger_step generate repo ok
+      ;;
+    failed)
+      _ledger_step generate repo failed "$_generator_rc"
+      ;;
+    *)
+      _ledger_step generate repo skipped
+      ;;
+  esac
+  return 0
 }
 
 # Detect git binary and reject pre-2.25 versions before any git invocation
@@ -163,6 +303,7 @@ check_git_preflight() {
   return 0
 }
 
+_ledger_init
 check_git_preflight
 [ -n "${AGENT_CONFIG_PREFLIGHT_TEST:-}" ] && exit 0
 
@@ -223,6 +364,9 @@ fi
 UPSTREAM="${UPSTREAM:-yzhao062/anywhere-agents}"
 mkdir -p .agent-config
 printf '%s' "$UPSTREAM" > .agent-config/upstream
+_LEDGER_UPSTREAM="$UPSTREAM"
+_ledger_target .agent-config/upstream
+_ledger_step preflight repo ok
 
 mkdir -p .agent-config .claude/commands
 curl -sfL "https://raw.githubusercontent.com/$UPSTREAM/main/AGENTS.md" -o .agent-config/AGENTS.md
@@ -238,6 +382,9 @@ else
   git clone --depth 1 --filter=blob:none --sparse "$REPO_URL" .agent-config/repo
 fi
 git -C .agent-config/repo sparse-checkout set skills .claude scripts user bootstrap
+_ledger_target .agent-config/AGENTS.md
+_ledger_target .agent-config/repo
+_ledger_step fetch repo ok
 
 # Compose root AGENTS.md. Default-on: every aa consumer gets the agent-style
 # writing rule pack unless they explicitly opt out via `rule_packs: []` in
@@ -247,6 +394,8 @@ git -C .agent-config/repo sparse-checkout set skills .claude scripts user bootst
 # AGENTS.md and print a one-line tip unless the consumer has explicitly
 # referenced rule_packs themselves.
 _py=$(_find_python || true)
+# Candidate discovery is stable after the sparse clone, so reuse this probed
+# result for every later Python-backed phase in the same bootstrap run.
 _compose_ok=false
 if [ -n "$_py" ]; then
   if ! "$_py" -c "import yaml" >/dev/null 2>&1; then
@@ -282,13 +431,16 @@ if $_compose_ok; then
   # coherent even when composition aborts (e.g. DriftAbort, OSError).
   "$_py" "$_composer" --root . $_NO_CACHE_FLAG
   _composer_rc=$?
-  if [ -f .agent-config/repo/scripts/generate_agent_configs.py ]; then
-    "$_py" .agent-config/repo/scripts/generate_agent_configs.py --root . --quiet || true
-  fi
+  _run_generator "$_py"
   if [ "$_composer_rc" -ne 0 ]; then
     printf '%s\n' "[anywhere-agents] pack composition did not complete (rc=${_composer_rc}); generated files (CLAUDE.md, agents/codex.md) refreshed from current AGENTS.md. Re-run \`anywhere-agents\` after addressing the failure." >&2
+    _ledger_target AGENTS.md
+    _ledger_step compose repo failed "$_composer_rc"
+    _record_generator_step
     exit "$_composer_rc"
   fi
+  _ledger_target AGENTS.md
+  _ledger_step compose repo ok
 else
   cp -f .agent-config/AGENTS.md AGENTS.md
   _rp_aware=false
@@ -305,24 +457,24 @@ else
     printf '     but this run skipped them (Python 3 with PyYAML unavailable).\n' >&2
     printf "     install Python + PyYAML to enable, or silence with 'rule_packs: []' in agent-config.yaml.\n" >&2
   fi
+  _ledger_target AGENTS.md
+  _ledger_step compose repo skipped
 fi
 # Generate per-agent config files (CLAUDE.md, agents/codex.md) from AGENTS.md.
 # Generator preserves hand-authored files (no GENERATED header) and warns loudly.
 # v0.5.8: in the compose-ok path the generator already ran inside the if block
-# above (always, whether composition succeeded or failed). Only run here for the
-# fallback path (Python/PyYAML unavailable) where $_compose_ok is false.
-if ! $_compose_ok && [ -f .agent-config/repo/scripts/generate_agent_configs.py ]; then
-  _py=$(_find_python || true)
-  if [ -n "$_py" ]; then
-    "$_py" .agent-config/repo/scripts/generate_agent_configs.py --root . --quiet || true
-  fi
+# above. Only run here for the fallback path (Python/PyYAML unavailable) where
+# $_compose_ok is false.
+if ! $_compose_ok; then
+  _run_generator "$_py"
 fi
+_record_generator_step
 if [ -d .agent-config/repo/.claude/commands ]; then
   cp -f .agent-config/repo/.claude/commands/*.md .claude/commands/
+  _ledger_target .claude/commands
 fi
 if [ -f .agent-config/repo/.claude/settings.json ]; then
   if [ -f .claude/settings.json ]; then
-    _py=$(_find_python || true)
     if [ -n "$_py" ]; then
       "$_py" -c "
 import json, pathlib as P
@@ -340,7 +492,9 @@ P.Path('.claude/settings.json').write_text(json.dumps(p,indent=2)+'\n')
   else
     cp -f .agent-config/repo/.claude/settings.json .claude/settings.json
   fi
+  _ledger_target .claude/settings.json
 fi
+_ledger_step project_files repo ok
 # --- User-level setup: hooks and settings ---
 # This section modifies ~/.claude/ (user-level, not project-level).
 # It deploys a PreToolUse hook guard and merges shared permission settings.
@@ -349,27 +503,31 @@ if [ -f .agent-config/repo/scripts/_python ]; then
   mkdir -p "$HOME/.claude/hooks"
   cp -f .agent-config/repo/scripts/_python "$HOME/.claude/hooks/_python"
   chmod +x "$HOME/.claude/hooks/_python" 2>/dev/null || true
+  _ledger_target '~/.claude/hooks/_python'
 fi
 if [ -f .agent-config/repo/scripts/guard.py ]; then
   mkdir -p "$HOME/.claude/hooks"
   cp -f .agent-config/repo/scripts/guard.py "$HOME/.claude/hooks/guard.py"
+  _ledger_target '~/.claude/hooks/guard.py'
 fi
 if [ -f .agent-config/repo/scripts/session_bootstrap.py ]; then
   mkdir -p "$HOME/.claude/hooks"
   cp -f .agent-config/repo/scripts/session_bootstrap.py "$HOME/.claude/hooks/session_bootstrap.py"
+  _ledger_target '~/.claude/hooks/session_bootstrap.py'
 fi
 if [ -f .agent-config/repo/scripts/statusline.py ]; then
   mkdir -p "$HOME/.claude"
   cp -f .agent-config/repo/scripts/statusline.py "$HOME/.claude/statusline.py"
+  _ledger_target '~/.claude/statusline.py'
 fi
 if [ -f .agent-config/repo/scripts/agent-quota.py ]; then
   mkdir -p "$HOME/.claude"
   cp -f .agent-config/repo/scripts/agent-quota.py "$HOME/.claude/agent-quota.py"
+  _ledger_target '~/.claude/agent-quota.py'
 fi
 if [ -f .agent-config/repo/user/settings.json ]; then
   mkdir -p "$HOME/.claude"
   if [ -f "$HOME/.claude/settings.json" ]; then
-    _py=$(_find_python || true)
     if [ -n "$_py" ]; then
       "$_py" -c "
 import json, pathlib as P
@@ -387,12 +545,12 @@ P.Path(P.Path.home()/'.claude'/'settings.json').write_text(json.dumps(u,indent=2
   else
     cp -f .agent-config/repo/user/settings.json "$HOME/.claude/settings.json"
   fi
+  _ledger_target '~/.claude/settings.json'
 fi
 # Heal legacy autoUpdates: false in ~/.claude.json. See bootstrap.ps1 comment
 # for the why. To genuinely disable auto-updates, set DISABLE_AUTOUPDATER=1
 # via the env block in ~/.claude/settings.json.
 if [ -f "$HOME/.claude.json" ]; then
-  _py=$(_find_python || true)
   if [ -n "$_py" ]; then
     "$_py" -c "
 import json, os, pathlib as P, tempfile
@@ -421,12 +579,18 @@ except Exception:
     pass
 "
   fi
+  _ledger_target '~/.claude.json'
 fi
+_ledger_step user_files user ok
 
 # Codex CLI has no native updater like Claude Code. If Codex is installed as
 # the global npm package that this config recommends, keep it current during
 # bootstrap. Set ANYWHERE_AGENTS_CODEX_AUTO_UPDATE=off to disable.
 maybe_update_codex_cli
+# No target here: maybe_update_codex_cli no-ops when Codex is not the global
+# npm install or when ANYWHERE_AGENTS_CODEX_AUTO_UPDATE=off, so naming the
+# package would imply an update that may not have happened.
+_ledger_step external external ok
 
 if [ ! -f .gitignore ] || ! grep -qE '^\/?\.agent-config/' .gitignore; then
   echo '.agent-config/' >> .gitignore
@@ -453,3 +617,8 @@ if [ -f .agent-config/repo/bootstrap/bootstrap.ps1 ]; then
   cp -f .agent-config/repo/bootstrap/bootstrap.ps1 .agent-config/bootstrap.ps1 || \
     printf '%s\n' 'warning: could not copy .agent-config/bootstrap.ps1' >&2
 fi
+_ledger_target .gitignore
+_ledger_target .agent-config/bootstrap.sh
+_ledger_target .agent-config/bootstrap.ps1
+_ledger_step finalize repo ok
+_ledger_write finalize true
