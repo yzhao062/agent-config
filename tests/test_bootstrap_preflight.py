@@ -342,7 +342,12 @@ def _run_bootstrap_ps1_with_ledger(
 
 
 def _write_executable(path: Path, content: str) -> None:
-    path.write_text(content, encoding="utf-8", newline="\n")
+    # open(newline=) rather than Path.write_text(newline=): the latter kwarg is
+    # Python 3.10+, and the CI matrix still covers 3.9. These files are shell
+    # stubs handed to a POSIX shell, so the LF ending is load-bearing on
+    # Windows checkouts and cannot be left to the platform default.
+    with open(path, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(content)
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
