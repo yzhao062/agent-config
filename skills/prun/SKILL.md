@@ -149,8 +149,7 @@ real remotes, and the Claude session plus the user are the integration gate. Tha
    still-running units until all are done. `monitor` only observes; the unit's own `dispatch-task`
    reaps a worker idle past `PRUN_STALL_THRESHOLD` at the same threshold, so a persistent stall
    surfaces as a `FALLBACK` to re-dispatch rather than a leaked zombie. (`gather.{sh,ps1}` remains for
-   the plain wait-for-all case.) If an earlier dispatcher was killed mid-run, use
-   `reap-orphans.{sh,ps1}` to terminate only the worker trees recorded by that dispatch.
+   the plain wait-for-all case.)
 6. **Reconcile, then integrate**: before integrating, **reconcile the ledger**: every dispatched unit
    must have a non-empty result. If any is missing or empty, do **not** integrate the partial set;
    recover the worker's output from its `<state-dir>/tail` (dispatch-task also salvages the tail into
@@ -178,9 +177,6 @@ scripts/dispatch-task.sh --prompt-file <prompt> --result-file <abs result> --uni
   `FALLBACK` above naming `idle-stall` or `hard-timeout`. A non-empty result the worker already wrote
   is preserved, never clobbered. On Windows the watch+kill runs in the sibling `reap-watch.ps1` (an
   AMSI-safe split of launch from watch+kill; the `.sh` does it inline).
-- Passes a separate `-c developer_instructions=...` argument on every dispatch. It tells the worker
-  to skip bootstrap and shared configuration refresh, and to use the configuration already on disk.
-  `AGENTS.md` and every other project rule remain active. This is independent of MCP isolation.
 - Runs codex from a per-unit working dir: a scratch dir by default (read-only units), or the path in
   `PRUN_SCRATCH_CWD` (point this at a throwaway clone for code-writing units).
 - Env: `CODEX_DISPATCH_SANDBOX` (default `danger-full-access`), `CODEX_DISPATCH_REASONING` (default
@@ -227,73 +223,6 @@ scripts/monitor.sh <state-dir-1> <state-dir-2> ...
   (default 10).
 - Run it in the background; after handling a stall or fail, re-launch on the still-running units so a
   resolved unit is not re-flagged.
-
-## reap-orphans usage
-
-```
-scripts/reap-orphans.sh [--dry-run] [--state-dir <path>]...
-```
-
-Output schema:
-
-```
-REAP-START base=<temp-base> candidates=<N>
-TERMINATED <state-name> pid=<pid>
-WOULD-REAP <state-name> pid=<pid>
-LEFT <state-name> <reason>
-REAP-DONE terminated=<n> left=<m>
-```
-
-Each candidate produces exactly one of the three middle outcome forms.
-
-- Reaps by default. `--dry-run` prints `WOULD-REAP` and leaves the worker running. A reaper that does
-  nothing unless given a second action flag encourages callers to bypass it. This tool was added
-  after a blanket `Get-Process -Name codex | Stop-Process -Force` killed two live workers.
-- Safety comes from the bounded target set. The reaper only touches worker PIDs read from a prun
-  state directory whose recorded `dispatch-pid` is dead. It never lists processes by name and never
-  deletes or truncates a state directory. This differs from `guard.py`: the guard asks for human
-  confirmation on arbitrary process-destruction commands because their affected set cannot be
-  inferred from the command text, while this reaper's affected set is enumerable and covered by
-  tests.
-- With no `--state-dir`, scans `prun-task-*` directories under `TMPDIR` (or the platform temp base).
-  Repeating `--state-dir` limits classification to those paths.
-- `dispatch-roots` and `worker-roots` use scheme-tagged, tab-separated identities. A `posix` record
-  contains PID plus `/proc` starttime (with a `ps` timestamp fallback on systems without `/proc`). A
-  `win` record contains Windows PID plus UTC start ticks. An `msys` record contains the MSYS PID and
-  `/proc` starttime followed by the matching Windows PID and UTC start ticks. The Bash reaper checks
-  the identity pair for its current `posix` or `msys` namespace. The PowerShell reaper checks `win`
-  records and the Windows pair in `msys` records. A two-field record from an older dispatcher is
-  unverifiable and is left as `unknown-identity`.
-- Leaves a state directory alone with one of these reasons: `no-dispatch-record`, `dispatcher-alive`,
-  `no-worker-record`, `unknown-identity`, `foreign-scheme`, `worker-exited`, `identity-mismatch`, or
-  `kill-failed`. `foreign-scheme` means that the reaper does not own a namespace recorded by that
-  dispatcher. `worker-exited` means the recorded worker exited without a successful termination by
-  this reaper. `kill-failed` means that an identified root or observed descendant could not be
-  confirmed gone after termination was attempted.
-- An eligible orphan prints `TERMINATED` only after the recorded root and every descendant retained
-  from successful process-table snapshots have been signaled as needed and confirmed gone. It makes
-  no assertion about descendants absent from those snapshots. Dry-run prints `WOULD-REAP` and does
-  not signal anything.
-- Before signaling, Bash repeatedly scans the process table and retains the PID and start time of
-  every reachable descendant it observes, including descendants that entered another process group.
-  It signals both the isolated worker group and each retained identity. An unreadable or malformed
-  live `/proc` stat makes a scan indeterminate. The `ps` fallback is used only on platforms such as
-  macOS that have no `/proc`. If the worker has no isolated group, Bash still attempts identity-based
-  termination but reports `kill-failed` because it cannot safely signal or confirm the original group
-  gone. PowerShell retains verified root and descendant `Process` objects, kills them leaf-first,
-  waits on every handle, and queries children of retained creator PIDs again. Each CIM or WMI query is
-  bounded by the remaining deadline. A query timeout, cancellation, identity-query failure, or bound
-  exhaustion is indeterminate and cannot satisfy a gone check. The loop works under Windows
-  PowerShell 5.1 without the tree-killing `Kill(Boolean)` overload.
-- Tree-wide proof requires kernel-backed containment established when the worker is dispatched.
-  Snapshot polling cannot prove that no short-lived intermediate created an unseen descendant.
-  `REAPED` is therefore reserved and never emitted until the containment work in anywhere-agents#29
-  lands.
-- Output starts with `REAP-START base=<temp-base> candidates=<N>`, prints one `LEFT`, `WOULD-REAP`, or
-  `TERMINATED` line per candidate, and ends with `REAP-DONE terminated=<n> left=<m>`. Terminating
-  nothing is a successful run and is reported with `terminated=0`.
-- The POSIX watchdog is inline in `dispatch-task.sh`, so there is intentionally no `reap-watch.sh`.
-  Windows keeps its watchdog in `reap-watch.ps1` to preserve the existing AMSI-safe split.
 
 ## Return contract (every unit writes this)
 

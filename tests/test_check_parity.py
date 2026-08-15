@@ -104,7 +104,6 @@ def _build_fake_tree(base: pathlib.Path):
         "tests/test_dispatch_path_resolution.py",
         "tests/test_codex_usage.py",
         "tests/test_line_endings.py",
-        "tests/test_reap_orphans.py",
     )
     for repo in (ac, aa):
         (repo / "tests").mkdir(exist_ok=True)

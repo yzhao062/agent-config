@@ -63,9 +63,7 @@ if (-not $tmpBase) { $tmpBase = $env:TMP }
 if (-not $tmpBase) { $tmpBase = [System.IO.Path]::GetTempPath() }
 $tmpBase = $tmpBase.TrimEnd('\', '/')
 
-$repoCwdCanon = ((Get-Location).Path) -replace '\\', '/'
-if ($repoCwdCanon -match '^[A-Za-z]:/') { $repoCwdCanon = $repoCwdCanon.ToLowerInvariant() }
-$cwdBytes = [System.Text.Encoding]::UTF8.GetBytes($repoCwdCanon)
+$cwdBytes = [System.Text.Encoding]::UTF8.GetBytes((Get-Location).Path)
 $sha = [System.Security.Cryptography.SHA256]::Create()
 try {
     $hashBytes = $sha.ComputeHash($cwdBytes)
@@ -103,7 +101,6 @@ try {
 }
 
 # Pre-dispatch mtime of any existing result file (Unix epoch seconds, not FILETIME).
-$utf8NoBom = New-Object System.Text.UTF8Encoding $false
 $preMtime = 0
 if (Test-Path -LiteralPath $ResultFile -PathType Leaf) {
     $utc = (Get-Item -LiteralPath $ResultFile).LastWriteTimeUtc
@@ -116,17 +113,6 @@ $nowUnix = [int]([DateTimeOffset]::UtcNow).ToUnixTimeSeconds()
 # Record this dispatcher's PID so monitor.ps1 can tell a stalled-but-alive unit
 # from a dead dispatch (killed mid-run) that will never produce a result.
 [System.IO.File]::WriteAllText((Join-Path $stateDir 'dispatch-pid'), "$PID`n")
-$dispatcherStartTicks = ''
-try {
-    $currentProcess = [System.Diagnostics.Process]::GetCurrentProcess()
-    $dispatcherStartTicks = [string]([int64]$currentProcess.StartTime.ToUniversalTime().Ticks)
-} catch { $dispatcherStartTicks = '' }
-[System.IO.File]::WriteAllText(
-    (Join-Path $stateDir 'dispatch-roots'),
-    "win`t$PID`t$dispatcherStartTicks`n",
-    $utf8NoBom
-)
-[System.IO.File]::WriteAllText((Join-Path $stateDir 'repo-cwd'), "$repoCwdCanon`n")
 
 [Console]::Out.WriteLine("STATE-DIR $stateDir")
 [Console]::Out.Flush()
@@ -154,9 +140,6 @@ $ErrorActionPreference = 'Continue'
 $sandboxMode = if ($env:CODEX_DISPATCH_SANDBOX) { $env:CODEX_DISPATCH_SANDBOX } else { 'danger-full-access' }
 $reasoning = if ($env:CODEX_DISPATCH_REASONING) { $env:CODEX_DISPATCH_REASONING } else { 'xhigh' }
 $isolateArg = if ($env:CODEX_DISPATCH_ISOLATE_MCP -eq 'off') { '' } else { "--ignore-user-config -c model_reasoning_effort=$reasoning " }
-$childInstructions = "The parent agent session already completed the repository bootstrap at startup. Skip bootstrap and shared configuration refresh commands in this dispatched worker session. Use the shared configuration currently on disk. Follow all other project instructions."
-$childInstructionsEsc = $childInstructions -replace '%', '%%'
-$childSessionArg = "-c ""developer_instructions=$childInstructionsEsc"" "
 
 $codexBinEsc   = $codexBin   -replace '%', '%%'
 $tailPathEsc   = $tailPath   -replace '%', '%%'
@@ -170,7 +153,8 @@ $scratchEsc    = $scratchCwd -replace '%', '%%'
 $cmdHelper = Join-Path $stateDir 'run-task.cmd'
 # `|| exit /b 1` aborts if the cd fails, so codex never runs from the inherited
 # (repo) cwd and the scratch-isolation invariant holds (parity with the .sh `&&`).
-$cmdBody = "@echo off`r`nchcp 65001 >NUL`r`ncd /d ""$scratchEsc"" || exit /b 1`r`n""$codexBinEsc"" exec --sandbox $sandboxModeEsc --skip-git-repo-check $isolateArg$childSessionArg- > ""$tailPathEsc"" 2>&1 < ""$promptFileEsc""`r`n"
+$cmdBody = "@echo off`r`nchcp 65001 >NUL`r`ncd /d ""$scratchEsc"" || exit /b 1`r`n""$codexBinEsc"" exec --sandbox $sandboxModeEsc --skip-git-repo-check $isolateArg- > ""$tailPathEsc"" 2>&1 < ""$promptFileEsc""`r`n"
+$utf8NoBom = New-Object System.Text.UTF8Encoding $false
 [System.IO.File]::WriteAllText($cmdHelper, $cmdBody, $utf8NoBom)
 
 # The idle-stall and hard-timeout bounds are enforced by reap-watch.ps1 (spawned below),
@@ -188,9 +172,6 @@ $cmdExe = if ($env:ComSpec) { $env:ComSpec } else { 'cmd.exe' }
 # trips some Windows AV AMSI heuristics and is blocked at parse. This mirrors the
 # implement-review dispatch-codex.ps1 + stall-watch.ps1 split.
 $worker = Start-Process -FilePath $cmdExe -ArgumentList @('/d', '/c', "`"$cmdHelper`"") -PassThru -WindowStyle Hidden
-$workerStartTicks = ''
-try { $workerStartTicks = [string]([int64]$worker.StartTime.ToUniversalTime().Ticks) } catch { $workerStartTicks = '' }
-try { [System.IO.File]::WriteAllText((Join-Path $stateDir 'worker-roots'), "win`t$($worker.Id)`t$workerStartTicks`n", $utf8NoBom) } catch { }
 $codexExit = $null
 
 # Spawn the background watchdog. It reaps the worker tree on idle-stall / hard-timeout and

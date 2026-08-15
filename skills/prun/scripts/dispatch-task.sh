@@ -75,78 +75,10 @@ esac
 TMP_BASE="${TMPDIR:-/tmp}"
 TMP_BASE="${TMP_BASE%/}"
 
-case "$(uname -s 2>/dev/null || true)" in
-    MINGW*|MSYS*|CYGWIN*) PROCESS_SCHEME="msys" ;;
-    *) PROCESS_SCHEME="posix" ;;
-esac
-
-# Linux and MSYS expose field 22 (starttime) in /proc/<pid>/stat. The
-# parenthesised comm field can contain whitespace and parentheses, so remove
-# through the final ')' before counting from field 3. macOS has no /proc and
-# uses the less precise ps timestamp as its identity token.
-_process_start() {
-    process_pid="$1"
-    proc_stat="/proc/$process_pid/stat"
-    if [ -r "$proc_stat" ]; then
-        proc_line="$(sed -n '1p' "$proc_stat" 2>/dev/null)"
-        proc_rest="${proc_line##*)}"
-        [ "$proc_rest" != "$proc_line" ] || return 0
-        set -- $proc_rest
-        [ "$#" -ge 20 ] || return 0
-        shift 19
-        case "$1" in ''|*[!0-9]*) return 0 ;; esac
-        printf '%s\n' "$1"
-        return 0
-    fi
-    ps -o lstart= -p "$process_pid" 2>/dev/null \
-        | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'
-}
-
-_windows_pid() {
-    process_pid="$1"
-    win_pid=""
-    [ -r "/proc/$process_pid/winpid" ] && win_pid="$(sed -n '1p' "/proc/$process_pid/winpid" 2>/dev/null)"
-    case "$win_pid" in ''|*[!0-9]*) return 0 ;; esac
-    printf '%s\n' "$win_pid"
-}
-
-_windows_start_ticks() {
-    win_pid="$1"
-    case "$win_pid" in ''|*[!0-9]*) return 0 ;; esac
-    command -v powershell.exe >/dev/null 2>&1 || return 0
-    win_ticks="$(powershell.exe -NoProfile -NonInteractive -Command \
-        "\$p = Get-Process -Id $win_pid -ErrorAction Stop; [Console]::Out.Write([string]([int64]\$p.StartTime.ToUniversalTime().Ticks))" \
-        2>/dev/null | tr -d '\r\n')"
-    case "$win_ticks" in ''|*[!0-9]*) return 0 ;; esac
-    printf '%s\n' "$win_ticks"
-}
-
-_write_process_identity() {
-    identity_path="$1"
-    process_pid="$2"
-    process_start="$(_process_start "$process_pid")"
-    if [ "$PROCESS_SCHEME" = "msys" ]; then
-        process_win_pid="$(_windows_pid "$process_pid")"
-        process_win_start="$(_windows_start_ticks "$process_win_pid")"
-        printf 'msys\t%s\t%s\t%s\t%s\n' \
-            "$process_pid" "$process_start" "$process_win_pid" "$process_win_start" \
-            > "$identity_path" 2>/dev/null || true
-    else
-        printf 'posix\t%s\t%s\n' "$process_pid" "$process_start" \
-            > "$identity_path" 2>/dev/null || true
-    fi
-}
-
-REPO_CWD_CANON="$(pwd -W 2>/dev/null || true)"   # MSYS/Git-Bash: C:/Users/...
-[ -n "$REPO_CWD_CANON" ] || REPO_CWD_CANON="$(pwd)"
-case "$REPO_CWD_CANON" in
-    [A-Za-z]:/*) REPO_CWD_CANON="$(printf '%s' "$REPO_CWD_CANON" | tr '[:upper:]' '[:lower:]')" ;;
-esac
-
 if command -v sha256sum >/dev/null 2>&1; then
-    REPO_HASH=$(printf '%s' "$REPO_CWD_CANON" | sha256sum 2>/dev/null | cut -c1-8)
+    REPO_HASH=$(pwd | sha256sum 2>/dev/null | cut -c1-8)
 elif command -v shasum >/dev/null 2>&1; then
-    REPO_HASH=$(printf '%s' "$REPO_CWD_CANON" | shasum -a 256 2>/dev/null | cut -c1-8)
+    REPO_HASH=$(pwd | shasum -a 256 2>/dev/null | cut -c1-8)
 else
     REPO_HASH="nohash"
 fi
@@ -191,8 +123,6 @@ printf '%s\n' "$RESULT_FILE" > "$STATE_DIR/result-file"
 # Record this dispatcher's PID so monitor.sh can tell a stalled-but-alive unit
 # from a dead dispatch (killed mid-run) that will never produce a result.
 printf '%s\n' "$$" > "$STATE_DIR/dispatch-pid"
-_write_process_identity "$STATE_DIR/dispatch-roots" "$$"
-printf '%s\n' "$REPO_CWD_CANON" > "$STATE_DIR/repo-cwd"
 
 # Emit STATE-DIR on stdout (first and only machine-readable line).
 printf 'STATE-DIR %s\n' "$STATE_DIR"
@@ -215,14 +145,6 @@ CODEX_ISOLATE_ARGS=(--ignore-user-config -c "model_reasoning_effort=$CODEX_DISPA
 if [ "$(printf '%s' "${CODEX_DISPATCH_ISOLATE_MCP:-}" | tr '[:upper:]' '[:lower:]')" = "off" ]; then
     CODEX_ISOLATE_ARGS=()
 fi
-
-# The parent agent session already refreshed the consumer repo at startup.
-# Repeating that setup inside every worker adds latency and can mutate the
-# deployed dispatcher mid-run (it rewrites ~/.claude and the pack-deployed
-# .claude/skills/prun/ copy of this script). Outranks the AGENTS.md
-# new-session bootstrap rule; every other project instruction survives.
-PRUN_CHILD_INSTRUCTIONS="The parent agent session already completed the repository bootstrap at startup. Skip bootstrap and shared configuration refresh commands in this dispatched worker session. Use the shared configuration currently on disk. Follow all other project instructions."
-CODEX_CHILD_ARGS=(-c "developer_instructions=$PRUN_CHILD_INSTRUCTIONS")
 
 # Run codex from the scratch cwd. Prompt via stdin (-), never positional
 # (ARG_MAX) and never `codex exec review` (that injects codex's own template).
@@ -277,21 +199,17 @@ if command -v setsid >/dev/null 2>&1; then
     setsid bash -c 'cd "$1" || exit 1; shift; exec "$@"' dispatch-worker "$SCRATCH_CWD" \
         "$CODEX_BIN" exec --sandbox "$CODEX_DISPATCH_SANDBOX" \
         --skip-git-repo-check \
-        ${CODEX_ISOLATE_ARGS[@]+"${CODEX_ISOLATE_ARGS[@]}"} \
-        ${CODEX_CHILD_ARGS[@]+"${CODEX_CHILD_ARGS[@]}"} - < "$PROMPT_FILE" \
+        ${CODEX_ISOLATE_ARGS[@]+"${CODEX_ISOLATE_ARGS[@]}"} - < "$PROMPT_FILE" \
         > "$TAIL_PATH" 2>&1 &
     WORKER_PID=$!
     WORKER_KILL_MODE="pgid"
 else
     ( cd "$SCRATCH_CWD" && "$CODEX_BIN" exec --sandbox "$CODEX_DISPATCH_SANDBOX" \
         --skip-git-repo-check \
-        ${CODEX_ISOLATE_ARGS[@]+"${CODEX_ISOLATE_ARGS[@]}"} \
-        ${CODEX_CHILD_ARGS[@]+"${CODEX_CHILD_ARGS[@]}"} - < "$PROMPT_FILE" ) \
+        ${CODEX_ISOLATE_ARGS[@]+"${CODEX_ISOLATE_ARGS[@]}"} - < "$PROMPT_FILE" ) \
         > "$TAIL_PATH" 2>&1 &
     WORKER_PID=$!
 fi
-
-_write_process_identity "$STATE_DIR/worker-roots" "$WORKER_PID"
 
 while kill -0 "$WORKER_PID" 2>/dev/null; do
     now=$(_now)
