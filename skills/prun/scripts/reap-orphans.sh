@@ -65,53 +65,95 @@ for state_dir in ${CANDIDATES[@]+"${CANDIDATES[@]}"}; do
 done
 printf 'REAP-START base=%s candidates=%s\n' "$TMP_BASE" "$CANDIDATE_COUNT"
 
+_read_stat_line() {
+    local stat_path="$1"
+    local stat_line
+    if type _prun_reap_read_stat >/dev/null 2>&1; then
+        _prun_reap_read_stat "$stat_path"
+        return
+    fi
+    IFS= read -r stat_line < "$stat_path" || return 1
+    printf '%s\n' "$stat_line"
+}
+
+_pid_still_present() {
+    local process_pid="$1"
+    [ -d "/proc/$process_pid" ] || kill -0 "$process_pid" 2>/dev/null
+}
+
+# Set PROC_ROW_* globals. Return 1 when the PID disappeared during the read and
+# 2 when a live PID cannot be read or parsed.
+_load_proc_row() {
+    local process_pid="$1"
+    local proc_line proc_rest process_state process_parent process_group process_start read_status
+    if type _prun_reap_read_stat >/dev/null 2>&1; then
+        proc_line="$(_read_stat_line "/proc/$process_pid/stat" 2>/dev/null)"
+        read_status=$?
+    else
+        IFS= read -r proc_line < "/proc/$process_pid/stat" 2>/dev/null
+        read_status=$?
+    fi
+    if [ "$read_status" -ne 0 ] || [ -z "$proc_line" ]; then
+        _pid_still_present "$process_pid" && return 2
+        return 1
+    fi
+    proc_rest="${proc_line##*)}"
+    if [ "$proc_rest" = "$proc_line" ]; then
+        _pid_still_present "$process_pid" && return 2
+        return 1
+    fi
+    set -- $proc_rest
+    if [ "$#" -lt 20 ]; then
+        _pid_still_present "$process_pid" && return 2
+        return 1
+    fi
+    process_state="$1"
+    process_parent="$2"
+    process_group="$3"
+    shift 19
+    process_start="$1"
+    case "$process_state" in [A-Za-z]) ;; *) _pid_still_present "$process_pid" && return 2; return 1 ;; esac
+    case "$process_parent" in ''|*[!0-9]*) _pid_still_present "$process_pid" && return 2; return 1 ;; esac
+    case "$process_group" in ''|*[!0-9]*) _pid_still_present "$process_pid" && return 2; return 1 ;; esac
+    case "$process_start" in ''|*[!0-9]*) _pid_still_present "$process_pid" && return 2; return 1 ;; esac
+    PROC_ROW_PID="$process_pid"
+    PROC_ROW_PARENT="$process_parent"
+    PROC_ROW_GROUP="$process_group"
+    PROC_ROW_STATE="$process_state"
+    PROC_ROW_START="$process_start"
+}
+
+# Output: pid, parent PID, process group, state, start time.
+_proc_row() {
+    _load_proc_row "$1" || return $?
+    printf '%s\t%s\t%s\t%s\t%s\n' \
+        "$PROC_ROW_PID" "$PROC_ROW_PARENT" "$PROC_ROW_GROUP" "$PROC_ROW_STATE" "$PROC_ROW_START"
+}
+
 _process_start() {
     local process_pid="$1"
-    local proc_stat="/proc/$process_pid/stat"
-    local proc_line proc_rest
-    if [ -r "$proc_stat" ]; then
-        proc_line="$(sed -n '1p' "$proc_stat" 2>/dev/null)"
-        proc_rest="${proc_line##*)}"
-        [ "$proc_rest" != "$proc_line" ] || return 0
-        set -- $proc_rest
-        [ "$#" -ge 20 ] || return 0
-        shift 19
-        case "$1" in ''|*[!0-9]*) return 0 ;; esac
-        printf '%s\n' "$1"
+    local process_row row_pid row_parent row_group row_state row_start
+    if [ -d /proc ]; then
+        process_row="$(_proc_row "$process_pid")" || return 0
+        IFS="$tab" read -r row_pid row_parent row_group row_state row_start <<EOF
+$process_row
+EOF
+        printf '%s\n' "$row_start"
         return 0
     fi
     ps -o lstart= -p "$process_pid" 2>/dev/null \
         | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'
 }
 
-_process_parent() {
-    local process_pid="$1"
-    local proc_stat="/proc/$process_pid/stat"
-    local proc_line proc_rest
-    if [ -r "$proc_stat" ]; then
-        proc_line="$(sed -n '1p' "$proc_stat" 2>/dev/null)"
-        proc_rest="${proc_line##*)}"
-        [ "$proc_rest" != "$proc_line" ] || return 0
-        set -- $proc_rest
-        [ "$#" -ge 2 ] || return 0
-        case "$2" in ''|*[!0-9]*) return 0 ;; esac
-        printf '%s\n' "$2"
-        return 0
-    fi
-    ps -o ppid= -p "$process_pid" 2>/dev/null | tr -d '[:space:]'
-}
-
 _process_state() {
     local process_pid="$1"
-    local proc_stat="/proc/$process_pid/stat"
-    local proc_line proc_rest
-    if [ -r "$proc_stat" ]; then
-        proc_line="$(sed -n '1p' "$proc_stat" 2>/dev/null)"
-        proc_rest="${proc_line##*)}"
-        [ "$proc_rest" != "$proc_line" ] || return 0
-        set -- $proc_rest
-        [ "$#" -ge 1 ] || return 0
-        printf '%s\n' "$1"
+    local process_row row_pid row_parent row_group row_state row_start
+    if [ -d /proc ]; then
+        process_row="$(_proc_row "$process_pid")" || return 0
+        IFS="$tab" read -r row_pid row_parent row_group row_state row_start <<EOF
+$process_row
+EOF
+        printf '%s\n' "$row_state"
         return 0
     fi
     ps -o stat= -p "$process_pid" 2>/dev/null \
@@ -120,51 +162,72 @@ _process_state() {
 
 _process_group() {
     local process_pid="$1"
-    local proc_stat="/proc/$process_pid/stat"
-    local proc_line proc_rest process_group
+    local process_row row_pid row_parent row_group row_state row_start
     if [ -d /proc ]; then
-        [ -r "$proc_stat" ] || return 0
-        IFS= read -r proc_line < "$proc_stat" || return 0
-        proc_rest="${proc_line##*)}"
-        [ "$proc_rest" != "$proc_line" ] || return 0
-        set -- $proc_rest
-        [ "$#" -ge 3 ] || return 0
-        process_group="$3"
-    else
-        process_group="$(ps -o pgid= -p "$process_pid" 2>/dev/null \
-            | tr -d '[:space:]')"
+        process_row="$(_proc_row "$process_pid")" || return 0
+        IFS="$tab" read -r row_pid row_parent row_group row_state row_start <<EOF
+$process_row
+EOF
+        printf '%s\n' "$row_group"
+        return 0
     fi
-    case "$process_group" in ''|*[!0-9]*) return 0 ;; esac
-    printf '%s\n' "$process_group"
+    ps -o pgid= -p "$process_pid" 2>/dev/null | tr -d '[:space:]'
 }
 
-_group_members() {
-    local expected_group="$1"
-    local proc_stat proc_line proc_rest process_pid process_rows saw_proc=0
+_scan_process_rows() {
+    local proc_dir process_pid process_row row_status incomplete=0
+    local process_rows row_pid row_parent row_group row_state start_day start_month
+    local start_date start_clock start_year
     if [ -d /proc ]; then
-        for proc_stat in /proc/[0-9]*/stat; do
-            [ -r "$proc_stat" ] || continue
-            saw_proc=1
-            IFS= read -r proc_line < "$proc_stat" || continue
-            proc_rest="${proc_line##*)}"
-            [ "$proc_rest" != "$proc_line" ] || continue
-            set -- $proc_rest
-            [ "$#" -ge 3 ] || continue
-            [ "$3" = "$expected_group" ] || continue
-            case "$1" in Z*) continue ;; esac
-            process_pid="${proc_stat#/proc/}"
-            process_pid="${process_pid%/stat}"
-            printf '%s\n' "$process_pid"
+        for proc_dir in /proc/[0-9]*; do
+            [ -d "$proc_dir" ] || continue
+            process_pid="${proc_dir#/proc/}"
+            case "$process_pid" in ''|*[!0-9]*) continue ;; esac
+            _load_proc_row "$process_pid"
+            row_status=$?
+            if [ "$row_status" -eq 0 ]; then
+                printf '%s\t%s\t%s\t%s\t%s\n' \
+                    "$PROC_ROW_PID" "$PROC_ROW_PARENT" "$PROC_ROW_GROUP" \
+                    "$PROC_ROW_STATE" "$PROC_ROW_START"
+            elif [ "$row_status" -eq 2 ]; then
+                incomplete=1
+            fi
         done
-        [ "$saw_proc" -eq 1 ]
-        return
+        [ "$incomplete" -eq 0 ] || return 2
+        return 0
     fi
 
     # macOS has no /proc. Its ps supports these fields; MSYS does not, so this
     # branch must remain restricted to platforms without /proc.
-    process_rows="$(ps -axo pid=,pgid=,stat= 2>/dev/null)" || return 1
-    printf '%s\n' "$process_rows" | awk -v group="$expected_group" \
-        '$2 == group && $3 !~ /^Z/ { print $1 }'
+    process_rows="$(ps -axo pid=,ppid=,pgid=,stat=,lstart= 2>/dev/null)" || return 2
+    while read -r row_pid row_parent row_group row_state start_day start_month \
+        start_date start_clock start_year; do
+        case "$row_pid" in ''|*[!0-9]*) continue ;; esac
+        case "$row_parent" in ''|*[!0-9]*) return 2 ;; esac
+        case "$row_group" in ''|*[!0-9]*) return 2 ;; esac
+        [ -n "$row_state" ] && [ -n "$start_year" ] || return 2
+        printf '%s\t%s\t%s\t%s\t%s %s %s %s %s\n' \
+            "$row_pid" "$row_parent" "$row_group" "$row_state" \
+            "$start_day" "$start_month" "$start_date" "$start_clock" "$start_year"
+    done <<EOF
+$process_rows
+EOF
+}
+
+_group_members() {
+    local expected_group="$1"
+    local process_rows scan_status row_pid row_parent row_group row_state row_start
+    process_rows="$(_scan_process_rows)"
+    scan_status=$?
+    while IFS="$tab" read -r row_pid row_parent row_group row_state row_start; do
+        [ -n "$row_pid" ] || continue
+        [ "$row_group" = "$expected_group" ] || continue
+        case "$row_state" in Z*) continue ;; esac
+        printf '%s\n' "$row_pid"
+    done <<EOF
+$process_rows
+EOF
+    [ "$scan_status" -eq 0 ] || return 2
 }
 
 _group_alive() {
@@ -192,38 +255,6 @@ _wait_group_gone() {
     return 1
 }
 
-_kill_descendants() {
-    local parent="$1"
-    local expected_start="$2"
-    local expected_parent="$3"
-    local signal_name="$4"
-    local children child child_start child_parent current_parent
-
-    _same_process "$parent" "$expected_start" || return 1
-    if [ -n "$expected_parent" ]; then
-        current_parent="$(_process_parent "$parent")"
-        [ "$current_parent" = "$expected_parent" ] || return 1
-    fi
-
-    children="$(pgrep -P "$parent" 2>/dev/null || true)"
-    for child in $children; do
-        child_start="$(_process_start "$child")"
-        child_parent="$(_process_parent "$child")"
-        [ -n "$child_start" ] && [ "$child_parent" = "$parent" ] || continue
-        _kill_descendants "$child" "$child_start" "$parent" "$signal_name" || true
-    done
-
-    # Descendant identities are not stored in the state directory. Capturing
-    # start time and parentage here narrows PID-reuse exposure, but POSIX has no
-    # retained process handle that can close the final check-to-signal race.
-    _same_process "$parent" "$expected_start" || return 1
-    if [ -n "$expected_parent" ]; then
-        current_parent="$(_process_parent "$parent")"
-        [ "$current_parent" = "$expected_parent" ] || return 1
-    fi
-    kill "-$signal_name" "$parent" 2>/dev/null
-}
-
 _same_process() {
     local expected_pid="$1"
     local expected_start="$2"
@@ -247,16 +278,135 @@ _original_gone() {
     return 0
 }
 
-_wait_original_gone() {
-    local expected_pid="$1"
-    local expected_start="$2"
+_lookup_retained_start() {
+    local wanted_pid="$1"
+    local retained_index=0
+    while [ "$retained_index" -lt "${#RETAINED_PIDS[@]}" ]; do
+        if [ "${RETAINED_PIDS[$retained_index]}" = "$wanted_pid" ]; then
+            RETAINED_LOOKUP_START="${RETAINED_STARTS[$retained_index]}"
+            return 0
+        fi
+        retained_index=$((retained_index + 1))
+    done
+    return 1
+}
+
+_lookup_row_start() {
+    local process_rows="$1"
+    local wanted_pid="$2"
+    local row_pid row_parent row_group row_state row_start
+    while IFS="$tab" read -r row_pid row_parent row_group row_state row_start; do
+        if [ "$row_pid" = "$wanted_pid" ]; then
+            ROW_LOOKUP_START="$row_start"
+            return 0
+        fi
+    done <<EOF
+$process_rows
+EOF
+    return 1
+}
+
+_add_reachable_rows() {
+    local process_rows="$1"
+    local changed=1 row_pid row_parent row_group row_state row_start
+    local retained_start parent_start current_parent_start
+    while [ "$changed" -eq 1 ]; do
+        changed=0
+        while IFS="$tab" read -r row_pid row_parent row_group row_state row_start; do
+            [ -n "$row_pid" ] || continue
+            if _lookup_retained_start "$row_pid"; then
+                retained_start="$RETAINED_LOOKUP_START"
+                [ "$retained_start" = "$row_start" ] || DESCENDANT_SCAN_COMPLETE=0
+                continue
+            fi
+            _lookup_retained_start "$row_parent" || continue
+            parent_start="$RETAINED_LOOKUP_START"
+            if ! _lookup_row_start "$process_rows" "$row_parent"; then
+                DESCENDANT_SCAN_COMPLETE=0
+                continue
+            fi
+            current_parent_start="$ROW_LOOKUP_START"
+            if [ "$current_parent_start" != "$parent_start" ]; then
+                DESCENDANT_SCAN_COMPLETE=0
+                continue
+            fi
+            RETAINED_PIDS+=("$row_pid")
+            RETAINED_STARTS+=("$row_start")
+            changed=1
+        done <<EOF
+$process_rows
+EOF
+    done
+}
+
+_validate_retained_rows() {
+    local process_rows="$1"
+    local retained_index=0
+    while [ "$retained_index" -lt "${#RETAINED_PIDS[@]}" ]; do
+        if ! _lookup_row_start "$process_rows" "${RETAINED_PIDS[$retained_index]}"; then
+            return 1
+        fi
+        [ "$ROW_LOOKUP_START" = "${RETAINED_STARTS[$retained_index]}" ] || return 1
+        retained_index=$((retained_index + 1))
+    done
+    return 0
+}
+
+_collect_descendant_identities() {
+    local root_pid="$1"
+    local root_start="$2"
+    local pass=0 before_count process_rows scan_status
+    RETAINED_PIDS=("$root_pid")
+    RETAINED_STARTS=("$root_start")
+    DESCENDANT_SCAN_COMPLETE=1
+    while [ "$pass" -lt 32 ]; do
+        before_count="${#RETAINED_PIDS[@]}"
+        process_rows="$(_scan_process_rows)"
+        scan_status=$?
+        [ "$scan_status" -eq 0 ] || DESCENDANT_SCAN_COMPLETE=0
+        _add_reachable_rows "$process_rows"
+        _validate_retained_rows "$process_rows" || DESCENDANT_SCAN_COMPLETE=0
+        if [ "${#RETAINED_PIDS[@]}" -eq "$before_count" ]; then
+            [ "$DESCENDANT_SCAN_COMPLETE" -eq 1 ] && return 0
+            return 2
+        fi
+        pass=$((pass + 1))
+    done
+    DESCENDANT_SCAN_COMPLETE=0
+    return 2
+}
+
+_signal_retained() {
+    local signal_name="$1"
+    local retained_index=0 retained_pid retained_start
+    while [ "$retained_index" -lt "${#RETAINED_PIDS[@]}" ]; do
+        retained_pid="${RETAINED_PIDS[$retained_index]}"
+        retained_start="${RETAINED_STARTS[$retained_index]}"
+        if _same_process "$retained_pid" "$retained_start"; then
+            kill "-$signal_name" "$retained_pid" 2>/dev/null && signalled=1
+        fi
+        retained_index=$((retained_index + 1))
+    done
+}
+
+_all_retained_gone() {
+    local retained_index=0
+    while [ "$retained_index" -lt "${#RETAINED_PIDS[@]}" ]; do
+        _original_gone "${RETAINED_PIDS[$retained_index]}" \
+            "${RETAINED_STARTS[$retained_index]}" || return 1
+        retained_index=$((retained_index + 1))
+    done
+    return 0
+}
+
+_wait_retained_gone() {
     local attempt=0
     while [ "$attempt" -lt 10 ]; do
-        _original_gone "$expected_pid" "$expected_start" && return 0
+        _all_retained_gone && return 0
         sleep 0.1
         attempt=$((attempt + 1))
     done
-    _original_gone "$expected_pid" "$expected_start"
+    _all_retained_gone
 }
 
 _left() {
@@ -370,51 +520,46 @@ for state_dir in ${CANDIDATES[@]+"${CANDIDATES[@]}"}; do
         printf '%s\n' 'orphan-reap' > "$state_dir/reap-reason" 2>/dev/null || true
     fi
 
+    RETAINED_PIDS=()
+    RETAINED_STARTS=()
+    descendant_scan_complete=0
+    if _collect_descendant_identities "$worker_pid" "$worker_start"; then
+        descendant_scan_complete=1
+    fi
+
     worker_pgid="$(_process_group "$worker_pid")"
+    group_target_valid=0
+    if [ -n "$worker_pgid" ] && [ "$worker_pgid" = "$worker_pid" ]; then
+        group_target_valid=1
+    fi
     signalled=0
-    if [ "$worker_pgid" = "$worker_pid" ]; then
-        if _same_process "$worker_pid" "$worker_start"; then
-            if kill -TERM "-$worker_pid" 2>/dev/null; then
-                signalled=1
-            elif _same_process "$worker_pid" "$worker_start" && kill -TERM "$worker_pid" 2>/dev/null; then
-                signalled=1
-            fi
-        fi
-        sleep 2
+    if [ "$group_target_valid" -eq 1 ] && _same_process "$worker_pid" "$worker_start"; then
+        kill -TERM "-$worker_pgid" 2>/dev/null && signalled=1
+    fi
+    _signal_retained TERM
+
+    sleep 2
+    if [ "$group_target_valid" -eq 1 ]; then
         _group_alive "$worker_pgid"
         group_status=$?
-        if [ "$group_status" -eq 0 ]; then
-            if kill -KILL "-$worker_pid" 2>/dev/null; then
-                signalled=1
-            elif _same_process "$worker_pid" "$worker_start" && kill -KILL "$worker_pid" 2>/dev/null; then
-                signalled=1
-            fi
-        fi
-    else
-        if _kill_descendants "$worker_pid" "$worker_start" "" TERM; then
-            signalled=1
-        fi
-        sleep 2
-        if _same_process "$worker_pid" "$worker_start"; then
-            if _kill_descendants "$worker_pid" "$worker_start" "" KILL; then
-                signalled=1
-            fi
+        if [ "$group_status" -ne 1 ]; then
+            kill -KILL "-$worker_pgid" 2>/dev/null && signalled=1
         fi
     fi
+    _signal_retained KILL
 
-    tree_gone=1
-    if [ "$worker_pgid" = "$worker_pid" ]; then
+    group_gone=0
+    if [ "$group_target_valid" -eq 1 ]; then
         _wait_group_gone "$worker_pgid"
         wait_status=$?
-        [ "$wait_status" -eq 0 ] && tree_gone=0
-    elif _wait_original_gone "$worker_pid" "$worker_start"; then
-        # Without an isolated process group, descendants cannot be identified
-        # after the root exits. The signals above still act, but success cannot
-        # prove that the complete tree disappeared.
-        tree_gone=1
+        [ "$wait_status" -eq 0 ] && group_gone=1
     fi
+    retained_gone=0
+    _wait_retained_gone && retained_gone=1
 
-    if [ "$tree_gone" -eq 0 ]; then
+    if [ "$group_gone" -eq 1 ] && \
+            [ "$descendant_scan_complete" -eq 1 ] && \
+            [ "$retained_gone" -eq 1 ]; then
         if [ "$signalled" -eq 1 ]; then
             printf 'REAPED %s pid=%s\n' "$state_name" "$worker_pid"
             REAPED_COUNT=$((REAPED_COUNT + 1))

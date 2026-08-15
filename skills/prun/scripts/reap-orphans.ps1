@@ -75,101 +75,186 @@ function Write-Left {
 function Get-Win32ProcessRows {
     param([string]$Filter)
     if (Get-Command Get-CimInstance -ErrorAction SilentlyContinue) {
+        if (-not $Filter) {
+            return @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop)
+        }
         return @(Get-CimInstance -ClassName Win32_Process -Filter $Filter -ErrorAction Stop)
     }
     if (Get-Command Get-WmiObject -ErrorAction SilentlyContinue) {
+        if (-not $Filter) {
+            return @(Get-WmiObject -Class Win32_Process -ErrorAction Stop)
+        }
         return @(Get-WmiObject -Class Win32_Process -Filter $Filter -ErrorAction Stop)
     }
     throw 'Win32 process enumeration is unavailable'
 }
 
-function Add-RetainedProcessTree {
+function Add-NewRetainedDescendants {
     param(
-        [System.Diagnostics.Process]$Process,
-        [int]$Depth,
+        [System.Collections.ArrayList]$Retained,
         [hashtable]$Seen,
-        [System.Collections.ArrayList]$Retained
+        [hashtable]$DepthByPid,
+        [int]$MaxRetained
     )
 
-    $processKey = [string]$Process.Id
-    if ($Seen.ContainsKey($processKey)) { return }
     try {
-        [void]$Process.Handle
-        if ($Process.HasExited) { return }
+        $rows = @(Get-Win32ProcessRows '')
     } catch {
-        return
+        return [pscustomobject]@{ Added = 0; Complete = $false }
     }
 
-    $Seen[$processKey] = $true
-    [void]$Retained.Add([pscustomobject]@{
-        Process = $Process
-        Depth = $Depth
-    })
-
-    $childRows = Get-Win32ProcessRows "ParentProcessId = $($Process.Id)"
-    foreach ($childRow in $childRows) {
-        $childPid = [int]$childRow.ProcessId
-        $child = Get-Process -Id $childPid -ErrorAction SilentlyContinue
-        if (-not $child) { continue }
-        $keepChild = $false
-        try {
-            [void]$child.Handle
-            if ($child.HasExited) { continue }
-            $currentRows = @(Get-Win32ProcessRows "ProcessId = $childPid")
-            if ($currentRows.Count -ne 1 -or
-                [int]$currentRows[0].ParentProcessId -ne $Process.Id) {
+    $added = 0
+    $complete = $true
+    $changed = $true
+    while ($changed) {
+        $changed = $false
+        $opened = New-Object System.Collections.ArrayList
+        foreach ($row in $rows) {
+            try {
+                $childPid = [int]$row.ProcessId
+                $parentPid = [int]$row.ParentProcessId
+            } catch {
+                $complete = $false
                 continue
             }
-            Add-RetainedProcessTree $child ($Depth + 1) $Seen $Retained
-            $keepChild = $Seen.ContainsKey([string]$childPid)
-        } finally {
-            if (-not $keepChild) { $child.Dispose() }
+            $childKey = [string]$childPid
+            $parentKey = [string]$parentPid
+            if ($Seen.ContainsKey($childKey) -or -not $Seen.ContainsKey($parentKey)) {
+                continue
+            }
+            if ($Retained.Count + $opened.Count -ge $MaxRetained) {
+                $complete = $false
+                continue
+            }
+
+            $child = Get-Process -Id $childPid -ErrorAction SilentlyContinue
+            if ($child) {
+                try {
+                    [void]$child.Handle
+                    if ($child.HasExited) {
+                        $child.Dispose()
+                        continue
+                    }
+                } catch {
+                    $complete = $false
+                    $child.Dispose()
+                    continue
+                }
+            }
+            [void]$opened.Add([pscustomobject]@{
+                Process = $child
+                Pid = $childPid
+                Key = $childKey
+                ParentPid = $parentPid
+                ParentKey = $parentKey
+            })
+        }
+
+        if ($opened.Count -eq 0) { break }
+        try {
+            $confirmRows = @(Get-Win32ProcessRows '')
+        } catch {
+            $complete = $false
+            foreach ($candidate in $opened) {
+                if ($candidate.Process) { $candidate.Process.Dispose() }
+            }
+            break
+        }
+        $confirmByPid = @{}
+        foreach ($confirmRow in $confirmRows) {
+            try {
+                $confirmKey = [string]([int]$confirmRow.ProcessId)
+            } catch {
+                $complete = $false
+                continue
+            }
+            if ($confirmByPid.ContainsKey($confirmKey)) {
+                $complete = $false
+            } else {
+                $confirmByPid[$confirmKey] = $confirmRow
+            }
+        }
+
+        foreach ($candidate in $opened) {
+            $keepChild = $false
+            try {
+                if (-not $confirmByPid.ContainsKey($candidate.Key)) {
+                    if ($candidate.Process -and -not $candidate.Process.HasExited) {
+                        $complete = $false
+                    }
+                    continue
+                }
+                $currentRow = $confirmByPid[$candidate.Key]
+                if ([int]$currentRow.ParentProcessId -ne $candidate.ParentPid) {
+                    continue
+                }
+                if (-not $candidate.Process) {
+                    $complete = $false
+                    continue
+                }
+                if ($candidate.Process.HasExited) { continue }
+
+                $Seen[$candidate.Key] = $true
+                $DepthByPid[$candidate.Key] = [int]$DepthByPid[$candidate.ParentKey] + 1
+                [void]$Retained.Add([pscustomobject]@{
+                    Process = $candidate.Process
+                    Depth = [int]$DepthByPid[$candidate.Key]
+                })
+                $keepChild = $true
+                $changed = $true
+                $added += 1
+            } catch {
+                $complete = $false
+            } finally {
+                if ($candidate.Process -and -not $keepChild) {
+                    $candidate.Process.Dispose()
+                }
+            }
         }
     }
+    return [pscustomobject]@{ Added = $added; Complete = $complete }
 }
 
 function Stop-RetainedProcessTree {
-    param(
-        [System.Collections.ArrayList]$Retained,
-        [System.Reflection.MethodInfo]$TreeKillMethod
-    )
+    param([object[]]$Retained)
 
     $killSent = $false
-    $treeKillSucceeded = $false
-    if ($TreeKillMethod) {
+    foreach ($entry in @($Retained | Sort-Object -Property Depth -Descending)) {
         try {
-            [void]$TreeKillMethod.Invoke($Retained[0].Process, @($true))
-            $killSent = $true
-            $treeKillSucceeded = $true
+            if (-not $entry.Process.HasExited) {
+                $entry.Process.Kill()
+                $killSent = $true
+            }
         } catch { }
-    }
-
-    if (-not $treeKillSucceeded) {
-        foreach ($entry in @($Retained | Sort-Object -Property Depth -Descending)) {
-            try {
-                if (-not $entry.Process.HasExited) {
-                    $entry.Process.Kill()
-                    $killSent = $true
-                }
-            } catch { }
-        }
     }
     return $killSent
 }
 
 function Wait-RetainedProcessTree {
-    param([System.Collections.ArrayList]$Retained)
+    param([object[]]$Retained, [DateTime]$Deadline)
 
-    $deadline = [DateTime]::UtcNow.AddSeconds(5)
     foreach ($entry in $Retained) {
         try {
             $remaining = [int][Math]::Max(
                 0,
-                ($deadline - [DateTime]::UtcNow).TotalMilliseconds
+                ($Deadline - [DateTime]::UtcNow).TotalMilliseconds
             )
             [void]$entry.Process.WaitForExit($remaining)
         } catch { }
     }
+
+    foreach ($entry in $Retained) {
+        try {
+            if (-not $entry.Process.HasExited) { return $false }
+        } catch {
+            return $false
+        }
+    }
+    return $true
+}
+
+function Test-RetainedProcessTreeExited {
+    param([System.Collections.ArrayList]$Retained)
 
     foreach ($entry in $Retained) {
         try {
@@ -345,29 +430,30 @@ foreach ($stateDir in $candidates) {
 
         $retained = New-Object System.Collections.ArrayList
         $seen = @{}
-        $treeEnumerated = $false
+        $depthByPid = @{}
+        $enumerationComplete = $true
         try {
-            Add-RetainedProcessTree $worker 0 $seen $retained
-            $treeEnumerated = ($retained.Count -gt 0)
+            [void]$worker.Handle
+            if (-not $worker.HasExited) {
+                $seen[[string]$worker.Id] = $true
+                $depthByPid[[string]$worker.Id] = 0
+                [void]$retained.Add([pscustomobject]@{
+                    Process = $worker
+                    Depth = 0
+                })
+            }
         } catch {
-            $treeEnumerated = $false
+            $enumerationComplete = $false
         }
 
         $killSent = $false
         $treeGone = $false
         $rootExitedWithoutKill = $false
+        $maxFixedPointRounds = 32
+        $maxRetained = 4096
+        $fixedPointDeadline = [DateTime]::UtcNow.AddSeconds(20)
         try {
-            if ($treeEnumerated) {
-                $treeKillMethod = @($worker.GetType().GetMethods() | Where-Object {
-                    $_.Name -eq 'Kill' -and
-                    $_.GetParameters().Count -eq 1 -and
-                    $_.GetParameters()[0].ParameterType -eq [bool]
-                }) | Select-Object -First 1
-                $killSent = Stop-RetainedProcessTree $retained $treeKillMethod
-                $treeGone = Wait-RetainedProcessTree $retained
-            } else {
-                # Enumeration failure leaves no tree-wide success proof. Still
-                # act on the verified root, but report the outcome conservatively.
+            if ($retained.Count -eq 0) {
                 try {
                     if (-not $worker.HasExited) {
                         $worker.Kill()
@@ -377,10 +463,49 @@ foreach ($stateDir in $candidates) {
                 try {
                     if (-not $worker.HasExited) { [void]$worker.WaitForExit(5000) }
                 } catch { }
-                try {
-                    $rootExitedWithoutKill = (-not $killSent -and $worker.HasExited)
-                } catch { }
+            } else {
+                for ($round = 0; $round -lt $maxFixedPointRounds; $round += 1) {
+                    if ([DateTime]::UtcNow -ge $fixedPointDeadline) { break }
+
+                    $query = Add-NewRetainedDescendants `
+                        $retained $seen $depthByPid $maxRetained
+                    if (-not $query.Complete) { $enumerationComplete = $false }
+
+                    $live = @()
+                    foreach ($entry in $retained) {
+                        try {
+                            if (-not $entry.Process.HasExited) { $live += $entry }
+                        } catch {
+                            $enumerationComplete = $false
+                        }
+                    }
+
+                    if ($live.Count -gt 0) {
+                        if (Stop-RetainedProcessTree $live) { $killSent = $true }
+                        $waitDeadline = [DateTime]::UtcNow.AddSeconds(5)
+                        if ($waitDeadline -gt $fixedPointDeadline) {
+                            $waitDeadline = $fixedPointDeadline
+                        }
+                        $batchExited = Wait-RetainedProcessTree $live $waitDeadline
+                        if (-not $batchExited) { break }
+                        continue
+                    }
+
+                    if ($query.Added -gt 0) {
+                        # Even a newly retained process that exited on its own may
+                        # have created a child. One more complete query is required.
+                        continue
+                    }
+                    if ($query.Complete -and $enumerationComplete -and
+                        (Test-RetainedProcessTreeExited $retained)) {
+                        $treeGone = $true
+                    }
+                    break
+                }
             }
+            try {
+                $rootExitedWithoutKill = (-not $killSent -and $worker.HasExited)
+            } catch { }
         } finally {
             foreach ($entry in $retained) {
                 if (-not [object]::ReferenceEquals($entry.Process, $worker)) {

@@ -257,12 +257,19 @@ scripts/reap-orphans.sh [--dry-run] [--state-dir <path>]...
   `kill-failed`.
   `foreign-scheme` means that the reaper does not own a namespace recorded by that dispatcher. An
   eligible orphan prints `REAPED` only after the complete observed tree is gone; dry-run prints
-  `WOULD-REAP`. Bash enumerates every non-zombie member of an isolated worker process group through
-  `/proc` on Linux and MSYS, with a `ps` fallback only on platforms such as macOS that have no
-  `/proc`. If the worker has no isolated group, Bash still attempts termination but reports
-  `kill-failed` because descendants cannot be confirmed after the root exits. PowerShell retains the
-  verified root and descendant `Process` objects and waits for all of them. Windows PowerShell 5.1,
-  which lacks the tree-killing `Kill(Boolean)` overload, kills the retained objects leaf-first.
+  `WOULD-REAP`. Before signaling, Bash repeatedly scans the complete process table and retains the PID
+  and start time of every reachable descendant, including descendants that entered another process
+  group. It signals both the isolated worker group and each retained identity. `REAPED` requires a
+  complete descendant scan, a complete group scan with no live non-zombie member, and an
+  original-identity-gone check for every retained PID. An unreadable or malformed live `/proc` stat
+  makes either scan indeterminate. The `ps` fallback is used only on platforms such as macOS that have
+  no `/proc`. If the worker has no isolated group, Bash still attempts identity-based termination but
+  reports `kill-failed` because it cannot safely signal or prove the original group gone. PowerShell
+  retains verified root and descendant `Process` objects, kills them leaf-first, waits on every
+  handle, and queries the children of all retained creator PIDs again. It repeats that fixed-point
+  loop until a complete query adds no live process, or a fixed round and time bound is reached. Any
+  query failure or bound exhaustion reports `kill-failed`; the loop works under Windows PowerShell
+  5.1 without the tree-killing `Kill(Boolean)` overload.
 - Output starts with `REAP-START base=<temp-base> candidates=<N>`, prints one `LEFT`, `WOULD-REAP`, or
   `REAPED` line per candidate, and ends with `REAP-DONE reaped=<n> left=<m>`. Reaping nothing is a
   successful run and is reported with `reaped=0`.
