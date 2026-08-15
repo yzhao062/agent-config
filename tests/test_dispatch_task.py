@@ -117,6 +117,13 @@ def _parse_state_dir(stdout: str) -> Path:
     return Path(match.group(1).strip())
 
 
+def _canonical_repo_cwd(path: Path) -> str:
+    canonical = str(path.resolve()).replace("\\", "/")
+    if re.match(r"^[A-Za-z]:/", canonical):
+        canonical = canonical.lower()
+    return canonical
+
+
 class _DispatchTaskContractMixin:
     SHELL_KIND: str = ""  # "bash" or "powershell"
 
@@ -233,6 +240,37 @@ class _DispatchTaskContractMixin:
             tail = (state_dir / "tail").read_text(encoding="utf-8")
             self.assertIn("mock-codex: stdout", tail)
             self.assertIn("mock-codex: stderr", tail)
+
+    def test_state_dir_records_worker_roots(self) -> None:
+        with _temp_dir() as td:
+            tmpdir = Path(td)
+            codex, prompt, log_dir = self._fresh_fixture(tmpdir)
+            result = self._run_dispatch(
+                tmpdir, prompt, str(tmpdir / "r.md"), "u", codex, log_dir
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            state_dir = _parse_state_dir(result.stdout)
+            worker_roots = (state_dir / "worker-roots").read_text(encoding="utf-8")
+            dispatch_roots = (state_dir / "dispatch-roots").read_text(encoding="utf-8")
+            expected_scheme = "win" if self.SHELL_KIND == "powershell" else "posix"
+            for record in (worker_roots, dispatch_roots):
+                parts = record.splitlines()[0].split("\t")
+                self.assertEqual(parts[0], expected_scheme)
+                self.assertEqual(len(parts), 3)
+                self.assertTrue(parts[1].isdigit(), record)
+                self.assertTrue(parts[2], record)
+
+    def test_state_dir_records_repo_cwd(self) -> None:
+        with _temp_dir() as td:
+            tmpdir = Path(td)
+            codex, prompt, log_dir = self._fresh_fixture(tmpdir)
+            result = self._run_dispatch(
+                tmpdir, prompt, str(tmpdir / "r.md"), "u", codex, log_dir
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            state_dir = _parse_state_dir(result.stdout)
+            repo_cwd = (state_dir / "repo-cwd").read_text(encoding="utf-8").strip()
+            self.assertEqual(repo_cwd, _canonical_repo_cwd(tmpdir))
 
     def test_pre_mtime_zero_when_result_missing(self) -> None:
         with _temp_dir() as td:
@@ -438,6 +476,55 @@ class _DispatchTaskContractMixin:
                           list(zip(args, args[1:])))
             self.assertEqual(args[-1], "-")
 
+    def test_developer_instructions_passed(self) -> None:
+        with _temp_dir() as td:
+            tmpdir = Path(td)
+            codex, prompt, log_dir = self._fresh_fixture(tmpdir)
+            old = os.environ.pop("CODEX_DISPATCH_ISOLATE_MCP", None)
+            try:
+                result = self._run_dispatch(
+                    tmpdir, prompt, str(tmpdir / "r.md"), "u", codex, log_dir
+                )
+            finally:
+                if old is not None:
+                    os.environ["CODEX_DISPATCH_ISOLATE_MCP"] = old
+            self.assertEqual(result.returncode, 0, result.stderr)
+            args = json.loads((log_dir / "args").read_text(encoding="utf-8"))
+            child_values = [
+                args[i + 1]
+                for i in range(len(args) - 1)
+                if args[i] == "-c" and args[i + 1].startswith("developer_instructions=")
+            ]
+            self.assertTrue(child_values, args)
+            self.assertIn("Skip bootstrap", child_values[0])
+            self.assertEqual(args[-1], "-")
+
+    def test_developer_instructions_passed_when_isolation_off(self) -> None:
+        with _temp_dir() as td:
+            tmpdir = Path(td)
+            codex, prompt, log_dir = self._fresh_fixture(tmpdir)
+            old = os.environ.get("CODEX_DISPATCH_ISOLATE_MCP")
+            os.environ["CODEX_DISPATCH_ISOLATE_MCP"] = "off"
+            try:
+                result = self._run_dispatch(
+                    tmpdir, prompt, str(tmpdir / "r.md"), "u", codex, log_dir
+                )
+            finally:
+                if old is None:
+                    os.environ.pop("CODEX_DISPATCH_ISOLATE_MCP", None)
+                else:
+                    os.environ["CODEX_DISPATCH_ISOLATE_MCP"] = old
+            self.assertEqual(result.returncode, 0, result.stderr)
+            args = json.loads((log_dir / "args").read_text(encoding="utf-8"))
+            child_values = [
+                args[i + 1]
+                for i in range(len(args) - 1)
+                if args[i] == "-c" and args[i + 1].startswith("developer_instructions=")
+            ]
+            self.assertTrue(child_values, args)
+            self.assertIn("Skip bootstrap", child_values[0])
+            self.assertEqual(args[-1], "-")
+
     def test_mcp_isolation_off(self) -> None:
         with _temp_dir() as td:
             tmpdir = Path(td)
@@ -560,6 +647,69 @@ class DispatchTaskPowerShellTests(_DispatchTaskContractMixin, unittest.TestCase)
     SHELL_KIND = "powershell"
 
 
+@unittest.skipUnless(
+    BASH and PS_SHELL and sys.platform.startswith("win"),
+    "repo hash parity needs Git Bash and PowerShell on Windows.",
+)
+class DispatchTaskRepoHashParity(unittest.TestCase):
+    def test_repo_hash_matches_across_shells(self) -> None:
+        with _temp_dir() as td:
+            tmpdir = Path(td)
+            prompt = tmpdir / "prompt.txt"
+            prompt.write_text("hash parity\n", encoding="utf-8")
+
+            bash_log = tmpdir / "bash-log"
+            ps_log = tmpdir / "ps-log"
+            bash_log.mkdir()
+            ps_log.mkdir()
+            bash_codex = _write_mock_codex(tmpdir, want_powershell_shim=False)
+            ps_codex = _write_mock_codex(tmpdir, want_powershell_shim=True)
+
+            def run(shell_kind: str) -> subprocess.CompletedProcess[str]:
+                log_dir = bash_log if shell_kind == "bash" else ps_log
+                codex_bin = bash_codex if shell_kind == "bash" else ps_codex
+                env = os.environ.copy()
+                env.update({
+                    "CODEX_BIN": str(codex_bin),
+                    "MOCK_CODEX_LOG": str(log_dir),
+                    "TMPDIR": str(tmpdir),
+                    "TEMP": str(tmpdir),
+                    "TMP": str(tmpdir),
+                })
+                env.pop("PRUN_SCRATCH_CWD", None)
+                if shell_kind == "bash":
+                    cmd = [
+                        BASH, str(DISPATCH_SH), "--prompt-file", str(prompt),
+                        "--result-file", str(tmpdir / "bash-result.md"),
+                        "--unit-id", "hash_bash",
+                    ]
+                else:
+                    cmd = [
+                        PS_SHELL, "-NoProfile", "-ExecutionPolicy", "Bypass",
+                        "-File", str(DISPATCH_PS1), "--prompt-file", str(prompt),
+                        "--result-file", str(tmpdir / "ps-result.md"),
+                        "--unit-id", "hash_ps",
+                    ]
+                return subprocess.run(
+                    cmd, cwd=str(tmpdir), env=env, capture_output=True,
+                    text=True, check=False, timeout=60,
+                )
+
+            bash_result = run("bash")
+            ps_result = run("powershell")
+            self.assertEqual(bash_result.returncode, 0, bash_result.stderr)
+            self.assertEqual(ps_result.returncode, 0, ps_result.stderr)
+
+            def repo_hash(stdout: str) -> str:
+                state_path = re.match(r"^STATE-DIR (.+)$", stdout.splitlines()[0]).group(1)
+                state_name = re.split(r"[\\/]", state_path)[-1]
+                match = re.match(r"^prun-task-([0-9a-f]{8})-", state_name)
+                self.assertIsNotNone(match, state_name)
+                return match.group(1)
+
+            self.assertEqual(repo_hash(bash_result.stdout), repo_hash(ps_result.stdout))
+
+
 class DispatchTaskScriptsTracked(unittest.TestCase):
     def test_sh_exists(self) -> None:
         self.assertTrue(DISPATCH_SH.exists(), f"missing: {DISPATCH_SH}")
@@ -590,6 +740,10 @@ class DispatchTaskStaticContract(unittest.TestCase):
             self.assertIn("CODEX_DISPATCH_ISOLATE_MCP", text)
             self.assertIn("--ignore-user-config", text)
             self.assertIn("model_reasoning_effort", text)
+
+    def test_developer_instructions_present(self) -> None:
+        for text in self._both():
+            self.assertIn("developer_instructions", text)
 
     def test_scratch_cwd_present(self) -> None:
         for text in self._both():

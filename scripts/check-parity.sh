@@ -176,6 +176,9 @@ strict_test_files=(
   # copy makes this script's own `diff -q` report drift on every line of
   # a file whose content is identical.
   tests/test_line_endings.py
+  # v0.7.13: tests STRICT-shared code (skills/prun/scripts/reap-orphans.{sh,ps1}),
+  # so it has to run in both repos or it guards only one.
+  tests/test_reap_orphans.py
 )
 for f in "${strict_test_files[@]}"; do
   if [ ! -f "$AC_ROOT/$f" ] || [ ! -f "$AA_ROOT/$f" ]; then
