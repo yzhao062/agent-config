@@ -1001,6 +1001,25 @@ class _BootstrapLedgerContract:
         self.assertEqual(compose["reason"], reason)
         self.assertIs(ledger["completed"], False)
 
+    def test_missing_composer_upstream_is_marked_but_not_incomplete(self):
+        # agent-config deliberately ships the generator and no composer, so
+        # bootstrapping from an ac-shaped remote always takes this branch. The
+        # artifact still carries the marker, because it is not a composed file
+        # and must not be mistaken for one. The run is not incomplete, because
+        # nothing about that upstream is broken and there is nothing to fix.
+        # test_repo's end-to-end bash smoke test bootstraps from exactly such a
+        # snapshot, and flagging it turned every platform in CI red.
+        result, ledger, artifacts = _run_full_bootstrap_with_ledger(
+            self.entrypoint,
+            composer_rc=None,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        compose = self._phase(ledger, "compose")
+        self.assertEqual(compose["status"], "skipped")
+        self.assertEqual(compose["reason"], "no composer script in sparse clone")
+        self.assertIn(b"rule-pack composition skipped", artifacts["AGENTS.md"])
+        self.assertIs(ledger["completed"], True)
+
     def test_local_empty_opt_out_overrides_tracked_selection(self):
         # The layers are ordered, not merged. Probing packs.config directly
         # returns [] for tracked [agent-style] plus local [], so this is a

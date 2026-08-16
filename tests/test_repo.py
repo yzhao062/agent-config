@@ -175,7 +175,19 @@ class RepoValidationTests(unittest.TestCase):
         ledger = json.loads(read_text(ledger_path))
         steps = ledger["steps"]
         phases = [step["phase"] for step in steps]
-        self.assertIs(ledger["completed"], True)
+        # `completed` is no longer unconditionally true. A run that skipped
+        # composition for a reason the operator can act on (no Python, no
+        # PyYAML) did not do its job and says so. A skip because the upstream
+        # ships no composer is a property of that upstream, and agent-config
+        # deliberately ships only the generator, so it stays complete. This
+        # fixture runs bootstrap without a discoverable interpreter, which is
+        # why the actionable branch is the one exercised here.
+        compose_step = next(step for step in steps if step["phase"] == "compose")
+        actionable_skip = (
+            compose_step["status"] == "skipped"
+            and compose_step.get("reason") not in (None, "no composer script in sparse clone")
+        )
+        self.assertIs(ledger["completed"], not actionable_skip)
         self.assertEqual(ledger["last_phase"], "finalize")
         self.assertEqual(len(steps), 8)
         self.assertEqual(
@@ -200,7 +212,17 @@ class RepoValidationTests(unittest.TestCase):
 
         self.assertTrue(fetched_agents.exists(), "Expected fetched AGENTS.md")
         self.assertIn("## User Profile", read_text(fetched_agents))
-        self.assertEqual(read_text(project_dir / "AGENTS.md"), read_text(AGENTS))
+        # A skipped composition now prepends a marker naming the reason, so the
+        # deployed file is deliberately no longer byte-identical to upstream.
+        # Byte-equality was the signature of a skipped composition, which is the
+        # state anywhere-agents#30 exists to make visible, so asserting it would
+        # pin the defect. Compare the content beneath any marker instead.
+        deployed = read_text(project_dir / "AGENTS.md")
+        if deployed.startswith("<!-- rule-pack composition skipped:"):
+            marker_line, _, deployed = deployed.partition("\n")
+            self.assertIn("run anywhere-agents to compose", marker_line)
+            self.assertEqual(compose_step["status"], "skipped")
+        self.assertEqual(deployed, read_text(AGENTS))
         self.assertEqual(read_text(project_dir / "AGENTS.local.md"), "## Local Rules\n- keep me\n")
         for skill_dir in self.skills:
             cloned_skill = (

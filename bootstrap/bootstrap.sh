@@ -559,7 +559,17 @@ else
       printf '%s\n' "<!-- rule-pack composition skipped: $_compose_skip_reason; run anywhere-agents to compose -->"
       cat .agent-config/AGENTS.md
     } > AGENTS.md
-    _LEDGER_INCOMPLETE=true
+    # The marker goes on every skip, because the artifact must never be
+    # mistakable for a composed one. `completed: false` is narrower: it means
+    # the run did not do its job and someone can act. Missing Python or PyYAML
+    # is actionable. An upstream that ships no composer is a property of that
+    # upstream, and agent-config deliberately ships only the generator, so
+    # flagging it would mark every bootstrap from an ac-shaped remote as
+    # incomplete forever with nothing to fix. pack verify still reports those
+    # packs as registered rather than composed.
+    if [ "$_compose_skip_reason" != "no composer script in sparse clone" ]; then
+      _LEDGER_INCOMPLETE=true
+    fi
   else
     cp -f .agent-config/AGENTS.md AGENTS.md
   fi
