@@ -132,6 +132,104 @@ _find_python() {
   return 1
 }
 
+# Read the legacy passive-pack selection from one config layer without Python
+# or PyYAML. The return value is one of: none, empty, nonempty. This mirrors the
+# rule_packs signal semantics used by the composer closely enough to decide
+# whether a skipped composition omitted an effective passive pack.
+_rule_packs_config_state() {
+  _rp_state_path=$1
+  [ -f "$_rp_state_path" ] || { printf '%s' none; return 0; }
+  _rp_state_found=false
+  _rp_state_in_list=false
+  while IFS= read -r _rp_state_line || [ -n "$_rp_state_line" ]; do
+    _rp_state_line=${_rp_state_line%$'\r'}
+    case "$_rp_state_line" in
+      rule_packs:*)
+        _rp_state_found=true
+        _rp_state_in_list=true
+        _rp_state_tail=${_rp_state_line#rule_packs:}
+        _rp_state_tail=${_rp_state_tail%%#*}
+        _rp_state_compact=$(printf '%s' "$_rp_state_tail" | tr -d '[:space:]')
+        case "$_rp_state_compact" in
+          ''|'[]'|[Nn][Uu][Ll][Ll]|'~') ;;
+          *) printf '%s' nonempty; return 0 ;;
+        esac
+        ;;
+      *)
+        if $_rp_state_in_list; then
+          case "$_rp_state_line" in
+            ''|[[:space:]]'#'*) continue ;;
+            [[:space:]]*)
+              _rp_state_compact=$(printf '%s' "$_rp_state_line" | tr -d '[:space:]')
+              case "$_rp_state_compact" in
+                -*) printf '%s' nonempty; return 0 ;;
+              esac
+              continue
+              ;;
+            *) break ;;
+          esac
+        fi
+        ;;
+    esac
+  done < "$_rp_state_path"
+  if $_rp_state_found; then
+    printf '%s' empty
+  else
+    printf '%s' none
+  fi
+  return 0
+}
+
+_passive_rule_pack_configured() {
+  _rp_tracked_state=$(_rule_packs_config_state agent-config.yaml)
+  _rp_local_state=$(_rule_packs_config_state agent-config.local.yaml)
+  _rp_env_compact=$(printf '%s' "${AGENT_CONFIG_RULE_PACKS:-}" | tr -d '[:space:],')
+  # Layer order matters, and it is not a merge. Probing the real resolver gives
+  # [] for tracked [agent-style] plus local [], so a later empty list clears an
+  # earlier selection rather than adding nothing to it. Treating either layer's
+  # non-emptiness as sufficient marked a deliberate opt-out as an incomplete
+  # bootstrap. The environment variable is additive, so it wins when set.
+  if [ -n "$_rp_env_compact" ]; then
+    return 0
+  fi
+  case "$_rp_local_state" in
+    nonempty) return 0 ;;
+    empty) return 1 ;;
+  esac
+  case "$_rp_tracked_state" in
+    nonempty) return 0 ;;
+    empty) return 1 ;;
+  esac
+  # No signal in either layer: the composer's default selection includes
+  # agent-style, so a passive pack is configured.
+  return 0
+}
+
+# Stage beside the destination, then rename over it. Readers therefore see a
+# complete old helper or a complete new helper, never a truncated copy.
+_atomic_deploy_helper() {
+  _atomic_source=$1
+  _atomic_target=$2
+  _atomic_executable=${3:-false}
+  _atomic_dir=$(dirname "$_atomic_target")
+  _atomic_base=$(basename "$_atomic_target")
+  mkdir -p "$_atomic_dir" || return 1
+  _atomic_temp=$(mktemp "$_atomic_dir/.${_atomic_base}.XXXXXX") || return 1
+  if ! cp -f "$_atomic_source" "$_atomic_temp"; then
+    rm -f "$_atomic_temp"
+    return 1
+  fi
+  if $_atomic_executable && ! chmod +x "$_atomic_temp" 2>/dev/null; then
+    rm -f "$_atomic_temp"
+    return 1
+  fi
+  if ! mv -f "$_atomic_temp" "$_atomic_target"; then
+    rm -f "$_atomic_temp"
+    return 1
+  fi
+  return 0
+}
+
 # Best-effort bootstrap ledger. This script runs without set -e, so every
 # helper must finish successfully rather than relying on error propagation.
 _ledger_esc() {
@@ -192,6 +290,7 @@ _ledger_init() {
   _LEDGER_UPSTREAM="${_POS_UPSTREAM:-${AGENT_CONFIG_UPSTREAM:-}}"
   _LEDGER_STEPS=""
   _LEDGER_TARGETS=""
+  _LEDGER_INCOMPLETE=false
   _ledger_write start false
   return 0
 }
@@ -210,10 +309,16 @@ _ledger_step() {
   _ledger_step_scope=$2
   _ledger_step_status=$3
   _ledger_step_rc=${4:-null}
+  _ledger_step_reason=${5:-}
   _ledger_step_phase_json=$(_ledger_esc "$_ledger_step_phase")
   _ledger_step_scope_json=$(_ledger_esc "$_ledger_step_scope")
   _ledger_step_status_json=$(_ledger_esc "$_ledger_step_status")
-  _ledger_step_value="{\"phase\":\"${_ledger_step_phase_json}\",\"scope\":\"${_ledger_step_scope_json}\",\"status\":\"${_ledger_step_status_json}\",\"rc\":${_ledger_step_rc},\"targets\":[${_LEDGER_TARGETS:-}]}"
+  _ledger_step_value="{\"phase\":\"${_ledger_step_phase_json}\",\"scope\":\"${_ledger_step_scope_json}\",\"status\":\"${_ledger_step_status_json}\",\"rc\":${_ledger_step_rc},\"targets\":[${_LEDGER_TARGETS:-}]"
+  if [ -n "$_ledger_step_reason" ]; then
+    _ledger_step_reason_json=$(_ledger_esc "$_ledger_step_reason")
+    _ledger_step_value="${_ledger_step_value},\"reason\":\"${_ledger_step_reason_json}\""
+  fi
+  _ledger_step_value="${_ledger_step_value}}"
   if [ -n "${_LEDGER_STEPS:-}" ]; then
     _LEDGER_STEPS="${_LEDGER_STEPS},"
   fi
@@ -349,6 +454,10 @@ if [ "$_legacy_ac" = "1" ]; then
   rm -rf .agent-config/repo .agent-config/upstream .agent-config/bootstrap.sh .agent-config/bootstrap.ps1
 fi
 
+# Resolve Python once before the network-backed fetch and this run's user-level
+# helper deployment. Every later Python-backed phase reuses this snapshot.
+_py=$(_find_python || true)
+
 # Upstream cascade: argv > env var > persisted file > hardcoded default.
 # Forkers can persist a different default in their fork; consumers can pass
 # upstream via `bash .agent-config/bootstrap.sh <user>/<repo>` or the
@@ -390,30 +499,33 @@ _ledger_step fetch repo ok
 # writing rule pack unless they explicitly opt out via `rule_packs: []` in
 # agent-config.yaml. Composition requires Python 3 + PyYAML; when PyYAML is
 # missing we attempt a best-effort `pip install --user pyyaml`. If Python or
-# PyYAML still aren't available, we fall back to the verbatim upstream
+# PyYAML still are not available, we fall back to a marked upstream
 # AGENTS.md and print a one-line tip unless the consumer has explicitly
 # referenced rule_packs themselves.
-_py=$(_find_python || true)
-# Candidate discovery is stable after the sparse clone, so reuse this probed
-# result for every later Python-backed phase in the same bootstrap run.
 _compose_ok=false
-if [ -n "$_py" ]; then
+_compose_skip_reason=""
+if [ -z "$_py" ]; then
+  _compose_skip_reason="no Python 3 interpreter found"
+else
   if ! "$_py" -c "import yaml" >/dev/null 2>&1; then
     printf 'installing PyYAML (enables agent-style rule-pack composition)...\n' >&2
     "$_py" -m pip install --user --quiet pyyaml || true
   fi
   if "$_py" -c "import yaml" >/dev/null 2>&1; then
     _compose_ok=true
+  else
+    _compose_skip_reason="Python 3 interpreter has no PyYAML after install attempt"
   fi
 fi
 
 if $_compose_ok && [ ! -f .agent-config/repo/scripts/compose_packs.py ] && [ ! -f .agent-config/repo/scripts/compose_rule_packs.py ]; then
   # Upstream sparse clone has no composer script (e.g. the ac source repo
   # itself, which intentionally ships only generate_agent_configs.py and
-  # not the v0.4.0 unified composer). Fall through to the verbatim-AGENTS.md
+  # not the v0.4.0 unified composer). Fall through to the marked-AGENTS.md
   # path instead of crashing on a non-existent Python file.
   printf '%s\n' '[anywhere-agents] no composer script in .agent-config/repo/scripts/; falling back to verbatim AGENTS.md' >&2
   _compose_ok=false
+  _compose_skip_reason="no composer script in sparse clone"
 fi
 
 if $_compose_ok; then
@@ -442,11 +554,21 @@ if $_compose_ok; then
   _ledger_target AGENTS.md
   _ledger_step compose repo ok
 else
-  cp -f .agent-config/AGENTS.md AGENTS.md
+  if _passive_rule_pack_configured; then
+    {
+      printf '%s\n' "<!-- rule-pack composition skipped: $_compose_skip_reason; run anywhere-agents to compose -->"
+      cat .agent-config/AGENTS.md
+    } > AGENTS.md
+    _LEDGER_INCOMPLETE=true
+  else
+    cp -f .agent-config/AGENTS.md AGENTS.md
+  fi
   _rp_aware=false
-  if [ -f agent-config.yaml ] && grep -qE '^rule_packs:' agent-config.yaml 2>/dev/null; then
+  _rp_tracked_state=$(_rule_packs_config_state agent-config.yaml)
+  _rp_local_state=$(_rule_packs_config_state agent-config.local.yaml)
+  if [ "$_rp_tracked_state" != none ]; then
     _rp_aware=true
-  elif [ -f agent-config.local.yaml ] && grep -qE '^rule_packs:' agent-config.local.yaml 2>/dev/null; then
+  elif [ "$_rp_local_state" != none ]; then
     _rp_aware=true
   elif [ -n "${AGENT_CONFIG_RULE_PACKS:-}" ]; then
     _rp_aware=true
@@ -454,11 +576,11 @@ else
   if ! $_rp_aware; then
     printf '\n' >&2
     printf 'tip: anywhere-agents ships with agent-style writing rules enabled by default,\n' >&2
-    printf '     but this run skipped them (Python 3 with PyYAML unavailable).\n' >&2
+    printf '     but this run skipped them (%s).\n' "$_compose_skip_reason" >&2
     printf "     install Python + PyYAML to enable, or silence with 'rule_packs: []' in agent-config.yaml.\n" >&2
   fi
   _ledger_target AGENTS.md
-  _ledger_step compose repo skipped
+  _ledger_step compose repo skipped null "$_compose_skip_reason"
 fi
 # Generate per-agent config files (CLAUDE.md, agents/codex.md) from AGENTS.md.
 # Generator preserves hand-authored files (no GENERATED header) and warns loudly.
@@ -500,29 +622,38 @@ _ledger_step project_files repo ok
 # It deploys a PreToolUse hook guard and merges shared permission settings.
 # Remove this section if you do not want bootstrap to modify user-level config.
 if [ -f .agent-config/repo/scripts/_python ]; then
-  mkdir -p "$HOME/.claude/hooks"
-  cp -f .agent-config/repo/scripts/_python "$HOME/.claude/hooks/_python"
-  chmod +x "$HOME/.claude/hooks/_python" 2>/dev/null || true
+  if ! _atomic_deploy_helper .agent-config/repo/scripts/_python "$HOME/.claude/hooks/_python" true; then
+    printf '%s\n' 'error: could not atomically deploy ~/.claude/hooks/_python' >&2
+    exit 1
+  fi
   _ledger_target '~/.claude/hooks/_python'
 fi
 if [ -f .agent-config/repo/scripts/guard.py ]; then
-  mkdir -p "$HOME/.claude/hooks"
-  cp -f .agent-config/repo/scripts/guard.py "$HOME/.claude/hooks/guard.py"
+  if ! _atomic_deploy_helper .agent-config/repo/scripts/guard.py "$HOME/.claude/hooks/guard.py"; then
+    printf '%s\n' 'error: could not atomically deploy ~/.claude/hooks/guard.py' >&2
+    exit 1
+  fi
   _ledger_target '~/.claude/hooks/guard.py'
 fi
 if [ -f .agent-config/repo/scripts/session_bootstrap.py ]; then
-  mkdir -p "$HOME/.claude/hooks"
-  cp -f .agent-config/repo/scripts/session_bootstrap.py "$HOME/.claude/hooks/session_bootstrap.py"
+  if ! _atomic_deploy_helper .agent-config/repo/scripts/session_bootstrap.py "$HOME/.claude/hooks/session_bootstrap.py"; then
+    printf '%s\n' 'error: could not atomically deploy ~/.claude/hooks/session_bootstrap.py' >&2
+    exit 1
+  fi
   _ledger_target '~/.claude/hooks/session_bootstrap.py'
 fi
 if [ -f .agent-config/repo/scripts/statusline.py ]; then
-  mkdir -p "$HOME/.claude"
-  cp -f .agent-config/repo/scripts/statusline.py "$HOME/.claude/statusline.py"
+  if ! _atomic_deploy_helper .agent-config/repo/scripts/statusline.py "$HOME/.claude/statusline.py"; then
+    printf '%s\n' 'error: could not atomically deploy ~/.claude/statusline.py' >&2
+    exit 1
+  fi
   _ledger_target '~/.claude/statusline.py'
 fi
 if [ -f .agent-config/repo/scripts/agent-quota.py ]; then
-  mkdir -p "$HOME/.claude"
-  cp -f .agent-config/repo/scripts/agent-quota.py "$HOME/.claude/agent-quota.py"
+  if ! _atomic_deploy_helper .agent-config/repo/scripts/agent-quota.py "$HOME/.claude/agent-quota.py"; then
+    printf '%s\n' 'error: could not atomically deploy ~/.claude/agent-quota.py' >&2
+    exit 1
+  fi
   _ledger_target '~/.claude/agent-quota.py'
 fi
 if [ -f .agent-config/repo/user/settings.json ]; then
@@ -610,8 +741,10 @@ fi
 # entry on Git Bash / WSL would never land bootstrap.ps1 at all. Symmetric
 # in bootstrap.ps1 (copies both). Cheap and covers cross-OS dev workflows.
 if [ -f .agent-config/repo/bootstrap/bootstrap.sh ]; then
-  cp -f .agent-config/repo/bootstrap/bootstrap.sh .agent-config/bootstrap.sh || \
-    printf '%s\n' 'warning: could not self-update .agent-config/bootstrap.sh' >&2
+  if ! _atomic_deploy_helper .agent-config/repo/bootstrap/bootstrap.sh .agent-config/bootstrap.sh true; then
+    printf '%s\n' 'error: could not atomically self-update .agent-config/bootstrap.sh' >&2
+    exit 1
+  fi
 fi
 if [ -f .agent-config/repo/bootstrap/bootstrap.ps1 ]; then
   cp -f .agent-config/repo/bootstrap/bootstrap.ps1 .agent-config/bootstrap.ps1 || \
@@ -621,4 +754,8 @@ _ledger_target .gitignore
 _ledger_target .agent-config/bootstrap.sh
 _ledger_target .agent-config/bootstrap.ps1
 _ledger_step finalize repo ok
-_ledger_write finalize true
+if [ "${_LEDGER_INCOMPLETE:-false}" = true ]; then
+  _ledger_write finalize false
+else
+  _ledger_write finalize true
+fi

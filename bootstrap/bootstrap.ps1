@@ -8,6 +8,26 @@ param(
     [Alias("h")][switch]$Help
 )
 
+# Verify a candidate python actually executes before trusting it. Exit status
+# alone is not proof that Python ran, so require the interpreter to echo a
+# sentinel produced by the -c program.
+function Test-PythonRuns([string]$PythonPath) {
+  try {
+    $global:LASTEXITCODE = $null
+    $probeOutput = & $PythonPath -c 'import sys; sys.stdout.write("__ANYWHERE_AGENTS_PY3__" if sys.version_info[0] >= 3 else "")' 2>$null
+    $launched = $?
+    return ($launched -and $LASTEXITCODE -eq 0 -and ([string]$probeOutput).Trim() -eq '__ANYWHERE_AGENTS_PY3__')
+  } catch {
+    return $false
+  }
+}
+
+function Test-PythonHasYaml([string]$PythonPath) {
+  $global:LASTEXITCODE = $null
+  & $PythonPath -c "import yaml" 2>$null
+  return ($? -and $LASTEXITCODE -eq 0)
+}
+
 # Find a real Python interpreter, avoiding the Windows Store App Execution
 # Alias shim under %LOCALAPPDATA%\Microsoft\WindowsApps\ that prints
 # "Python was not found; install from Store" and exits non-zero on call.
@@ -31,6 +51,92 @@ function Find-RealPython {
     }
   }
   return $null
+}
+
+# Read the legacy passive-pack selection from one config layer without Python
+# or PyYAML. The return value is one of: none, empty, nonempty.
+function Get-RulePacksConfigState([string]$ConfigPath) {
+  if (-not (Test-Path -LiteralPath $ConfigPath)) { return 'none' }
+  $found = $false
+  $inList = $false
+  foreach ($line in [System.IO.File]::ReadAllLines((Resolve-Path -LiteralPath $ConfigPath))) {
+    if ($line -match '^rule_packs:(.*)$') {
+      $found = $true
+      $inList = $true
+      $tail = (($matches[1] -replace '#.*$', '') -replace '\s', '').ToLowerInvariant()
+      if ($tail -and $tail -notin @('[]', 'null', '~')) { return 'nonempty' }
+      continue
+    }
+    if ($inList) {
+      if ([string]::IsNullOrWhiteSpace($line) -or $line -match '^\s*#') { continue }
+      if ($line -match '^\s+') {
+        if ($line -match '^\s*-') { return 'nonempty' }
+        continue
+      }
+      break
+    }
+  }
+  if ($found) { return 'empty' }
+  return 'none'
+}
+
+function Test-PassiveRulePackConfigured {
+  $trackedState = Get-RulePacksConfigState 'agent-config.yaml'
+  $localState = Get-RulePacksConfigState 'agent-config.local.yaml'
+  $envCompact = ([string]$env:AGENT_CONFIG_RULE_PACKS) -replace '[\s,]', ''
+  # Layer order matters, and it is not a merge. Probing the real resolver gives
+  # [] for tracked [agent-style] plus local [], so a later empty list clears an
+  # earlier selection rather than adding nothing to it. Treating either layer's
+  # non-emptiness as sufficient marked a deliberate opt-out as an incomplete
+  # bootstrap. The environment variable is additive, so it wins when set.
+  if ($envCompact) { return $true }
+  if ($localState -eq 'nonempty') { return $true }
+  if ($localState -eq 'empty') { return $false }
+  if ($trackedState -eq 'nonempty') { return $true }
+  if ($trackedState -eq 'empty') { return $false }
+  # No signal in either layer: the composer's default selection includes
+  # agent-style, so a passive pack is configured.
+  return $true
+}
+
+# Stage beside the destination, then rename over it. Readers therefore see a
+# complete old helper or a complete new helper, never a truncated copy.
+function Copy-HelperAtomic([string]$Source, [string]$Destination) {
+  $destinationDirectory = Split-Path -Parent $Destination
+  $destinationName = Split-Path -Leaf $Destination
+  $tempPath = $null
+  $backupPath = $null
+  try {
+    New-Item -ItemType Directory -Force -Path $destinationDirectory -ErrorAction Stop | Out-Null
+    $tempPath = Join-Path $destinationDirectory ('.{0}.{1}.tmp' -f $destinationName, [guid]::NewGuid().ToString('N'))
+    Copy-Item -LiteralPath $Source -Destination $tempPath -Force -ErrorAction Stop
+    if (Test-Path -LiteralPath $Destination) {
+      $backupPath = Join-Path $destinationDirectory ('.{0}.{1}.bak' -f $destinationName, [guid]::NewGuid().ToString('N'))
+      [System.IO.File]::Replace($tempPath, $Destination, $backupPath)
+    } else {
+      try {
+        [System.IO.File]::Move($tempPath, $Destination)
+      } catch {
+        # Another bootstrap may have created the target after Test-Path.
+        if (Test-Path -LiteralPath $Destination) {
+          $backupPath = Join-Path $destinationDirectory ('.{0}.{1}.bak' -f $destinationName, [guid]::NewGuid().ToString('N'))
+          [System.IO.File]::Replace($tempPath, $Destination, $backupPath)
+        } else {
+          throw
+        }
+      }
+    }
+    return $true
+  } catch {
+    throw "Could not atomically deploy '$Source' to '$Destination': $($_.Exception.Message)"
+  } finally {
+    if ($tempPath -and (Test-Path -LiteralPath $tempPath)) {
+      Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+    }
+    if ($backupPath -and (Test-Path -LiteralPath $backupPath)) {
+      Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
+    }
+  }
 }
 
 function Write-Ledger([string]$LastPhase, [bool]$Completed) {
@@ -65,6 +171,7 @@ function Initialize-Ledger {
   try {
     $script:LedgerSteps = @()
     $script:LedgerTargets = @()
+    $script:LedgerIncomplete = $false
     $script:LedgerRunId = "$PID-" + [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
     $script:LedgerStarted = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ')
     # Coalesce to a string. bootstrap.sh emits "" for an unset upstream, and
@@ -86,7 +193,8 @@ function Add-LedgerStep {
     [string]$Phase,
     [string]$Scope,
     [string]$Status,
-    [Nullable[int]]$Rc = $null
+    [Nullable[int]]$Rc = $null,
+    [string]$Reason
   )
   try {
     $stepRc = if ($PSBoundParameters.ContainsKey('Rc')) { [int]$Rc } else { $null }
@@ -96,6 +204,9 @@ function Add-LedgerStep {
       status = $Status
       rc = $stepRc
       targets = @($script:LedgerTargets)
+    }
+    if ($PSBoundParameters.ContainsKey('Reason')) {
+      $step['reason'] = $Reason
     }
     $script:LedgerSteps += [pscustomobject]$step
     $script:LedgerTargets = @()
@@ -237,6 +348,10 @@ if ($legacyAC) {
   Remove-Item -LiteralPath .agent-config/upstream, .agent-config/bootstrap.sh, .agent-config/bootstrap.ps1 -Force -ErrorAction SilentlyContinue
 }
 
+# Resolve Python once before the network-backed fetch and this run's user-level
+# helper deployment. Every later Python-backed phase reuses this snapshot.
+$pyCmd = Find-RealPython
+
 # Upstream cascade: argv > env var > persisted file > hardcoded default.
 # Forkers can persist a different default in their fork; consumers can pass
 # upstream via `.\.agent-config\bootstrap.ps1 <user>/<repo>` or the
@@ -340,43 +455,14 @@ try {
 # writing rule pack unless they explicitly opt out via `rule_packs: []` in
 # agent-config.yaml. Composition requires Python 3 + PyYAML; when PyYAML is
 # missing we attempt a best-effort `pip install --user pyyaml`. If Python or
-# PyYAML still aren't available, we fall back to the verbatim upstream
+# PyYAML still are not available, we fall back to a marked upstream
 # AGENTS.md and print a one-line tip unless the consumer has explicitly
 # referenced rule_packs themselves.
-# Verify a candidate python actually executes before trusting it. On default
-# Windows installs, `Get-Command python` can resolve to the WindowsApps shim
-# at C:\...\WindowsApps\...\python.exe which fails at launch without setting
-# $LASTEXITCODE the way this script would otherwise rely on. Probe every
-# candidate with an import-and-exit test, and gate subsequent checks on both
-# $? (native launch success) AND $LASTEXITCODE (the program's own exit).
-# Exit status alone is not proof that Python ran. A command that ignores its
-# arguments and exits 0, such as true.exe or a .cmd containing only `exit /b 0`,
-# passes an exit-status probe while executing nothing. Require the interpreter
-# to echo a sentinel, so only something that actually evaluated the -c program
-# is accepted.
-function Test-PythonRuns([string]$PythonPath) {
-  try {
-    $global:LASTEXITCODE = $null
-    $probeOutput = & $PythonPath -c 'import sys; sys.stdout.write("__ANYWHERE_AGENTS_PY3__" if sys.version_info[0] >= 3 else "")' 2>$null
-    $launched = $?
-    return ($launched -and $LASTEXITCODE -eq 0 -and ([string]$probeOutput).Trim() -eq '__ANYWHERE_AGENTS_PY3__')
-  } catch {
-    return $false
-  }
-}
-
-function Test-PythonHasYaml([string]$PythonPath) {
-    $global:LASTEXITCODE = $null
-    & $PythonPath -c "import yaml" 2>$null
-    return ($? -and $LASTEXITCODE -eq 0)
-}
-
-$pyCmd = Find-RealPython
-# Candidate discovery is stable after the sparse clone, so reuse this probed
-# result for every later Python-backed phase in the same bootstrap run.
-
 $composeOk = $false
-if ($pyCmd) {
+$composeSkipReason = ''
+if (-not $pyCmd) {
+    $composeSkipReason = 'no Python 3 interpreter found'
+} else {
     if (-not (Test-PythonHasYaml $pyCmd.Path)) {
         [Console]::Error.WriteLine("installing PyYAML (enables agent-style rule-pack composition)...")
         $global:LASTEXITCODE = $null
@@ -384,16 +470,19 @@ if ($pyCmd) {
     }
     if (Test-PythonHasYaml $pyCmd.Path) {
         $composeOk = $true
+    } else {
+        $composeSkipReason = 'Python 3 interpreter has no PyYAML after install attempt'
     }
 }
 
 if ($composeOk -and -not (Test-Path .agent-config/repo/scripts/compose_packs.py) -and -not (Test-Path .agent-config/repo/scripts/compose_rule_packs.py)) {
     # Upstream sparse clone has no composer script (e.g. the ac source repo
     # itself, which intentionally ships only generate_agent_configs.py and
-    # not the v0.4.0 unified composer). Fall through to the verbatim-AGENTS.md
+    # not the v0.4.0 unified composer). Fall through to the marked-AGENTS.md
     # path instead of crashing on a non-existent Python file.
     [Console]::Error.WriteLine("[anywhere-agents] no composer script in .agent-config/repo/scripts/; falling back to verbatim AGENTS.md")
     $composeOk = $false
+    $composeSkipReason = 'no composer script in sparse clone'
 }
 
 if ($composeOk) {
@@ -426,24 +515,31 @@ if ($composeOk) {
       Add-LedgerStep 'compose' 'repo' 'ok'
     } catch {}
 } else {
-    Copy-Item .agent-config/AGENTS.md AGENTS.md -Force
-    $rpAware = $false
-    if ((Test-Path agent-config.yaml) -and (Select-String -Quiet -Pattern '^rule_packs:' agent-config.yaml)) {
-        $rpAware = $true
-    } elseif ((Test-Path agent-config.local.yaml) -and (Select-String -Quiet -Pattern '^rule_packs:' agent-config.local.yaml)) {
-        $rpAware = $true
-    } elseif ($env:AGENT_CONFIG_RULE_PACKS) {
-        $rpAware = $true
+    $passiveRulePackConfigured = Test-PassiveRulePackConfigured
+    if ($passiveRulePackConfigured) {
+      $fallbackMarker = "<!-- rule-pack composition skipped: $composeSkipReason; run anywhere-agents to compose -->"
+      $upstreamAgents = [System.IO.File]::ReadAllText((Resolve-Path -LiteralPath .agent-config/AGENTS.md))
+      [System.IO.File]::WriteAllText(
+        (Join-Path (Get-Location).Path 'AGENTS.md'),
+        $fallbackMarker + "`n" + $upstreamAgents,
+        (New-Object System.Text.UTF8Encoding $false)
+      )
+      $script:LedgerIncomplete = $true
+    } else {
+      Copy-Item .agent-config/AGENTS.md AGENTS.md -Force
     }
+    $trackedState = Get-RulePacksConfigState 'agent-config.yaml'
+    $localState = Get-RulePacksConfigState 'agent-config.local.yaml'
+    $rpAware = ($trackedState -ne 'none' -or $localState -ne 'none' -or [bool]$env:AGENT_CONFIG_RULE_PACKS)
     if (-not $rpAware) {
         [Console]::Error.WriteLine("")
         [Console]::Error.WriteLine("tip: anywhere-agents ships with agent-style writing rules enabled by default,")
-        [Console]::Error.WriteLine("     but this run skipped them (Python 3 with PyYAML unavailable).")
+        [Console]::Error.WriteLine("     but this run skipped them ($composeSkipReason).")
         [Console]::Error.WriteLine("     install Python + PyYAML to enable, or silence with 'rule_packs: []' in agent-config.yaml.")
     }
     try {
       Add-LedgerTarget 'AGENTS.md'
-      Add-LedgerStep 'compose' 'repo' 'skipped'
+      Add-LedgerStep 'compose' 'repo' 'skipped' -Reason $composeSkipReason
     } catch {}
 }
 # Generate per-agent config files (CLAUDE.md, agents/codex.md) from AGENTS.md.
@@ -477,31 +573,31 @@ try { Add-LedgerStep 'project_files' 'repo' 'ok' } catch {}
 $userClaude = Join-Path $env:USERPROFILE '.claude'
 if (Test-Path .agent-config/repo/scripts/_python) {
   $hooksDir = Join-Path $userClaude 'hooks'
-  New-Item -ItemType Directory -Force -Path $hooksDir | Out-Null
-  Copy-Item .agent-config/repo/scripts/_python (Join-Path $hooksDir '_python') -Force
-  try { Add-LedgerTarget '~/.claude/hooks/_python' } catch {}
+  if (Copy-HelperAtomic .agent-config/repo/scripts/_python (Join-Path $hooksDir '_python')) {
+    try { Add-LedgerTarget '~/.claude/hooks/_python' } catch {}
+  }
 }
 if (Test-Path .agent-config/repo/scripts/guard.py) {
   $hooksDir = Join-Path $userClaude 'hooks'
-  New-Item -ItemType Directory -Force -Path $hooksDir | Out-Null
-  Copy-Item .agent-config/repo/scripts/guard.py (Join-Path $hooksDir 'guard.py') -Force
-  try { Add-LedgerTarget '~/.claude/hooks/guard.py' } catch {}
+  if (Copy-HelperAtomic .agent-config/repo/scripts/guard.py (Join-Path $hooksDir 'guard.py')) {
+    try { Add-LedgerTarget '~/.claude/hooks/guard.py' } catch {}
+  }
 }
 if (Test-Path .agent-config/repo/scripts/session_bootstrap.py) {
   $hooksDir = Join-Path $userClaude 'hooks'
-  New-Item -ItemType Directory -Force -Path $hooksDir | Out-Null
-  Copy-Item .agent-config/repo/scripts/session_bootstrap.py (Join-Path $hooksDir 'session_bootstrap.py') -Force
-  try { Add-LedgerTarget '~/.claude/hooks/session_bootstrap.py' } catch {}
+  if (Copy-HelperAtomic .agent-config/repo/scripts/session_bootstrap.py (Join-Path $hooksDir 'session_bootstrap.py')) {
+    try { Add-LedgerTarget '~/.claude/hooks/session_bootstrap.py' } catch {}
+  }
 }
 if (Test-Path .agent-config/repo/scripts/statusline.py) {
-  New-Item -ItemType Directory -Force -Path $userClaude | Out-Null
-  Copy-Item .agent-config/repo/scripts/statusline.py (Join-Path $userClaude 'statusline.py') -Force
-  try { Add-LedgerTarget '~/.claude/statusline.py' } catch {}
+  if (Copy-HelperAtomic .agent-config/repo/scripts/statusline.py (Join-Path $userClaude 'statusline.py')) {
+    try { Add-LedgerTarget '~/.claude/statusline.py' } catch {}
+  }
 }
 if (Test-Path .agent-config/repo/scripts/agent-quota.py) {
-  New-Item -ItemType Directory -Force -Path $userClaude | Out-Null
-  Copy-Item .agent-config/repo/scripts/agent-quota.py (Join-Path $userClaude 'agent-quota.py') -Force
-  try { Add-LedgerTarget '~/.claude/agent-quota.py' } catch {}
+  if (Copy-HelperAtomic .agent-config/repo/scripts/agent-quota.py (Join-Path $userClaude 'agent-quota.py')) {
+    try { Add-LedgerTarget '~/.claude/agent-quota.py' } catch {}
+  }
 }
 if (Test-Path .agent-config/repo/user/settings.json) {
   New-Item -ItemType Directory -Force -Path $userClaude | Out-Null
@@ -594,5 +690,5 @@ try {
   Add-LedgerTarget '.agent-config/bootstrap.sh'
   Add-LedgerTarget '.agent-config/bootstrap.ps1'
   Add-LedgerStep 'finalize' 'repo' 'ok'
-  Write-Ledger 'finalize' $true
+  Write-Ledger 'finalize' (-not $script:LedgerIncomplete)
 } catch {}

@@ -21,6 +21,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -68,7 +69,8 @@ POWERSHELL = shutil.which("pwsh") or shutil.which("powershell")
 
 _POSIX_SANDBOX_TOOLS = (
     "sed", "uname", "printf", "tr", "grep", "cat", "mkdir", "echo", "rm",
-    "dirname", "basename", "test", "ls", "head", "tail", "sh", "mv",
+    "dirname", "basename", "test", "ls", "head", "tail", "sh", "mv", "cp",
+    "chmod", "mktemp", "sleep",
 )
 
 
@@ -354,34 +356,40 @@ def _write_executable(path: Path, content: str) -> None:
 def _prepare_full_bootstrap_fixture(
     tmp: Path,
     *,
-    composer_rc: int,
+    composer_rc: int | None,
     generator_rc: int | None,
+    yaml_available: bool = True,
 ) -> tuple[Path, Path, Path]:
     work = tmp / "work"
     scripts = work / ".agent-config" / "repo" / "scripts"
     (work / ".agent-config" / "repo" / ".git").mkdir(parents=True)
     scripts.mkdir(parents=True)
     (work / ".agent-config" / "AGENTS.md").write_text("fetched rules\n", encoding="utf-8")
-    (scripts / "compose_packs.py").write_text(
-        "from pathlib import Path\n"
-        "Path('AGENTS.md').write_text('composed rules\\n', encoding='utf-8')\n"
-        f"raise SystemExit({composer_rc})\n",
-        encoding="utf-8",
-    )
+    if composer_rc is not None:
+        (scripts / "compose_packs.py").write_text(
+            "from pathlib import Path\n"
+            "Path('AGENTS.md').write_text('composed rules\\n', encoding='utf-8')\n"
+            f"raise SystemExit({composer_rc})\n",
+            encoding="utf-8",
+        )
     if generator_rc is not None:
         (scripts / "generate_agent_configs.py").write_text(
             "from pathlib import Path\n"
             f"rc = {generator_rc}\n"
             "if rc == 0:\n"
-            "    Path('CLAUDE.md').write_text('generated claude\\n', encoding='utf-8')\n"
+            "    agents = Path('AGENTS.md').read_text(encoding='utf-8')\n"
+            "    Path('CLAUDE.md').write_text('generated claude\\n' + agents, encoding='utf-8')\n"
             "    Path('agents').mkdir(exist_ok=True)\n"
-            "    Path('agents/codex.md').write_text('generated codex\\n', encoding='utf-8')\n"
+            "    Path('agents/codex.md').write_text('generated codex\\n' + agents, encoding='utf-8')\n"
             "raise SystemExit(rc)\n",
             encoding="utf-8",
         )
     python_path = tmp / "python_path"
     python_path.mkdir()
-    (python_path / "yaml.py").write_text("# test PyYAML stand-in\n", encoding="utf-8")
+    yaml_stub = "# test PyYAML stand-in\n" if yaml_available else "raise ImportError('PyYAML blocked by test')\n"
+    (python_path / "yaml.py").write_text(yaml_stub, encoding="utf-8")
+    if not yaml_available:
+        (python_path / "pip.py").write_text("raise SystemExit(1)\n", encoding="utf-8")
     home = tmp / "home"
     home.mkdir()
     return work, python_path, home
@@ -390,9 +398,10 @@ def _prepare_full_bootstrap_fixture(
 def _run_full_bootstrap_with_ledger(
     entrypoint: str,
     *,
-    composer_rc: int = 0,
+    composer_rc: int | None = 0,
     generator_rc: int | None = 0,
-) -> tuple[subprocess.CompletedProcess, dict]:
+    yaml_available: bool = True,
+) -> tuple[subprocess.CompletedProcess, dict, dict[str, bytes]]:
     if entrypoint == "bash" and not BASH:
         raise unittest.SkipTest("bash not available (Git Bash on Windows or system bash on POSIX)")
     if entrypoint == "powershell" and not POWERSHELL:
@@ -403,6 +412,7 @@ def _run_full_bootstrap_with_ledger(
             tmp,
             composer_rc=composer_rc,
             generator_rc=generator_rc,
+            yaml_available=yaml_available,
         )
         stub_dir = tmp / "stub_path"
         _make_stub_git(stub_dir, "git version 2.50.0")
@@ -430,6 +440,9 @@ def _run_full_bootstrap_with_ledger(
         env["ANYWHERE_AGENTS_PYTHON"] = python_command
         env["ANYWHERE_AGENTS_CODEX_AUTO_UPDATE"] = "off"
         env["PYTHONPATH"] = str(python_path)
+        if not yaml_available:
+            env["PIP_NO_INDEX"] = "1"
+            env["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
         env["HOME"] = str(home)
         env["USERPROFILE"] = str(home)
         result = subprocess.run(
@@ -446,14 +459,22 @@ def _run_full_bootstrap_with_ledger(
                 f"{entrypoint} did not emit a ledger; rc={result.returncode}; stderr={result.stderr!r}"
             )
         ledger = json.loads(ledger_path.read_text(encoding="utf-8-sig"))
-        return result, ledger
+        artifacts = {
+            relative: (work / relative).read_bytes()
+            for relative in ("AGENTS.md", "CLAUDE.md", "agents/codex.md")
+            if (work / relative).is_file()
+        }
+        return result, ledger, artifacts
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
 def _run_no_python_bootstrap_with_ledger(
     entrypoint: str,
-) -> tuple[subprocess.CompletedProcess, dict, str]:
+    *,
+    config_text: str | None = None,
+    local_config_text: str | None = None,
+) -> tuple[subprocess.CompletedProcess, dict, str, bytes, bytes]:
     """Run a full bootstrap where every discoverable Python wrapper is broken."""
     if entrypoint == "bash" and not BASH:
         raise unittest.SkipTest("bash not available (Git Bash on Windows or system bash on POSIX)")
@@ -466,6 +487,10 @@ def _run_no_python_bootstrap_with_ledger(
             composer_rc=0,
             generator_rc=0,
         )
+        if config_text is not None:
+            (work / "agent-config.yaml").write_text(config_text, encoding="utf-8")
+        if local_config_text is not None:
+            (work / "agent-config.local.yaml").write_text(local_config_text, encoding="utf-8")
         broken_wrapper = "#!/bin/sh\nexit 127\n"
         hooks = home / ".claude" / "hooks"
         hooks.mkdir(parents=True)
@@ -521,7 +546,182 @@ def _run_no_python_bootstrap_with_ledger(
                 f"{entrypoint} did not emit a ledger; rc={result.returncode}; stderr={result.stderr!r}"
             )
         raw_ledger = ledger_path.read_text(encoding="utf-8-sig")
-        return result, json.loads(raw_ledger), raw_ledger
+        agents_bytes = (work / "AGENTS.md").read_bytes()
+        upstream_bytes = (work / ".agent-config" / "AGENTS.md").read_bytes()
+        return result, json.loads(raw_ledger), raw_ledger, agents_bytes, upstream_bytes
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _run_atomic_helper_deployment(
+    entrypoint: str,
+) -> tuple[subprocess.CompletedProcess, bytes, bytes, bytes, bool]:
+    """Pause a real helper copy mid-write and read the live destination."""
+    if entrypoint == "bash" and not BASH:
+        raise unittest.SkipTest("bash not available (Git Bash on Windows or system bash on POSIX)")
+    if entrypoint == "powershell" and not POWERSHELL:
+        raise unittest.SkipTest("pwsh/powershell not available")
+    tmp = Path(tempfile.mkdtemp(prefix=f"aa-atomic-helper-{entrypoint}-"))
+    try:
+        work, python_path, home = _prepare_full_bootstrap_fixture(
+            tmp,
+            composer_rc=0,
+            generator_rc=None,
+        )
+        source = work / ".agent-config" / "repo" / "scripts" / "_python"
+        old_content = b"#!/usr/bin/env bash\n# old helper\nexit 0\n"
+        new_content = b"#!/usr/bin/env bash\n# new helper\nexit 0\n"
+        source.write_bytes(new_content)
+        hooks = home / ".claude" / "hooks"
+        hooks.mkdir(parents=True)
+        target = hooks / "_python"
+        _write_executable(target, old_content.decode("ascii"))
+        signal = tmp / "copy-started"
+
+        stub_dir = tmp / "stub_path"
+        _make_stub_git(stub_dir, "git version 2.50.0")
+        _write_executable(stub_dir / "curl", "#!/bin/sh\nexit 0\n")
+        if entrypoint == "bash":
+            real_cp = shutil.which("cp")
+            if not real_cp and os.name == "nt" and BASH:
+                bash_path = Path(BASH).resolve()
+                candidates = (
+                    bash_path.parent / "cp.exe",
+                    bash_path.parent.parent / "usr" / "bin" / "cp.exe",
+                )
+                real_cp = next((str(path) for path in candidates if path.is_file()), None)
+            if not real_cp:
+                raise unittest.SkipTest("cp not available for atomic-deployment probe")
+            _write_executable(
+                stub_dir / "cp",
+                "#!/bin/sh\n"
+                "source_path=''\n"
+                "destination=''\n"
+                "for argument in \"$@\"; do\n"
+                "  case \"$argument\" in\n"
+                "    -*) ;;\n"
+                "    *) if [ -z \"$source_path\" ]; then source_path=$argument; else destination=$argument; fi ;;\n"
+                "  esac\n"
+                "done\n"
+                "case \"$source_path\" in\n"
+                "  */_python)\n"
+                "    printf '%s' partial > \"$destination\"\n"
+                "    printf '%s' ready > \"$ATOMIC_COPY_SIGNAL\"\n"
+                "    sleep 1\n"
+                "    \"$REAL_CP\" -f \"$source_path\" \"$destination\"\n"
+                "    ;;\n"
+                "  *) exec \"$REAL_CP\" \"$@\" ;;\n"
+                "esac\n",
+            )
+            env = _stripped_env(stub_dir)
+            env["REAL_CP"] = str(Path(real_cp).resolve()).replace("\\", "/")
+            env["ATOMIC_COPY_SIGNAL"] = str(signal).replace("\\", "/")
+            command = [BASH, str(BOOTSTRAP_SH)]
+        else:
+            env = os.environ.copy()
+            env["PATH"] = os.pathsep.join((str(stub_dir), env.get("PATH", "")))
+            env["ATOMIC_COPY_SIGNAL"] = str(signal)
+            bootstrap_literal = str(BOOTSTRAP_PS1).replace("'", "''")
+            wrapper = tmp / "invoke-bootstrap.ps1"
+            wrapper.write_text(
+                "function Invoke-WebRequest { param([switch]$UseBasicParsing, [string]$Uri, [string]$OutFile) }\n"
+                "function Copy-Item {\n"
+                "  [CmdletBinding()] param(\n"
+                "    [Parameter(Position=0)][string[]]$Path,\n"
+                "    [string[]]$LiteralPath,\n"
+                "    [Parameter(Position=1)][string]$Destination,\n"
+                "    [switch]$Force\n"
+                "  )\n"
+                "  $sourcePath = if ($LiteralPath) { [string]$LiteralPath[0] } else { [string]$Path[0] }\n"
+                "  if ($sourcePath -like '*_python') {\n"
+                "    [System.IO.File]::WriteAllText($Destination, 'partial')\n"
+                "    [System.IO.File]::WriteAllText($env:ATOMIC_COPY_SIGNAL, 'ready')\n"
+                "    Start-Sleep -Seconds 1\n"
+                "  }\n"
+                "  if ($LiteralPath) {\n"
+                "    Microsoft.PowerShell.Management\\Copy-Item -LiteralPath $LiteralPath -Destination $Destination -Force\n"
+                "  } else {\n"
+                "    Microsoft.PowerShell.Management\\Copy-Item -Path $Path -Destination $Destination -Force\n"
+                "  }\n"
+                "}\n"
+                f"& '{bootstrap_literal}'\n"
+                "if (-not $?) { exit $LASTEXITCODE }\n"
+                "exit 0\n",
+                encoding="utf-8",
+            )
+            command = [POWERSHELL, "-NoProfile", "-NonInteractive", "-File", str(wrapper)]
+
+        env.pop("AGENT_CONFIG_PREFLIGHT_TEST", None)
+        env["AGENT_CONFIG_UPSTREAM"] = "example/repo"
+        env["ANYWHERE_AGENTS_PYTHON"] = str(Path(sys.executable)).replace("\\", "/") if entrypoint == "bash" else sys.executable
+        env["ANYWHERE_AGENTS_CODEX_AUTO_UPDATE"] = "off"
+        env["PYTHONPATH"] = str(python_path)
+        env["HOME"] = str(home)
+        env["USERPROFILE"] = str(home)
+        process = subprocess.Popen(
+            command,
+            cwd=str(work),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        deadline = time.monotonic() + 20
+        while not signal.is_file() and process.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.005)
+        running_when_observed = signal.is_file() and process.poll() is None
+        observed = target.read_bytes()
+        stdout, stderr = process.communicate(timeout=30)
+        result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+        return result, observed, target.read_bytes(), new_content, running_when_observed
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _run_bash_self_update() -> tuple[subprocess.CompletedProcess, bytes, bytes, bytes, dict]:
+    """Run bootstrap through its deployed path while it installs a shorter successor."""
+    if not BASH:
+        raise unittest.SkipTest("bash not available (Git Bash on Windows or system bash on POSIX)")
+    tmp = Path(tempfile.mkdtemp(prefix="aa-self-update-bash-"))
+    try:
+        work, python_path, home = _prepare_full_bootstrap_fixture(
+            tmp,
+            composer_rc=0,
+            generator_rc=None,
+        )
+        deployed = work / ".agent-config" / "bootstrap.sh"
+        original = BOOTSTRAP_SH.read_bytes()
+        deployed.write_bytes(original)
+        deployed.chmod(deployed.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+        replacement = b"#!/bin/sh\n# shorter self-update fixture\nexit 0\n"
+        upstream = work / ".agent-config" / "repo" / "bootstrap" / "bootstrap.sh"
+        upstream.parent.mkdir(parents=True)
+        upstream.write_bytes(replacement)
+        upstream.chmod(upstream.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+        stub_dir = tmp / "stub_path"
+        _make_stub_git(stub_dir, "git version 2.50.0")
+        _write_executable(stub_dir / "curl", "#!/bin/sh\nexit 0\n")
+        env = _stripped_env(stub_dir)
+        env["AGENT_CONFIG_UPSTREAM"] = "example/repo"
+        env["ANYWHERE_AGENTS_PYTHON"] = str(Path(sys.executable)).replace("\\", "/")
+        env["ANYWHERE_AGENTS_CODEX_AUTO_UPDATE"] = "off"
+        env["PYTHONPATH"] = str(python_path)
+        env["HOME"] = str(home)
+        env["USERPROFILE"] = str(home)
+        result = subprocess.run(
+            [BASH, str(deployed)],
+            cwd=str(work),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        ledger = json.loads(
+            (work / ".agent-config" / "last-run.json").read_text(encoding="utf-8-sig")
+        )
+        return result, deployed.read_bytes(), replacement, original, ledger
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -739,7 +939,7 @@ class _BootstrapLedgerContract:
         self.assertIsNone(ledger)
 
     def test_generate_ok(self):
-        result, ledger = _run_full_bootstrap_with_ledger(
+        result, ledger, _ = _run_full_bootstrap_with_ledger(
             self.entrypoint,
             generator_rc=0,
         )
@@ -750,7 +950,7 @@ class _BootstrapLedgerContract:
         self.assertEqual(step["targets"], ["CLAUDE.md", "agents/codex.md"])
 
     def test_generate_failed(self):
-        result, ledger = _run_full_bootstrap_with_ledger(
+        result, ledger, _ = _run_full_bootstrap_with_ledger(
             self.entrypoint,
             generator_rc=7,
         )
@@ -761,7 +961,7 @@ class _BootstrapLedgerContract:
         self.assertEqual(step["targets"], [])
 
     def test_generate_skipped(self):
-        result, ledger = _run_full_bootstrap_with_ledger(
+        result, ledger, _ = _run_full_bootstrap_with_ledger(
             self.entrypoint,
             generator_rc=None,
         )
@@ -772,7 +972,7 @@ class _BootstrapLedgerContract:
         self.assertEqual(step["targets"], [])
 
     def test_generate_recorded_before_composer_failure_exit(self):
-        result, ledger = _run_full_bootstrap_with_ledger(
+        result, ledger, _ = _run_full_bootstrap_with_ledger(
             self.entrypoint,
             composer_rc=23,
             generator_rc=9,
@@ -785,10 +985,94 @@ class _BootstrapLedgerContract:
         self.assertEqual(generate["status"], "failed")
         self.assertEqual(generate["rc"], 9)
 
+    def test_no_python_fallback_is_marked_and_incomplete_for_passive_pack(self):
+        result, ledger, _, agents_bytes, upstream_bytes = _run_no_python_bootstrap_with_ledger(
+            self.entrypoint,
+            config_text="rule_packs:\n  - name: agent-style\n",
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        reason = "no Python 3 interpreter found"
+        marker = f"<!-- rule-pack composition skipped: {reason}; run anywhere-agents to compose -->\n".encode()
+        self.assertNotEqual(agents_bytes, upstream_bytes)
+        self.assertTrue(agents_bytes.startswith(marker), msg=agents_bytes[:200])
+        self.assertEqual(agents_bytes[len(marker):], upstream_bytes)
+        compose = self._phase(ledger, "compose")
+        self.assertEqual(compose["status"], "skipped")
+        self.assertEqual(compose["reason"], reason)
+        self.assertIs(ledger["completed"], False)
+
+    def test_local_empty_opt_out_overrides_tracked_selection(self):
+        # The layers are ordered, not merged. Probing packs.config directly
+        # returns [] for tracked [agent-style] plus local [], so this is a
+        # deliberate opt-out and must not be marked as an incomplete run.
+        # The predicate previously treated either layer's non-emptiness as
+        # sufficient and reported completed:false here.
+        result, ledger, _, agents_bytes, upstream_bytes = _run_no_python_bootstrap_with_ledger(
+            self.entrypoint,
+            config_text="rule_packs:\n  - name: agent-style\n",
+            local_config_text="rule_packs: []\n",
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertEqual(agents_bytes, upstream_bytes)
+        self.assertNotIn(b"rule-pack composition skipped", agents_bytes)
+        self.assertIs(ledger["completed"], True)
+
+    def test_local_nonempty_selection_still_counts_as_configured(self):
+        # The mirror of the case above: a non-empty local layer is a real
+        # selection, so an omitted composition is still an incomplete run.
+        # Without this the fix could pass by always returning false.
+        result, ledger, _, agents_bytes, upstream_bytes = _run_no_python_bootstrap_with_ledger(
+            self.entrypoint,
+            config_text="rule_packs: []\n",
+            local_config_text="rule_packs:\n  - name: agent-style\n",
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertNotEqual(agents_bytes, upstream_bytes)
+        self.assertIn(b"rule-pack composition skipped", agents_bytes)
+        self.assertIs(ledger["completed"], False)
+
+    def test_skip_reasons_distinguish_missing_yaml_and_missing_composer(self):
+        yaml_result, yaml_ledger, yaml_artifacts = _run_full_bootstrap_with_ledger(
+            self.entrypoint,
+            yaml_available=False,
+        )
+        self.assertEqual(yaml_result.returncode, 0, msg=yaml_result.stderr)
+        self.assertEqual(
+            self._phase(yaml_ledger, "compose")["reason"],
+            "Python 3 interpreter has no PyYAML after install attempt",
+        )
+        yaml_marker = b"<!-- rule-pack composition skipped: Python 3 interpreter has no PyYAML after install attempt; run anywhere-agents to compose -->"
+        for relative in ("AGENTS.md", "CLAUDE.md", "agents/codex.md"):
+            self.assertIn(yaml_marker, yaml_artifacts[relative])
+        composer_result, composer_ledger, _ = _run_full_bootstrap_with_ledger(
+            self.entrypoint,
+            composer_rc=None,
+        )
+        self.assertEqual(composer_result.returncode, 0, msg=composer_result.stderr)
+        self.assertEqual(
+            self._phase(composer_ledger, "compose")["reason"],
+            "no composer script in sparse clone",
+        )
+
+    def test_helper_deployment_never_exposes_staged_partial_file(self):
+        result, observed, final, expected, running = _run_atomic_helper_deployment(self.entrypoint)
+        self.assertTrue(running, msg="copy pause was not observed while bootstrap was running")
+        self.assertEqual(observed, b"#!/usr/bin/env bash\n# old helper\nexit 0\n")
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertEqual(final, expected)
+
 
 class BootstrapLedgerBashTests(_BootstrapLedgerContract, unittest.TestCase):
     entrypoint = "bash"
     emitted_by = "bootstrap.sh"
+
+    def test_self_update_replaces_inode_without_skipping_running_tail(self):
+        result, deployed, replacement, original, ledger = _run_bash_self_update()
+        self.assertNotEqual(len(replacement), len(original))
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertEqual(deployed, replacement)
+        self.assertEqual(ledger["last_phase"], "finalize")
+        self.assertIs(ledger["completed"], True)
 
 
 class BootstrapLedgerPowerShellTests(_BootstrapLedgerContract, unittest.TestCase):
@@ -799,8 +1083,8 @@ class BootstrapLedgerPowerShellTests(_BootstrapLedgerContract, unittest.TestCase
 class BootstrapLedgerParityTests(unittest.TestCase):
 
     def test_no_python_generate_steps_match(self):
-        bash_result, bash_ledger, bash_raw = _run_no_python_bootstrap_with_ledger("bash")
-        ps_result, ps_ledger, ps_raw = _run_no_python_bootstrap_with_ledger("powershell")
+        bash_result, bash_ledger, bash_raw, _, _ = _run_no_python_bootstrap_with_ledger("bash")
+        ps_result, ps_ledger, ps_raw, _, _ = _run_no_python_bootstrap_with_ledger("powershell")
         self.assertEqual(bash_result.returncode, 0, msg=bash_result.stderr)
         self.assertEqual(ps_result.returncode, 0, msg=ps_result.stderr)
         bash_generate = next(step for step in bash_ledger["steps"] if step["phase"] == "generate")
