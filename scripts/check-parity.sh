@@ -163,8 +163,11 @@ strict_files=(
   bootstrap/bootstrap.sh
   bootstrap/bootstrap.ps1
 )
-$AA_INTERNAL_ONLY && strict_files=()
 for f in "${strict_files[@]}"; do
+  # break rather than an emptied array: macOS ships bash 3.2, where
+  # expanding an empty array under `set -u` is an unbound-variable
+  # error rather than an empty list.
+  $AA_INTERNAL_ONLY && break
   if [ ! -f "$AC_ROOT/$f" ] || [ ! -f "$AA_ROOT/$f" ]; then
     fail "$f (missing on one side)"
     continue
@@ -217,8 +220,8 @@ strict_test_files=(
   # a file whose content is identical.
   tests/test_line_endings.py
 )
-$AA_INTERNAL_ONLY && strict_test_files=()
 for f in "${strict_test_files[@]}"; do
+  $AA_INTERNAL_ONLY && break
   if [ ! -f "$AC_ROOT/$f" ] || [ ! -f "$AA_ROOT/$f" ]; then
     fail "$f (missing on one side)"
     continue
@@ -334,8 +337,8 @@ by_design_files=(
   AGENTS.md
   user/settings.json
 )
-$AA_INTERNAL_ONLY && by_design_files=()
 for f in "${by_design_files[@]}"; do
+  $AA_INTERNAL_ONLY && break
   if [ ! -f "$AC_ROOT/$f" ] || [ ! -f "$AA_ROOT/$f" ]; then
     fail "$f (missing on one side; expected sanitized mirror)"
     continue
