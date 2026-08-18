@@ -11,6 +11,12 @@ import unittest
 import unittest.mock
 from pathlib import Path
 
+# tests/ is on sys.path under `unittest discover -s tests` but not under
+# `python -m unittest tests.<module>`, which validate.yml uses for the
+# Sentinel redaction smoke. Put it there before the sibling import.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _quiet_spawn  # noqa: E402,F401  installs a windowless spawn default on Windows
+
 
 ROOT = Path(__file__).resolve().parents[1]
 GUARD = ROOT / "scripts" / "guard.py"

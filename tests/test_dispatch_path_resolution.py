@@ -42,7 +42,14 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from functools import wraps
 from pathlib import Path
+
+# tests/ is on sys.path under `unittest discover -s tests` but not under
+# `python -m unittest tests.<module>`, which validate.yml uses for the
+# Sentinel redaction smoke. Put it there before the sibling import.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _quiet_spawn  # noqa: E402,F401  installs a windowless spawn default on Windows
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -52,7 +59,19 @@ DISPATCH_SH = SCRIPTS_DIR / "dispatch-codex.sh"
 
 
 BASH = shutil.which("bash")
-PS_SHELL = shutil.which("pwsh") or shutil.which("powershell")
+PS_SHELLS = [p for p in (shutil.which("powershell"), shutil.which("pwsh")) if p]
+PS_SHELL = PS_SHELLS[0] if PS_SHELLS else None
+
+
+def _for_each_powershell(test_method):
+    @wraps(test_method)
+    def wrapper(self):
+        for ps_shell in PS_SHELLS:
+            with self.subTest(edition=Path(ps_shell).stem):
+                self._ps_shell = ps_shell
+                test_method(self)
+
+    return wrapper
 
 
 def _temp_dir():
@@ -143,8 +162,9 @@ class _DispatchInvokerMixin:
 
     def _build_cmd(self, prompt_file: Path) -> list[str]:
         if self.SHELL_KIND == "powershell":
+            ps_shell = getattr(self, "_ps_shell", PS_SHELL)
             return [
-                PS_SHELL, "-NoProfile", "-ExecutionPolicy", "Bypass",
+                ps_shell, "-NoProfile", "-ExecutionPolicy", "Bypass",
                 "-File", str(DISPATCH_PS1),
                 "--prompt-file", str(prompt_file),
                 "--round", "1",
@@ -207,6 +227,33 @@ class _DispatchInvokerMixin:
 
 
 @unittest.skipUnless(
+    sys.platform.startswith("win"),
+    "Windows PowerShell availability is a Windows-only contract.",
+)
+class WindowsPowerShellAvailabilityTests(unittest.TestCase):
+    def test_installed_editions_include_windows_powershell_5(self) -> None:
+        self.assertIsNotNone(
+            shutil.which("powershell"),
+            "powershell.exe is missing from PATH on Windows; every supported "
+            "Windows environment provides it through System32.",
+        )
+        majors = set()
+        for ps_shell in PS_SHELLS:
+            with self.subTest(edition=Path(ps_shell).stem):
+                result = subprocess.run(
+                    [ps_shell, "-NoProfile", "-ExecutionPolicy", "Bypass",
+                     "-Command",
+                     "Write-Output $PSVersionTable.PSVersion.Major"],
+                    capture_output=True, text=True, check=True, timeout=30,
+                )
+                majors.add(int(result.stdout.strip()))
+        self.assertIn(
+            5, majors,
+            f"Windows PowerShell 5.1 was not exercised; saw majors {majors}",
+        )
+
+
+@unittest.skipUnless(
     PS_SHELL and sys.platform.startswith("win"),
     "Windows PATH-resolution tests target dispatch-codex.ps1 (Windows-only "
     "behavior: PathExt resolution + WindowsApps filtering + CreateProcess "
@@ -227,6 +274,7 @@ class WindowsPathResolutionTests(_DispatchInvokerMixin, unittest.TestCase):
 
     # --- npm/pnpm/yarn dual-file trap regression -----------------------------
 
+    @_for_each_powershell
     def test_npm_trap_dual_file_picks_cmd(self) -> None:
         """Regression: extensionless shim + codex.cmd in same dir; .cmd wins."""
         with _temp_dir() as td:
@@ -250,6 +298,7 @@ class WindowsPathResolutionTests(_DispatchInvokerMixin, unittest.TestCase):
 
     # --- single-file installs (winget / scoop / manual) ----------------------
 
+    @_for_each_powershell
     def test_single_cmd_install(self) -> None:
         """winget/scoop/manual install with only codex.cmd."""
         with _temp_dir() as td:
@@ -262,6 +311,7 @@ class WindowsPathResolutionTests(_DispatchInvokerMixin, unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(_read_variant(log_dir), "single-cmd")
 
+    @_for_each_powershell
     def test_single_exe_like_install(self) -> None:
         """winget/scoop produce codex.exe as a real PE; we approximate it with .cmd.
 
@@ -283,6 +333,7 @@ class WindowsPathResolutionTests(_DispatchInvokerMixin, unittest.TestCase):
 
     # --- multi-install PATH order (Round 1 Codex regression) ----------------
 
+    @_for_each_powershell
     def test_multiple_extension_installs_first_path_entry_wins(self) -> None:
         """Two codex.cmd entries in PATH; the FIRST PATH dir must win.
 
@@ -344,6 +395,7 @@ class WindowsPathResolutionTests(_DispatchInvokerMixin, unittest.TestCase):
 
     # --- WindowsApps filtering ----------------------------------------------
 
+    @_for_each_powershell
     def test_windowsapps_entry_filtered_when_real_install_present(self) -> None:
         """A `\\WindowsApps\\` codex.cmd is skipped in favor of a real bin dir.
 
@@ -398,6 +450,7 @@ class WindowsPathResolutionTests(_DispatchInvokerMixin, unittest.TestCase):
 
     # --- CODEX_BIN absolute-path override -----------------------------------
 
+    @_for_each_powershell
     def test_codex_bin_absolute_path_bypasses_path_lookup(self) -> None:
         """Explicit absolute path in CODEX_BIN runs verbatim, ignoring PATH.
 
@@ -437,6 +490,7 @@ class WindowsPathResolutionTests(_DispatchInvokerMixin, unittest.TestCase):
 
     # --- cmd-helper percent-expansion safety (Round 1 Codex regression) ----
 
+    @_for_each_powershell
     def test_state_dir_with_percent_in_path_dispatches_cleanly(self) -> None:
         """A state-dir path containing `%BAD%` must not cmd-env-expand.
 
@@ -490,6 +544,7 @@ class WindowsPathResolutionTests(_DispatchInvokerMixin, unittest.TestCase):
 
     # --- byte-fidelity through the resolved variant -------------------------
 
+    @_for_each_powershell
     def test_npm_trap_preserves_prompt_bytes(self) -> None:
         """Byte-parity invariant survives the resolver + cmd-helper path."""
         with _temp_dir() as td:
@@ -536,6 +591,7 @@ class LiveWindowsCodexResolverTest(unittest.TestCase):
     codex invocation), and orthogonal to the fixture tests.
     """
 
+    @_for_each_powershell
     def test_live_resolver_returns_runnable_codex_path(self) -> None:
         # Replicates the two-pass resolver in dispatch-codex.ps1 (the
         # `$candidates | Where-Object { $_.Extension } | Select-First`
@@ -558,7 +614,8 @@ class LiveWindowsCodexResolverTest(unittest.TestCase):
             "else { Write-Output '' }"
         )
         result = subprocess.run(
-            [PS_SHELL, "-NoProfile", "-Command", resolver_ps],
+            [self._ps_shell, "-NoProfile", "-ExecutionPolicy", "Bypass",
+             "-Command", resolver_ps],
             capture_output=True, text=True, check=True, timeout=30,
         )
         path = result.stdout.strip()
@@ -654,6 +711,7 @@ class WindowsChildSpawnRegressionTest(_DispatchInvokerMixin, unittest.TestCase):
     """
     SHELL_KIND = "powershell"
 
+    @_for_each_powershell
     def test_mock_codex_can_spawn_git_subprocess(self) -> None:
         with _temp_dir() as td:
             tmpdir = Path(td)

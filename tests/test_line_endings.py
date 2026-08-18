@@ -22,7 +22,14 @@ from __future__ import annotations
 
 import pathlib
 import subprocess
+import sys
 import unittest
+
+# tests/ is on sys.path under `unittest discover -s tests` but not under
+# `python -m unittest tests.<module>`, which validate.yml uses for the
+# Sentinel redaction smoke. Put it there before the sibling import.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import _quiet_spawn  # noqa: E402,F401  installs a windowless spawn default on Windows
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 

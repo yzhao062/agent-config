@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -25,10 +26,23 @@ import time
 import unittest
 from pathlib import Path
 
+# tests/ is on sys.path under `unittest discover -s tests` but not under
+# `python -m unittest tests.<module>`, which validate.yml uses for the
+# Sentinel redaction smoke. Put it there before the sibling import.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _quiet_spawn  # noqa: E402,F401  installs a windowless spawn default on Windows
+
 
 ROOT = Path(__file__).resolve().parents[1]
 BOOTSTRAP_SH = ROOT / "bootstrap" / "bootstrap.sh"
 BOOTSTRAP_PS1 = ROOT / "bootstrap" / "bootstrap.ps1"
+
+# The composed-artifact predicate requires a full 64-digit digest, so fixtures
+# need a real one. Earlier fixtures wrote `sha256=abc123`, which the loose
+# predicate accepted; they would have gone on passing while the product stopped
+# recognizing anything the composer actually writes. This is the SHA-256 of the
+# empty input, chosen because it is verifiable rather than invented.
+EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
 
 def _resolve_bash() -> str | None:
@@ -64,7 +78,34 @@ def _resolve_bash() -> str | None:
 
 
 BASH = _resolve_bash()
-POWERSHELL = shutil.which("pwsh") or shutil.which("powershell")
+
+# Every installed edition, stricter one first. Choosing a single edition is how
+# anywhere-agents#34 reached six green CI legs: windows-latest ships both, the
+# constant preferred pwsh, and the defect only reproduced under Windows
+# PowerShell 5.1. Restoring the defective quoting in a scratch copy leaves the
+# ledger suite 19/19 green under pwsh and failing five tests under 5.1, so the
+# contract was already written down and only the edition choice hid it.
+POWERSHELL_EDITIONS = [p for p in (shutil.which("powershell"), shutil.which("pwsh")) if p]
+POWERSHELL = POWERSHELL_EDITIONS[0] if POWERSHELL_EDITIONS else None
+
+
+def powershell_editions_or_fail(case: unittest.TestCase) -> list[str]:
+    """Return the editions to exercise, refusing to narrow silently.
+
+    `powershell` ships in System32 on every supported Windows, so its absence
+    there is a broken environment rather than a reason to pass. `pwsh` is a
+    separate install and may legitimately be missing.
+    """
+    if sys.platform.startswith("win"):
+        if not any(Path(p).stem.lower() == "powershell" for p in POWERSHELL_EDITIONS):
+            case.fail(
+                "Windows PowerShell is not on PATH. It ships in System32 on every "
+                "supported Windows, so this is a broken environment rather than a "
+                "skip, and skipping here is what let anywhere-agents#34 ship."
+            )
+    elif not POWERSHELL_EDITIONS:
+        raise unittest.SkipTest("no PowerShell edition available")
+    return POWERSHELL_EDITIONS
 
 
 _POSIX_SANDBOX_TOOLS = (
@@ -168,35 +209,94 @@ def _stripped_env(stub_dir: Path | None) -> dict[str, str]:
     return env
 
 
+def powershell_stub_dir(stub_dir: Path) -> Path:
+    """The PATH entry a PowerShell entrypoint should use.
+
+    Each entrypoint gets its own directory because the two cannot share one.
+    Git Bash needs an extensionless file, and PowerShell prefers an
+    extensionless file over a `.ps1` of the same name when both are present.
+    It then cannot run the shell script, falls back to ShellExecute, and the
+    user gets a "How do you want to open this file?" dialog. Keeping the
+    PowerShell stubs in a subdirectory of their own leaves each side with only
+    the form it can run.
+    """
+    return stub_dir / "ps"
+
+
 def _make_stub_git(stub_dir: Path, version_line: str | None) -> None:
     """Create a stub `git` on PATH that prints `version_line` for `git --version`.
 
     When `version_line` is None, no stub is created (PATH has no git).
+
+    Two forms are written: an extensionless shell script in `stub_dir` for Git
+    Bash, and a `.ps1` in `powershell_stub_dir(stub_dir)` for PowerShell.
+
+    `ls-files --error-unmatch -- <path>` answers from
+    `ANYWHERE_AGENTS_STUB_TRACKED`, a space-separated list of tracked paths.
+    An earlier stub exited 0 for every subcommand, so the .gitignore block read
+    every generated file as already tracked and skipped all three entries. The
+    tests around it would then have passed against a bootstrap that wrote
+    nothing.
     """
     if version_line is None:
         return
     stub_dir.mkdir(parents=True, exist_ok=True)
+    ls_files_sh = (
+        'if [ "$1" = "ls-files" ]; then\n'
+        '  for _t in ${ANYWHERE_AGENTS_STUB_TRACKED:-}; do\n'
+        '    if [ "$_t" = "$4" ]; then exit 0; fi\n'
+        '  done\n'
+        '  exit 1\n'
+        'fi\n'
+    )
+    # The path is read as the last argument rather than by index. `git ls-files
+    # --error-unmatch -- <path>` puts it at $4 for the shell stub, because sh
+    # passes `--` through, and at $args[2] for the PowerShell stub, because
+    # PowerShell consumes `--` as its own end-of-parameters marker. Taking the
+    # last argument is correct either way.
+    ls_files_ps1 = (
+        "if ($args[0] -eq 'ls-files') {\n"
+        "  $target = $args[$args.Count - 1]\n"
+        "  foreach ($t in (($env:ANYWHERE_AGENTS_STUB_TRACKED -split '\\s+') | Where-Object { $_ })) {\n"
+        "    if ($t -eq $target) { exit 0 }\n"
+        "  }\n"
+        "  exit 1\n"
+        "}\n"
+    )
     if os.name == "nt":
-        # Windows: ship both a .cmd shim (for cmd-style lookups) and a
-        # bash-targeted shell script (for `command -v git` inside Git Bash).
-        # Git Bash's command -v walks PATH for executables by name without
-        # extension preference, so a bare-name file with #!/bin/sh suffices.
-        cmd_path = stub_dir / "git.cmd"
-        cmd_path.write_text(
-            f"@echo off\r\nif \"%1\"==\"--version\" (\r\n  echo {version_line}\r\n  exit /b 0\r\n)\r\nexit /b 0\r\n",
+        # The PowerShell shim is a .ps1 and not a .cmd on purpose. PowerShell
+        # runs a .ps1 in-process, so no process is created and nothing can ask
+        # Windows for a console. A .cmd is run through cmd.exe, and a cmd.exe
+        # spawned by a shell whose own parent had no console gets a new console
+        # that is shown: the suite flashed a window per git call, and no
+        # creation flag on the Python side reached it. Measured against the real
+        # fixture across CREATE_NO_WINDOW, SW_HIDE, both together,
+        # CREATE_NEW_CONSOLE with SW_HIDE, and a runner holding its own hidden
+        # console; every one of them left cmd.exe owning a visible window.
+        # See anywhere-agents#38.
+        ps_dir = powershell_stub_dir(stub_dir)
+        ps_dir.mkdir(parents=True, exist_ok=True)
+        (ps_dir / "git.ps1").write_text(
+            f"if ($args[0] -eq '--version') {{ Write-Output '{version_line}'; exit 0 }}\n"
+            + ls_files_ps1
+            + "exit 0\n",
             encoding="ascii",
         )
         # Bash-style stub for the bootstrap.sh path on Windows (Git Bash).
         sh_path = stub_dir / "git"
         sh_path.write_text(
-            f"#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  printf '%s\\n' '{version_line}'\n  exit 0\nfi\nexit 0\n",
+            f"#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  printf '%s\\n' '{version_line}'\n  exit 0\nfi\n"
+            + ls_files_sh
+            + "exit 0\n",
             encoding="ascii",
         )
         sh_path.chmod(sh_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     else:
         sh_path = stub_dir / "git"
         sh_path.write_text(
-            f"#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  printf '%s\\n' '{version_line}'\n  exit 0\nfi\nexit 0\n",
+            f"#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  printf '%s\\n' '{version_line}'\n  exit 0\nfi\n"
+            + ls_files_sh
+            + "exit 0\n",
             encoding="ascii",
         )
         sh_path.chmod(sh_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
@@ -318,14 +418,16 @@ def _run_bootstrap_ps1_with_ledger(
         elif scenario != "fresh":
             raise ValueError(f"unknown scenario: {scenario}")
         env = os.environ.copy()
-        env["PATH"] = os.pathsep.join((str(stub_dir), env.get("PATH", "")))
+        env["PATH"] = os.pathsep.join(
+            (str(powershell_stub_dir(stub_dir)), env.get("PATH", "")))
         env.pop("AGENT_CONFIG_UPSTREAM", None)
         env.pop("AGENT_CONFIG_SKIP_GIT_PREFLIGHT", None)
         env["AGENT_CONFIG_PREFLIGHT_TEST"] = "1"
         if upstream is not None:
             env["AGENT_CONFIG_UPSTREAM"] = upstream
         result = subprocess.run(
-            [POWERSHELL, "-NoProfile", "-NonInteractive", "-File", str(BOOTSTRAP_PS1)],
+            [POWERSHELL, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+             "-File", str(BOOTSTRAP_PS1)],
             cwd=str(work),
             env=env,
             capture_output=True,
@@ -398,13 +500,14 @@ def _prepare_full_bootstrap_fixture(
 def _run_full_bootstrap_with_ledger(
     entrypoint: str,
     *,
+    shell: str | None = None,
     composer_rc: int | None = 0,
     generator_rc: int | None = 0,
     yaml_available: bool = True,
 ) -> tuple[subprocess.CompletedProcess, dict, dict[str, bytes]]:
     if entrypoint == "bash" and not BASH:
         raise unittest.SkipTest("bash not available (Git Bash on Windows or system bash on POSIX)")
-    if entrypoint == "powershell" and not POWERSHELL:
+    if entrypoint == "powershell" and not shell and not POWERSHELL:
         raise unittest.SkipTest("pwsh/powershell not available")
     tmp = Path(tempfile.mkdtemp(prefix=f"aa-generate-ledger-{entrypoint}-"))
     try:
@@ -423,7 +526,8 @@ def _run_full_bootstrap_with_ledger(
             command = [BASH, str(BOOTSTRAP_SH)]
         else:
             env = os.environ.copy()
-            env["PATH"] = os.pathsep.join((str(stub_dir), env.get("PATH", "")))
+            env["PATH"] = os.pathsep.join(
+                (str(powershell_stub_dir(stub_dir)), env.get("PATH", "")))
             python_command = sys.executable
             wrapper = tmp / "invoke-bootstrap.ps1"
             bootstrap_literal = str(BOOTSTRAP_PS1).replace("'", "''")
@@ -434,7 +538,8 @@ def _run_full_bootstrap_with_ledger(
                 "exit 0\n",
                 encoding="utf-8",
             )
-            command = [POWERSHELL, "-NoProfile", "-NonInteractive", "-File", str(wrapper)]
+            command = [shell or POWERSHELL, "-NoProfile", "-NonInteractive",
+                       "-ExecutionPolicy", "Bypass", "-File", str(wrapper)]
         env.pop("AGENT_CONFIG_PREFLIGHT_TEST", None)
         env["AGENT_CONFIG_UPSTREAM"] = "example/repo"
         env["ANYWHERE_AGENTS_PYTHON"] = python_command
@@ -445,6 +550,12 @@ def _run_full_bootstrap_with_ledger(
             env["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
         env["HOME"] = str(home)
         env["USERPROFILE"] = str(home)
+        # Point the user-level config layer at the fixture home. Without
+        # this the four-layer resolver reads the developer's real
+        # %APPDATA%\anywhere-agents\config.yaml and the test stops being
+        # hermetic: the answer changes with who runs it.
+        env["APPDATA"] = str(home / "AppData" / "Roaming")
+        env["XDG_CONFIG_HOME"] = str(home / ".config")
         result = subprocess.run(
             command,
             cwd=str(work),
@@ -472,13 +583,28 @@ def _run_full_bootstrap_with_ledger(
 def _run_no_python_bootstrap_with_ledger(
     entrypoint: str,
     *,
+    shell: str | None = None,
     config_text: str | None = None,
     local_config_text: str | None = None,
+    user_config_text: str | None = None,
+    existing_agents_text: str | None = None,
+    existing_gitignore: str | None = None,
+    tracked: tuple[str, ...] = (),
+    env_extra: dict | None = None,
+    capture_into: dict | None = None,
 ) -> tuple[subprocess.CompletedProcess, dict, str, bytes, bytes]:
-    """Run a full bootstrap where every discoverable Python wrapper is broken."""
+    """Run a full bootstrap where every discoverable Python wrapper is broken.
+
+    `tracked` names the paths the stub git reports as already in the index.
+    `capture_into` is filled in place, keyed by repo-relative path, with each
+    file's bytes or None when it does not exist. The fixture directory is
+    removed on the way out, so anything a caller wants to assert on has to be
+    read before then; the return tuple carries the files every caller needs and
+    this covers the rest without changing its shape.
+    """
     if entrypoint == "bash" and not BASH:
         raise unittest.SkipTest("bash not available (Git Bash on Windows or system bash on POSIX)")
-    if entrypoint == "powershell" and not POWERSHELL:
+    if entrypoint == "powershell" and not shell and not POWERSHELL:
         raise unittest.SkipTest("pwsh/powershell not available")
     tmp = Path(tempfile.mkdtemp(prefix=f"aa-no-python-ledger-{entrypoint}-"))
     try:
@@ -491,6 +617,22 @@ def _run_no_python_bootstrap_with_ledger(
             (work / "agent-config.yaml").write_text(config_text, encoding="utf-8")
         if local_config_text is not None:
             (work / "agent-config.local.yaml").write_text(local_config_text, encoding="utf-8")
+        if user_config_text is not None:
+            # Under the fixture home, matching the APPDATA / XDG_CONFIG_HOME
+            # values the env block below sets.
+            user_config = home / "AppData" / "Roaming" / "anywhere-agents" / "config.yaml"
+            user_config.parent.mkdir(parents=True, exist_ok=True)
+            user_config.write_text(user_config_text, encoding="utf-8")
+            posix_config = home / ".config" / "anywhere-agents" / "config.yaml"
+            posix_config.parent.mkdir(parents=True, exist_ok=True)
+            posix_config.write_text(user_config_text, encoding="utf-8")
+        if existing_agents_text is not None:
+            # write_bytes rather than write_text: the caller compares the file
+            # byte for byte afterwards, and text mode would rewrite the line
+            # endings on Windows and make that comparison meaningless.
+            (work / "AGENTS.md").write_bytes(existing_agents_text.encode("utf-8"))
+        if existing_gitignore is not None:
+            (work / ".gitignore").write_bytes(existing_gitignore.encode("utf-8"))
         broken_wrapper = "#!/bin/sh\nexit 127\n"
         hooks = home / ".claude" / "hooks"
         hooks.mkdir(parents=True)
@@ -502,7 +644,14 @@ def _run_no_python_bootstrap_with_ledger(
         path_wrapper = stub_dir / "python"
         _write_executable(path_wrapper, broken_wrapper)
         if os.name == "nt":
-            (stub_dir / "python.cmd").write_text("@echo off\r\nexit /b 127\r\n", encoding="ascii")
+            # .ps1, not .cmd: PowerShell runs it in-process, so the interpreter
+            # probe creates no process and cannot flash a console. It goes in
+            # the PowerShell-only directory so PowerShell never sees the
+            # extensionless shell script beside it. See the note in
+            # _make_stub_git.
+            ps_dir = powershell_stub_dir(stub_dir)
+            ps_dir.mkdir(parents=True, exist_ok=True)
+            (ps_dir / "python.ps1").write_text("exit 127\n", encoding="ascii")
         _write_executable(stub_dir / "curl", "#!/bin/sh\nexit 0\n")
 
         if entrypoint == "bash":
@@ -511,8 +660,13 @@ def _run_no_python_bootstrap_with_ledger(
             command = [BASH, str(BOOTSTRAP_SH)]
         else:
             env = os.environ.copy()
-            env["PATH"] = str(stub_dir)
-            override = str(path_wrapper)
+            env["PATH"] = str(powershell_stub_dir(stub_dir))
+            # Point the override at the .ps1 too. Handing PowerShell the
+            # extensionless shell script makes CreateProcess fail on a file
+            # that is not a PE image, and the fallback is ShellExecute, which
+            # opens the "How do you want to open this file?" dialog and blocks
+            # the run until it is dismissed.
+            override = str(powershell_stub_dir(stub_dir) / "python.ps1")
             wrapper = tmp / "invoke-bootstrap.ps1"
             bootstrap_literal = str(BOOTSTRAP_PS1).replace("'", "''")
             wrapper.write_text(
@@ -522,7 +676,8 @@ def _run_no_python_bootstrap_with_ledger(
                 "exit 0\n",
                 encoding="utf-8",
             )
-            command = [POWERSHELL, "-NoProfile", "-NonInteractive", "-File", str(wrapper)]
+            command = [shell or POWERSHELL, "-NoProfile", "-NonInteractive",
+                       "-ExecutionPolicy", "Bypass", "-File", str(wrapper)]
 
         env.pop("AGENT_CONFIG_PREFLIGHT_TEST", None)
         env.pop("CONDA_PREFIX", None)
@@ -532,6 +687,15 @@ def _run_no_python_bootstrap_with_ledger(
         env["ANYWHERE_AGENTS_CODEX_AUTO_UPDATE"] = "off"
         env["HOME"] = str(home)
         env["USERPROFILE"] = str(home)
+        # Point the user-level config layer at the fixture home. Without
+        # this the four-layer resolver reads the developer's real
+        # %APPDATA%\anywhere-agents\config.yaml and the test stops being
+        # hermetic: the answer changes with who runs it.
+        env["APPDATA"] = str(home / "AppData" / "Roaming")
+        env["XDG_CONFIG_HOME"] = str(home / ".config")
+        env["ANYWHERE_AGENTS_STUB_TRACKED"] = " ".join(tracked)
+        if env_extra:
+            env.update(env_extra)
         result = subprocess.run(
             command,
             cwd=str(work),
@@ -540,6 +704,10 @@ def _run_no_python_bootstrap_with_ledger(
             text=True,
             timeout=30,
         )
+        if capture_into is not None:
+            for relative in list(capture_into):
+                captured = work / relative
+                capture_into[relative] = captured.read_bytes() if captured.is_file() else None
         ledger_path = work / ".agent-config" / "last-run.json"
         if not ledger_path.is_file():
             raise AssertionError(
@@ -555,11 +723,12 @@ def _run_no_python_bootstrap_with_ledger(
 
 def _run_atomic_helper_deployment(
     entrypoint: str,
+    shell: str | None = None,
 ) -> tuple[subprocess.CompletedProcess, bytes, bytes, bytes, bool]:
     """Pause a real helper copy mid-write and read the live destination."""
     if entrypoint == "bash" and not BASH:
         raise unittest.SkipTest("bash not available (Git Bash on Windows or system bash on POSIX)")
-    if entrypoint == "powershell" and not POWERSHELL:
+    if entrypoint == "powershell" and not shell and not POWERSHELL:
         raise unittest.SkipTest("pwsh/powershell not available")
     tmp = Path(tempfile.mkdtemp(prefix=f"aa-atomic-helper-{entrypoint}-"))
     try:
@@ -619,7 +788,8 @@ def _run_atomic_helper_deployment(
             command = [BASH, str(BOOTSTRAP_SH)]
         else:
             env = os.environ.copy()
-            env["PATH"] = os.pathsep.join((str(stub_dir), env.get("PATH", "")))
+            env["PATH"] = os.pathsep.join(
+                (str(powershell_stub_dir(stub_dir)), env.get("PATH", "")))
             env["ATOMIC_COPY_SIGNAL"] = str(signal)
             bootstrap_literal = str(BOOTSTRAP_PS1).replace("'", "''")
             wrapper = tmp / "invoke-bootstrap.ps1"
@@ -649,7 +819,8 @@ def _run_atomic_helper_deployment(
                 "exit 0\n",
                 encoding="utf-8",
             )
-            command = [POWERSHELL, "-NoProfile", "-NonInteractive", "-File", str(wrapper)]
+            command = [shell or POWERSHELL, "-NoProfile", "-NonInteractive",
+                       "-ExecutionPolicy", "Bypass", "-File", str(wrapper)]
 
         env.pop("AGENT_CONFIG_PREFLIGHT_TEST", None)
         env["AGENT_CONFIG_UPSTREAM"] = "example/repo"
@@ -658,6 +829,12 @@ def _run_atomic_helper_deployment(
         env["PYTHONPATH"] = str(python_path)
         env["HOME"] = str(home)
         env["USERPROFILE"] = str(home)
+        # Point the user-level config layer at the fixture home. Without
+        # this the four-layer resolver reads the developer's real
+        # %APPDATA%\anywhere-agents\config.yaml and the test stops being
+        # hermetic: the answer changes with who runs it.
+        env["APPDATA"] = str(home / "AppData" / "Roaming")
+        env["XDG_CONFIG_HOME"] = str(home / ".config")
         process = subprocess.Popen(
             command,
             cwd=str(work),
@@ -710,6 +887,12 @@ def _run_bash_self_update() -> tuple[subprocess.CompletedProcess, bytes, bytes, 
         env["PYTHONPATH"] = str(python_path)
         env["HOME"] = str(home)
         env["USERPROFILE"] = str(home)
+        # Point the user-level config layer at the fixture home. Without
+        # this the four-layer resolver reads the developer's real
+        # %APPDATA%\anywhere-agents\config.yaml and the test stops being
+        # hermetic: the answer changes with who runs it.
+        env["APPDATA"] = str(home / "AppData" / "Roaming")
+        env["XDG_CONFIG_HOME"] = str(home / ".config")
         result = subprocess.run(
             [BASH, str(deployed)],
             cwd=str(work),
@@ -789,7 +972,11 @@ class GitPreflightBashTests(unittest.TestCase):
             sh_path.write_text("#!/bin/sh\nexit 0\n", encoding="ascii")
             sh_path.chmod(sh_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
             if os.name == "nt":
-                (stub_dir / "git.cmd").write_text("@echo off\r\nexit /b 0\r\n", encoding="ascii")
+                # .ps1 for the same reason as the other stubs: a .cmd would be
+                # run through cmd.exe and show a console window.
+                ps_dir = powershell_stub_dir(stub_dir)
+                ps_dir.mkdir(parents=True, exist_ok=True)
+                (ps_dir / "git.ps1").write_text("exit 0\n", encoding="ascii")
             work = tmp / "work"
             work.mkdir()
             env = _stripped_env(stub_dir)
@@ -862,6 +1049,10 @@ class GitPreflightBashTests(unittest.TestCase):
 class _BootstrapLedgerContract:
     entrypoint = ""
     emitted_by = ""
+    # Which PowerShell to drive. None means the default pick; the generated
+    # subclasses below set one edition each, so a defect that reproduces
+    # under only one of them cannot hide behind the other.
+    shell: str | None = None
 
     def _run_preflight_ledger(
         self,
@@ -988,6 +1179,7 @@ class _BootstrapLedgerContract:
     def test_no_python_fallback_is_marked_and_incomplete_for_passive_pack(self):
         result, ledger, _, agents_bytes, upstream_bytes = _run_no_python_bootstrap_with_ledger(
             self.entrypoint,
+            shell=self.shell,
             config_text="rule_packs:\n  - name: agent-style\n",
         )
         self.assertEqual(result.returncode, 0, msg=result.stderr)
@@ -1011,6 +1203,7 @@ class _BootstrapLedgerContract:
         # snapshot, and flagging it turned every platform in CI red.
         result, ledger, artifacts = _run_full_bootstrap_with_ledger(
             self.entrypoint,
+            shell=self.shell,
             composer_rc=None,
         )
         self.assertEqual(result.returncode, 0, msg=result.stderr)
@@ -1028,6 +1221,7 @@ class _BootstrapLedgerContract:
         # sufficient and reported completed:false here.
         result, ledger, _, agents_bytes, upstream_bytes = _run_no_python_bootstrap_with_ledger(
             self.entrypoint,
+            shell=self.shell,
             config_text="rule_packs:\n  - name: agent-style\n",
             local_config_text="rule_packs: []\n",
         )
@@ -1042,6 +1236,7 @@ class _BootstrapLedgerContract:
         # Without this the fix could pass by always returning false.
         result, ledger, _, agents_bytes, upstream_bytes = _run_no_python_bootstrap_with_ledger(
             self.entrypoint,
+            shell=self.shell,
             config_text="rule_packs: []\n",
             local_config_text="rule_packs:\n  - name: agent-style\n",
         )
@@ -1049,6 +1244,418 @@ class _BootstrapLedgerContract:
         self.assertNotEqual(agents_bytes, upstream_bytes)
         self.assertIn(b"rule-pack composition skipped", agents_bytes)
         self.assertIs(ledger["completed"], False)
+
+    def test_zero_indent_selection_counts_as_configured(self):
+        # A YAML block sequence may sit at the same indentation as its key, and
+        # that is what PyYAML's safe_dump emits. anywhere-agents writes
+        # agent-config.yaml with safe_dump, so this is the shape real consumer
+        # repos carry; every other test here uses an indented list, which is
+        # the shape none of them have. The no-Python pre-parser required the
+        # indentation and so read a configured consumer as an explicit
+        # `rule_packs: []` opt-out. A degraded run then wrote the bare upstream
+        # file with no marker and reported completed:true, which is the one
+        # combination that leaves nothing for anyone to notice.
+        result, ledger, _, agents_bytes, upstream_bytes = _run_no_python_bootstrap_with_ledger(
+            self.entrypoint,
+            shell=self.shell,
+            config_text="rule_packs:\n- name: agent-style\n  source:\n    url: https://example.invalid\n",
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn(b"rule-pack composition skipped", agents_bytes)
+        self.assertNotEqual(agents_bytes, upstream_bytes)
+        self.assertIs(ledger["completed"], False)
+
+    def test_zero_indent_empty_opt_out_is_still_an_opt_out(self):
+        # The mirror: fixing the indentation assumption must not turn the
+        # explicit opt-out into a configured selection.
+        result, ledger, _, agents_bytes, upstream_bytes = _run_no_python_bootstrap_with_ledger(
+            self.entrypoint,
+            shell=self.shell,
+            config_text="rule_packs: []\nother: 1\n",
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertEqual(agents_bytes, upstream_bytes)
+        self.assertNotIn(b"rule-pack composition skipped", agents_bytes)
+        self.assertIs(ledger["completed"], True)
+
+    def test_canonical_packs_wins_over_the_legacy_alias(self):
+        # The earlier version of the test above used `rule_packs: []` beside a
+        # nonempty `packs:` and expected the alias to win. The resolver prefers
+        # the canonical key within one file, so that fixture is a configured
+        # consumer and a run that cannot compose must preserve its artifact
+        # rather than replace it.
+        result, ledger, _, agents_bytes, upstream_bytes = _run_no_python_bootstrap_with_ledger(
+            self.entrypoint,
+            shell=self.shell,
+            config_text="rule_packs: []\npacks:\n- name: agent-style\n",
+            existing_agents_text=self.COMPOSED_AGENTS,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertEqual(agents_bytes, self.COMPOSED_AGENTS.encode("utf-8"))
+        self.assertNotEqual(agents_bytes, upstream_bytes)
+        self.assertIs(ledger["completed"], False)
+
+    def test_canonical_empty_list_clears_a_legacy_selection(self):
+        # The inverse. A canonical opt-out beside a legacy selection is an
+        # opt-out, and the composed leftover must go.
+        result, _, _, agents_bytes, upstream_bytes = _run_no_python_bootstrap_with_ledger(
+            self.entrypoint,
+            shell=self.shell,
+            config_text="rule_packs:\n- name: agent-style\npacks: []\n",
+            existing_agents_text=self.COMPOSED_AGENTS,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertEqual(agents_bytes, upstream_bytes)
+
+    def test_user_level_opt_out_clears_the_default_selection(self):
+        # The layer that had no representation at all before. A user-level
+        # `packs: []` clears the seeded default, so a composed leftover is not
+        # preserved.
+        result, _, _, agents_bytes, upstream_bytes = _run_no_python_bootstrap_with_ledger(
+            self.entrypoint,
+            shell=self.shell,
+            user_config_text="packs: []\n",
+            existing_agents_text=self.COMPOSED_AGENTS,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertEqual(agents_bytes, upstream_bytes)
+
+    def test_env_overlay_restores_a_cleared_selection(self):
+        # The overlay is additive and applies after the file layers, so it can
+        # turn a cleared selection back on. Reading only the legacy env name
+        # meant a canonical overlay deleted the pack block it had just asked
+        # for.
+        result, _, _, agents_bytes, upstream_bytes = _run_no_python_bootstrap_with_ledger(
+            self.entrypoint,
+            shell=self.shell,
+            config_text="rule_packs: []\n",
+            env_extra={"AGENT_CONFIG_PACKS": "agent-style"},
+            existing_agents_text=self.COMPOSED_AGENTS,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertEqual(agents_bytes, self.COMPOSED_AGENTS.encode("utf-8"))
+        self.assertNotEqual(agents_bytes, upstream_bytes)
+
+    def test_env_overlay_of_only_subtractions_adds_nothing(self):
+        # A value made only of `-name` entries removes; it must not read as a
+        # selection that revives a cleared one.
+        result, _, _, agents_bytes, upstream_bytes = _run_no_python_bootstrap_with_ledger(
+            self.entrypoint,
+            shell=self.shell,
+            config_text="packs: []\n",
+            env_extra={"AGENT_CONFIG_PACKS": "-agent-style"},
+            existing_agents_text=self.COMPOSED_AGENTS,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertEqual(agents_bytes, upstream_bytes)
+
+    def test_a_multiline_null_still_clears(self):
+        # The conservative indented-node rule read `packs:\n  null` as a
+        # selection, so the opt-out stopped working the moment it was written
+        # on its own line. Preserving is the safe direction, but an opt-out
+        # that silently does nothing is still a defect.
+        result, _, _, agents_bytes, upstream_bytes = _run_no_python_bootstrap_with_ledger(
+            self.entrypoint,
+            shell=self.shell,
+            config_text="packs:\n  null\n",
+            existing_agents_text=self.COMPOSED_AGENTS,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertEqual(agents_bytes, upstream_bytes)
+
+    # A later layer that selects, in a spelling the scanner now reads. Each has
+    # to override the tracked clear on its own, without the uncertainty valve.
+    READABLE_KEY_SPELLINGS = (
+        ("quoted key", '"packs": [agent-style]\n'),
+        ("space before the colon", "packs : [agent-style]\n"),
+        ("single-quoted key", "'packs': [agent-style]\n"),
+    )
+
+    def test_a_later_layer_in_another_key_spelling_selects(self):
+        # Valid YAML the key match did not cover. All three answered `none`
+        # here and select agent-style in the resolver, and after a tracked
+        # clear that answer deleted the block the later layer had just asked
+        # for. Reading the spelling is what makes this a selection rather than
+        # a guess: the first repair used the later file's length as a stand-in
+        # for "unreadable", which preserved these but also overrode opt-outs.
+        for label, local_text in self.READABLE_KEY_SPELLINGS:
+            with self.subTest(spelling=label):
+                result, _, _, agents_bytes, upstream_bytes = _run_no_python_bootstrap_with_ledger(
+                    self.entrypoint,
+                    shell=self.shell,
+                    config_text="packs: []\n",
+                    local_config_text=local_text,
+                    existing_agents_text=self.COMPOSED_AGENTS,
+                )
+                self.assertEqual(result.returncode, 0, msg=result.stderr)
+                self.assertEqual(agents_bytes, self.COMPOSED_AGENTS.encode("utf-8"))
+                self.assertNotEqual(agents_bytes, upstream_bytes)
+
+    # A later layer that says nothing about packs. The clear has to stand.
+    LAYERS_THAT_SAY_NOTHING = (
+        ("only comments", "# machine-local overrides go here\n\n  # nothing yet\n"),
+        ("only unrelated keys", "verbose: true\nother:\n- name: x\n"),
+        ("an explicit clear in another spelling", '"packs": []\n'),
+        ("a spaced clear", "packs : []\n"),
+        ("whitespace only", "   \n\t\n"),
+    )
+
+    def test_a_later_layer_that_says_nothing_leaves_the_clear_standing(self):
+        # The half the first repair got wrong. Treating any later file with
+        # bytes in it as uncertainty meant an opt-out stopped taking effect as
+        # soon as the project had a local file at all, which is a state the
+        # resolver never produces.
+        for label, local_text in self.LAYERS_THAT_SAY_NOTHING:
+            with self.subTest(layer=label):
+                result, _, _, agents_bytes, upstream_bytes = _run_no_python_bootstrap_with_ledger(
+                    self.entrypoint,
+                    shell=self.shell,
+                    config_text="packs: []\n",
+                    local_config_text=local_text,
+                    existing_agents_text=self.COMPOSED_AGENTS,
+                )
+                self.assertEqual(result.returncode, 0, msg=result.stderr)
+                self.assertEqual(agents_bytes, upstream_bytes)
+
+    # Shapes the scanner reads as no key while YAML reads a selection. Each has
+    # to reach the valve and preserve.
+    LAYERS_THE_SCANNER_CANNOT_READ = (
+        # A root-level flow mapping: a selection to YAML, and a line whose head
+        # is not a name to this scanner.
+        ("a flow mapping at the root", "{packs: [agent-style]}\n"),
+        # A whole document written one indent in. YAML reads a mapping; the
+        # scanner reads a nested key. Treating the indentation as a
+        # continuation of the line above assumed there was a line above.
+        ("an indented document", "  packs: [agent-style]\n"),
+    )
+
+    def test_a_later_layer_this_scanner_cannot_read_preserves(self):
+        # What the valve is actually for.
+        for label, local_text in self.LAYERS_THE_SCANNER_CANNOT_READ:
+            with self.subTest(layer=label):
+                result, _, _, agents_bytes, upstream_bytes = _run_no_python_bootstrap_with_ledger(
+                    self.entrypoint,
+                    shell=self.shell,
+                    config_text="packs: []\n",
+                    local_config_text=local_text,
+                    existing_agents_text=self.COMPOSED_AGENTS,
+                )
+                self.assertEqual(result.returncode, 0, msg=result.stderr)
+                self.assertEqual(agents_bytes, self.COMPOSED_AGENTS.encode("utf-8"))
+                self.assertNotEqual(agents_bytes, upstream_bytes)
+
+    def test_an_absent_later_layer_leaves_the_clear_standing(self):
+        # The other half of the rule above. Uncertainty needs a file to be
+        # uncertain about; with none, the opt-out still takes effect.
+        result, _, _, agents_bytes, upstream_bytes = _run_no_python_bootstrap_with_ledger(
+            self.entrypoint,
+            shell=self.shell,
+            config_text="packs: []\n",
+            existing_agents_text=self.COMPOSED_AGENTS,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertEqual(agents_bytes, upstream_bytes)
+
+    INVALID_OVERLAY_TOKENS = ("-", "-bad/name", "-bad:name", "-bad@ref")
+
+    def test_an_invalid_overlay_preserves_rather_than_deletes(self):
+        # config.parse_env_var rejects each of these, so with Python present
+        # the run fails and the artifact is untouched. Read as plain
+        # subtractions, they cleared the selection and deleted it instead.
+        for token in self.INVALID_OVERLAY_TOKENS:
+            with self.subTest(token=token):
+                result, _, _, agents_bytes, upstream_bytes = _run_no_python_bootstrap_with_ledger(
+                    self.entrypoint,
+                    shell=self.shell,
+                    config_text="packs: []\n",
+                    env_extra={"AGENT_CONFIG_PACKS": token},
+                    existing_agents_text=self.COMPOSED_AGENTS,
+                )
+                self.assertEqual(result.returncode, 0, msg=result.stderr)
+                self.assertEqual(agents_bytes, self.COMPOSED_AGENTS.encode("utf-8"))
+                self.assertNotEqual(agents_bytes, upstream_bytes)
+
+    def test_a_cancelling_overlay_preserves_rather_than_deletes(self):
+        # Recorded gap 2. The gate answers "is anything selected", not "which
+        # packs", so an overlay whose additions and subtractions cancel reads as
+        # one addition here and as no selection in the resolver. This pins the
+        # direction: the wrong answer keeps a file the resolver would replace,
+        # and the reverse is what this release exists to stop.
+        result, _, _, agents_bytes, upstream_bytes = _run_no_python_bootstrap_with_ledger(
+            self.entrypoint,
+            shell=self.shell,
+            config_text="packs: []\n",
+            env_extra={"AGENT_CONFIG_PACKS": "agent-style,-agent-style"},
+            existing_agents_text=self.COMPOSED_AGENTS,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertEqual(agents_bytes, self.COMPOSED_AGENTS.encode("utf-8"))
+
+    def test_a_selection_of_another_pack_preserves_the_old_marker(self):
+        # Recorded gap 3. Marker names are never compared with selected names,
+        # so a cleared base plus a project-local selection of some other pack
+        # keeps a composed file carrying only the old pack's block. Stale
+        # content rather than none, and the next run with Python recomposes it.
+        result, _, _, agents_bytes, upstream_bytes = _run_no_python_bootstrap_with_ledger(
+            self.entrypoint,
+            shell=self.shell,
+            config_text="packs: []\n",
+            local_config_text="packs:\n- name: aa-core-skills\n",
+            existing_agents_text=self.COMPOSED_AGENTS,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertEqual(agents_bytes, self.COMPOSED_AGENTS.encode("utf-8"))
+        self.assertNotEqual(agents_bytes, upstream_bytes)
+
+    def test_an_indented_flow_sequence_is_a_selection(self):
+        # The end-to-end half of the table case. Both scanners skipped the
+        # indented node and answered `empty`, the explicit opt-out, so the run
+        # replaced a composed AGENTS.md with the bare upstream copy and
+        # recorded `completed: true`. Measured under all three entry points.
+        result, _, _, agents_bytes, upstream_bytes = _run_no_python_bootstrap_with_ledger(
+            self.entrypoint,
+            shell=self.shell,
+            config_text="packs:\n  [agent-style]\n",
+            existing_agents_text=self.COMPOSED_AGENTS,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertEqual(agents_bytes, self.COMPOSED_AGENTS.encode("utf-8"))
+        self.assertNotEqual(agents_bytes, upstream_bytes)
+
+    TIP = "ships with agent-style writing rules enabled by default"
+
+    def test_the_skipped_packs_tip_fires_when_nothing_mentions_packs(self):
+        # The control for the two cases below. Without it they pass for a
+        # consumer who never sees the tip at all.
+        result, _, _, _, _ = _run_no_python_bootstrap_with_ledger(
+            self.entrypoint, shell=self.shell,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn(self.TIP, result.stderr)
+
+    def test_a_user_level_mention_silences_the_tip(self):
+        # The tip tells the operator packs were skipped and offers `rule_packs:
+        # []` to silence it. Told that to a consumer who has a user-level
+        # selection, it is wrong twice over.
+        result, _, _, _, _ = _run_no_python_bootstrap_with_ledger(
+            self.entrypoint,
+            shell=self.shell,
+            user_config_text="packs:\n- name: agent-style\n",
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertNotIn(self.TIP, result.stderr)
+
+    def test_the_canonical_env_name_silences_the_tip(self):
+        # The awareness check read only the deprecated env name, so a consumer
+        # on the documented one was told packs were never asked for.
+        result, _, _, _, _ = _run_no_python_bootstrap_with_ledger(
+            self.entrypoint,
+            shell=self.shell,
+            env_extra={"AGENT_CONFIG_PACKS": "agent-style"},
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertNotIn(self.TIP, result.stderr)
+
+    COMPOSED_AGENTS = (
+        "# Composed AGENTS.md\n"
+        "<!-- rule-pack:agent-style:begin version=v0.4.2 sha256=" + EMPTY_SHA256 + " -->\n"
+        "RULE-01 through RULE-I live here.\n"
+        "<!-- rule-pack:agent-style:end -->\n"
+        "trailing upstream content\n"
+    )
+
+    def test_composed_agents_md_survives_a_run_that_cannot_compose(self):
+        # The damage this guards against: a run that cannot compose used to
+        # replace a composed AGENTS.md with the verbatim upstream copy, which
+        # deletes every pack block. Where the file is tracked, that surfaces as
+        # a working-tree deletion waiting to be committed; two consumer repos
+        # carried a 473-line one. The predicate reads the artifact rather than
+        # the configuration, so it holds even when the configuration is misread.
+        result, ledger, _, agents_bytes, upstream_bytes = _run_no_python_bootstrap_with_ledger(
+            self.entrypoint,
+            shell=self.shell,
+            config_text="rule_packs:\n- name: agent-style\n",
+            existing_agents_text=self.COMPOSED_AGENTS,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertEqual(agents_bytes, self.COMPOSED_AGENTS.encode("utf-8"))
+        self.assertNotEqual(agents_bytes, upstream_bytes)
+        self.assertNotIn(b"rule-pack composition skipped", agents_bytes)
+        compose = self._phase(ledger, "compose")
+        self.assertEqual(compose["status"], "skipped")
+        self.assertIn("existing composed AGENTS.md preserved", compose["reason"])
+        self.assertIs(ledger["completed"], False)
+        # Preserving quietly would be its own failure: the file is now as stale
+        # as the last successful composition and nothing else says so.
+        self.assertIn("left it untouched", result.stderr)
+
+    def test_opt_out_replaces_a_composed_agents_md(self):
+        # Preservation keyed on the artifact alone, so a consumer who had packs,
+        # composed once, then set `rule_packs: []` kept the composed file for
+        # good: every later run saw the marker and preserved, and the opt-out
+        # never took effect. Gate preservation on the configuration too. Here
+        # the operator has said they want no packs, so the composed leftover is
+        # exactly what should go.
+        result, ledger, _, agents_bytes, upstream_bytes = _run_no_python_bootstrap_with_ledger(
+            self.entrypoint,
+            shell=self.shell,
+            config_text="rule_packs: []\n",
+            existing_agents_text=self.COMPOSED_AGENTS,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertEqual(agents_bytes, upstream_bytes)
+        self.assertNotIn(b"rule-pack:agent-style:begin", agents_bytes)
+        self.assertNotIn(b"rule-pack composition skipped", agents_bytes)
+        compose = self._phase(ledger, "compose")
+        self.assertNotIn("preserved", compose["reason"])
+        self.assertIs(ledger["completed"], True)
+
+    def test_local_layer_opt_out_replaces_a_composed_agents_md(self):
+        # The same override reached through the layer that wins. A tracked
+        # selection with a machine-local empty list resolves to no packs, so the
+        # preservation gate has to read the resolved answer rather than the
+        # tracked file it happens to find first.
+        result, _, _, agents_bytes, upstream_bytes = _run_no_python_bootstrap_with_ledger(
+            self.entrypoint,
+            shell=self.shell,
+            config_text="rule_packs:\n- name: agent-style\n",
+            local_config_text="rule_packs: []\n",
+            existing_agents_text=self.COMPOSED_AGENTS,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertEqual(agents_bytes, upstream_bytes)
+
+    def test_uncomposed_agents_md_is_still_replaced(self):
+        # The mirror. Only a composed artifact is protected; an ordinary file
+        # must still be refreshed from upstream, or the fallback path would
+        # never run again once any AGENTS.md existed.
+        result, ledger, _, agents_bytes, _ = _run_no_python_bootstrap_with_ledger(
+            self.entrypoint,
+            shell=self.shell,
+            config_text="rule_packs:\n- name: agent-style\n",
+            existing_agents_text="# hand-written, no pack blocks\n",
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn(b"rule-pack composition skipped", agents_bytes)
+        compose = self._phase(ledger, "compose")
+        self.assertNotIn("preserved", compose["reason"])
+        self.assertIs(ledger["completed"], False)
+
+    def test_skip_marker_alone_does_not_count_as_composed(self):
+        # A file carrying only the skipped-composition marker is the degraded
+        # artifact, not a composed one. Protecting it would freeze a consumer
+        # on the un-composed copy for good.
+        marker = "<!-- rule-pack composition skipped: no Python 3 interpreter found; run anywhere-agents to compose -->\n"
+        result, ledger, _, agents_bytes, _ = _run_no_python_bootstrap_with_ledger(
+            self.entrypoint,
+            shell=self.shell,
+            config_text="rule_packs:\n- name: agent-style\n",
+            existing_agents_text=marker + "stale upstream body\n",
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertNotIn(b"stale upstream body", agents_bytes)
+        compose = self._phase(ledger, "compose")
+        self.assertNotIn("preserved", compose["reason"])
 
     def test_skip_reasons_distinguish_missing_yaml_and_missing_composer(self):
         yaml_result, yaml_ledger, yaml_artifacts = _run_full_bootstrap_with_ledger(
@@ -1073,6 +1680,78 @@ class _BootstrapLedgerContract:
             "no composer script in sparse clone",
         )
 
+    GENERATED = ("/AGENTS.md", "/CLAUDE.md", "/agents/codex.md")
+
+    def _gitignore_after_run(self, **kwargs) -> str:
+        captured = {".gitignore": None}
+        result, _, _, _, _ = _run_no_python_bootstrap_with_ledger(
+            self.entrypoint,
+            shell=self.shell,
+            capture_into=captured,
+            **kwargs,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        raw = captured[".gitignore"]
+        return "" if raw is None else raw.decode("utf-8")
+
+    def test_untracked_generated_files_are_ignored(self):
+        # These three are regenerated on every run and their bytes depend on
+        # which packs the machine resolved, so two up-to-date machines each see
+        # the other's copy as a diff to commit.
+        text = self._gitignore_after_run()
+        for entry in self.GENERATED:
+            with self.subTest(entry=entry):
+                self.assertEqual(text.splitlines().count(entry), 1, text)
+
+    def test_a_tracked_generated_file_gets_no_entry(self):
+        # .gitignore does not untrack anything already in the index, so an entry
+        # for a tracked path is inert and reads as if it did something. Moving
+        # such a file out of the index removes it from every other clone, which
+        # is an operator's call.
+        text = self._gitignore_after_run(tracked=("AGENTS.md",))
+        self.assertNotIn("/AGENTS.md", text.splitlines())
+        self.assertIn("/CLAUDE.md", text.splitlines())
+
+    def test_track_generated_env_suppresses_every_entry(self):
+        text = self._gitignore_after_run(
+            env_extra={"AGENT_CONFIG_TRACK_GENERATED": "1"},
+        )
+        for entry in self.GENERATED:
+            with self.subTest(entry=entry):
+                self.assertNotIn(entry, text.splitlines())
+        # The opt-out covers the generated files only.
+        self.assertIn(".agent-config/", text)
+
+    def test_an_existing_unanchored_entry_is_not_duplicated(self):
+        # A consumer already ignoring `AGENTS.md` at any depth has the broader
+        # rule; appending the narrower `/AGENTS.md` under it changes nothing.
+        text = self._gitignore_after_run(existing_gitignore="AGENTS.md\n")
+        self.assertNotIn("/AGENTS.md", text.splitlines())
+        self.assertEqual(text.splitlines().count("AGENTS.md"), 1, text)
+
+    def test_an_existing_anchored_entry_is_not_duplicated(self):
+        text = self._gitignore_after_run(existing_gitignore="/CLAUDE.md\n")
+        self.assertEqual(text.splitlines().count("/CLAUDE.md"), 1, text)
+
+    def test_a_mixed_case_entry_does_not_satisfy_the_probe(self):
+        # `Select-String` is case-insensitive by default and `grep -qE` is not,
+        # so the two entry points disagreed here: PowerShell read `/AGENTS.MD`
+        # as the rule already being present and Bash appended the lowercase one.
+        # On a case-sensitive checkout `/AGENTS.MD` does not cover `AGENTS.md`,
+        # so the generated file becomes visible and committable again.
+        text = self._gitignore_after_run(existing_gitignore="/AGENTS.MD\n")
+        self.assertIn("/AGENTS.md", text.splitlines(), text)
+        self.assertIn("/AGENTS.MD", text.splitlines(), text)
+
+    def test_a_gitignore_without_a_final_newline_is_not_corrupted(self):
+        # `printf '%s\n' entry >> f` on a file whose last byte is not a newline
+        # glues the entry onto the last rule, breaking that rule and leaving the
+        # new one unmatchable.
+        text = self._gitignore_after_run(existing_gitignore="node_modules/")
+        lines = text.splitlines()
+        self.assertEqual(lines[0], "node_modules/", text)
+        self.assertIn(".agent-config/", lines)
+
     def test_helper_deployment_never_exposes_staged_partial_file(self):
         result, observed, final, expected, running = _run_atomic_helper_deployment(self.entrypoint)
         self.assertTrue(running, msg="copy pause was not observed while bootstrap was running")
@@ -1094,34 +1773,1647 @@ class BootstrapLedgerBashTests(_BootstrapLedgerContract, unittest.TestCase):
         self.assertIs(ledger["completed"], True)
 
 
-class BootstrapLedgerPowerShellTests(_BootstrapLedgerContract, unittest.TestCase):
-    entrypoint = "powershell"
-    emitted_by = "bootstrap.ps1"
+# One TestCase per installed PowerShell edition. Windows PowerShell 5.1 and
+# PowerShell 7 differ on native command-line quoting, on ConvertTo-Json
+# formatting, and on Set-Content BOM behaviour, so a suite that exercises
+# one of them tests roughly half of what it appears to.
+def _make_powershell_ledger_cases():
+    made = {}
+    for path in POWERSHELL_EDITIONS:
+        stem = Path(path).stem.lower()
+        name = "BootstrapLedgerPowerShellTests_" + stem
+        made[name] = type(name, (_BootstrapLedgerContract, unittest.TestCase), {
+            "entrypoint": "powershell",
+            "emitted_by": "bootstrap.ps1",
+            "shell": path,
+            "__doc__": "Ledger contract driven by %s." % path,
+        })
+    return made
+
+
+globals().update(_make_powershell_ledger_cases())
+
+
+class PowerShellEditionCoverageTests(unittest.TestCase):
+    def test_windows_powershell_is_exercised(self) -> None:
+        editions = powershell_editions_or_fail(self)
+        self.assertTrue(editions)
+        if sys.platform.startswith("win"):
+            majors = set()
+            for path in editions:
+                probe = subprocess.run(
+                    [path, "-NoProfile", "-ExecutionPolicy", "Bypass",
+                     "-Command", "$PSVersionTable.PSVersion.Major"],
+                    capture_output=True, text=True,
+                )
+                self.assertEqual(probe.returncode, 0, msg=probe.stderr)
+                majors.add(probe.stdout.strip())
+            # Prove the edition rather than trusting the executable name.
+            self.assertIn(
+                "5", majors,
+                "Windows PowerShell 5.1 is not among the exercised editions "
+                "(saw majors %s); that is the edition anywhere-agents#34 "
+                "reproduced under" % sorted(majors),
+            )
 
 
 class BootstrapLedgerParityTests(unittest.TestCase):
 
+    EXPECTED_GENERATE = {
+        "phase": "generate",
+        "scope": "repo",
+        "status": "skipped",
+        "rc": None,
+        "targets": [],
+    }
+
     def test_no_python_generate_steps_match(self):
         bash_result, bash_ledger, bash_raw, _, _ = _run_no_python_bootstrap_with_ledger("bash")
-        ps_result, ps_ledger, ps_raw, _, _ = _run_no_python_bootstrap_with_ledger("powershell")
         self.assertEqual(bash_result.returncode, 0, msg=bash_result.stderr)
-        self.assertEqual(ps_result.returncode, 0, msg=ps_result.stderr)
         bash_generate = next(step for step in bash_ledger["steps"] if step["phase"] == "generate")
-        ps_generate = next(step for step in ps_ledger["steps"] if step["phase"] == "generate")
-        expected = {
-            "phase": "generate",
-            "scope": "repo",
-            "status": "skipped",
-            "rc": None,
-            "targets": [],
-        }
-        self.assertEqual(bash_generate, expected)
-        self.assertEqual(ps_generate, expected)
-        self.assertIs(type(bash_generate["rc"]), type(ps_generate["rc"]))
+        self.assertEqual(bash_generate, self.EXPECTED_GENERATE)
         self.assertEqual(json.loads(bash_raw), bash_ledger)
-        self.assertEqual(json.loads(ps_raw), ps_ledger)
         self.assertIn("ANYWHERE_AGENTS_PYTHON did not execute Python 3 successfully", bash_result.stderr)
-        self.assertIn("ANYWHERE_AGENTS_PYTHON did not execute Python 3 successfully", ps_result.stderr)
+
+        # Compare bash against every installed edition. The two editions differ
+        # on native command-line quoting, so agreement with one of them says
+        # nothing about the other.
+        for shell in powershell_editions_or_fail(self):
+            with self.subTest(edition=Path(shell).stem):
+                ps_result, ps_ledger, ps_raw, _, _ = _run_no_python_bootstrap_with_ledger(
+                    "powershell", shell=shell
+                )
+                self.assertEqual(ps_result.returncode, 0, msg=ps_result.stderr)
+                ps_generate = next(
+                    step for step in ps_ledger["steps"] if step["phase"] == "generate"
+                )
+                self.assertEqual(ps_generate, self.EXPECTED_GENERATE)
+                self.assertIs(type(bash_generate["rc"]), type(ps_generate["rc"]))
+                self.assertEqual(json.loads(ps_raw), ps_ledger)
+                self.assertIn(
+                    "ANYWHERE_AGENTS_PYTHON did not execute Python 3 successfully",
+                    ps_result.stderr,
+                )
+
+
+class RulePacksConfigStateTests(unittest.TestCase):
+    """Both no-Python pre-parsers, driven directly across all three answers.
+
+    The end-to-end ledger tests cannot isolate this. Measured: a zero-indent
+    selection, a renamed key, and a file with no `rule_packs` key at all all
+    produce the same ledger, because the predicate defaults to configured when
+    both layers report `none`. So a test that only reads the ledger passes for
+    three different reasons and stays green on a future degradation to
+    "no signal".
+
+    The fixtures are written by `yaml.safe_dump`, the same call
+    `anywhere-agents` uses to write `agent-config.yaml`. Hand-written YAML is
+    what hid the defect: every existing fixture indented its list, the product
+    emits a block sequence at the key's own indentation, and the parser
+    required the indentation. A fixture should come from the product's writer
+    rather than from someone's memory of its output.
+    """
+
+    BOOTSTRAP_SH = ROOT / "bootstrap" / "bootstrap.sh"
+    BOOTSTRAP_PS1 = ROOT / "bootstrap" / "bootstrap.ps1"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        try:
+            import yaml  # noqa: F401
+        except ImportError:
+            raise unittest.SkipTest("PyYAML is not importable")
+
+    @staticmethod
+    def _safe_dump(data) -> str:
+        import yaml
+        return yaml.safe_dump(data, sort_keys=False, default_flow_style=False)
+
+    def _cases(self) -> list[tuple[str, str, str]]:
+        selection = {"rule_packs": [{"name": "agent-style",
+                                     "source": {"url": "https://example.invalid"}}]}
+        return [
+            # label, file content, expected state
+            ("safe_dump selection", self._safe_dump(selection), "nonempty"),
+            ("indented selection", "rule_packs:\n  - name: agent-style\n", "nonempty"),
+            ("flow selection", "rule_packs: [agent-style]\n", "nonempty"),
+            ("explicit empty list", self._safe_dump({"rule_packs": []}), "empty"),
+            ("bare key", "rule_packs:\n", "empty"),
+            ("null value", "rule_packs: null\n", "empty"),
+            ("no key at all", "other: 1\n", "none"),
+            # `packs:` is canonical and `rule_packs:` the deprecated alias. A
+            # parser that knew only the alias answered `none` for a consumer on
+            # the canonical key, which is the answer that deletes composed pack
+            # blocks and freezes opted-out ones.
+            ("canonical selection",
+             self._safe_dump({"packs": [{"name": "agent-style"}]}), "nonempty"),
+            ("canonical empty list", self._safe_dump({"packs": []}), "empty"),
+            ("canonical bare key", "packs:\n", "empty"),
+            # Within one file the canonical key wins, both ways round.
+            ("canonical beats alias when it selects",
+             "rule_packs: []\npacks:\n- name: agent-style\n", "nonempty"),
+            ("canonical beats alias when it clears",
+             "rule_packs:\n- name: agent-style\npacks: []\n", "empty"),
+            ("unrelated key only", self._safe_dump({"other": [{"name": "x"}]}), "none"),
+            # A flow sequence indented under its own key is valid YAML that
+            # resolves to a nonempty list. Both scanners skipped it, reached
+            # the end of the file, and answered `empty`, which is the explicit
+            # opt-out: measured end to end, all three entry points replaced a
+            # composed AGENTS.md with the bare upstream copy and recorded
+            # `completed: true`.
+            ("indented flow sequence", "packs:\n  [agent-style]\n", "nonempty"),
+            ("indented empty flow sequence", "packs:\n  []\n", "empty"),
+            # The other two spellings of an empty value. The key line accepted
+            # them from the start; the conservative indented-node rule read
+            # them as a selection and quietly disabled the opt-out.
+            ("indented null", "packs:\n  null\n", "empty"),
+            ("indented tilde", "packs:\n  ~\n", "empty"),
+            ("indented NULL", "packs:\n  NULL\n", "empty"),
+            # Spellings YAML gives the key itself. Matching only the bare one
+            # answered `none` for all of these, which after a clear in an
+            # earlier layer deleted the block the later layer had asked for.
+            # Using file length as a stand-in for "unreadable" then overrode
+            # genuine opt-outs, so the spellings are read instead.
+            ("quoted key", '"packs": [agent-style]\n', "nonempty"),
+            ("quoted empty", '"packs": []\n', "empty"),
+            ("single-quoted key", "'packs': [agent-style]\n", "nonempty"),
+            ("space before the colon", "packs : [agent-style]\n", "nonempty"),
+            ("space before the colon, empty", "packs : []\n", "empty"),
+            ("quoted and spaced", '"packs" : [agent-style]\n', "nonempty"),
+            ("quoted key with a block sequence",
+             '"packs":\n- name: agent-style\n', "nonempty"),
+            # A nested key of the same name is a different key.
+            ("nested key of the same name",
+             "other:\n  packs: [agent-style]\n", "none"),
+            # Case still matters, in both entry points.
+            ("quoted but wrong case", '"Packs": [agent-style]\n', "none"),
+            # Not a list at all. The scanner cannot tell what the resolver
+            # would make of it, and an uncertain answer preserves.
+            ("indented mapping", "packs:\n  name: agent-style\n", "nonempty"),
+            # The opt-out still has to survive a following key.
+            ("empty list then another key",
+             "packs: []\nother:\n  - x\n", "empty"),
+        ]
+
+    def _bash_state(self, path: Path, work: Path) -> str:
+        if not BASH:
+            raise unittest.SkipTest("bash not available")
+        text = self.BOOTSTRAP_SH.read_text(encoding="utf-8")
+        start = text.index("_rule_packs_config_state() {")
+        # Through the end of the single-key scanner it delegates to, not just
+        # the first closing brace: slicing one function left the driver calling
+        # a helper that was not in it.
+        end = text.index("\n}\n", text.index("_rule_packs_key_state() {")) + len("\n}\n")
+        driver = work / "state.sh"
+        driver.write_text(
+            text[start:end] + '\n_rule_packs_config_state "$1"\nprintf "\\n"\n',
+            encoding="utf-8", newline="\n",
+        )
+        # An EMPTY PATH, deliberately. The function used to shell out to `tr`,
+        # and the Git for Windows bash this resolves to does not put its own
+        # tool directory on PATH when invoked from Windows: the probe then
+        # reported `empty` for a configured consumer, the same wrong answer the
+        # indentation defect gave. The first version of this test prepended
+        # `Path(BASH).parent`, which is the directory holding `tr.exe`, so it
+        # handed the parser the very utility whose absence was the bug.
+        # Reverting the fix left the test green. `BASH` is invoked by absolute
+        # path and the corrected parser uses only shell builtins, so an empty
+        # PATH runs the intended code and fails the moment anything external
+        # creeps back in.
+        env = os.environ.copy()
+        empty_path = work / "no-tools"
+        empty_path.mkdir(exist_ok=True)
+        env["PATH"] = str(empty_path)
+        result = subprocess.run(
+            [BASH, str(driver), str(path).replace("\\", "/")],
+            capture_output=True, text=True, env=env,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertNotIn(
+            "command not found", result.stderr,
+            "a missing shell utility makes this parser answer `empty`, which is "
+            "the answer that suppresses the skip marker: " + result.stderr.strip(),
+        )
+        return result.stdout.strip()
+
+    @staticmethod
+    def _powershell_function(source: str, name: str) -> str:
+        """Slice one function out of the script by matching its braces.
+
+        Comments and quoted strings are skipped rather than counted. A comment
+        explaining that a target holding an opening brace produced no object
+        put two of them in the text, and the counter then ran off the end of
+        the file and every test extracting that function errored. Writing about
+        the character must not break the tool that looks for it.
+        """
+        return RulePacksConfigStateTests._powershell_block(source, "function " + name, name)
+
+    @staticmethod
+    def _powershell_block(source: str, marker: str, label: str) -> str:
+        """Slice from a marker through the block its first brace opens.
+
+        Used for the inline `~/.claude.json` heal as well as for functions, so
+        a test can run the shipped statements rather than a paraphrase of them.
+        """
+        start = source.index(marker)
+        depth = 0
+        index = start
+        while index < len(source):
+            char = source[index]
+            if char == "#":
+                newline = source.find("\n", index)
+                index = len(source) if newline < 0 else newline
+            elif char == "'":
+                closing = source.find("'", index + 1)
+                index = len(source) if closing < 0 else closing
+            elif char == '"':
+                index += 1
+                while index < len(source) and source[index] != '"':
+                    # A backtick escapes the next character, including a quote.
+                    index += 2 if source[index] == "`" else 1
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    return source[start:index + 1]
+            index += 1
+        raise AssertionError(f"unbalanced braces reading {label}")
+
+    def _powershell_state(self, shell: str, path: Path, work: Path) -> str:
+        source = self.BOOTSTRAP_PS1.read_text(encoding="utf-8")
+        # Both functions: the entry point delegates to the single-key scanner.
+        body = "\n".join(
+            self._powershell_function(source, name)
+            for name in ("Get-RulePacksConfigState", "Get-RulePacksKeyState",
+                         "Get-RulePacksKeyTail")
+        )
+        driver = work / "state.ps1"
+        driver.write_text(body + "\nGet-RulePacksConfigState $args[0]\n", encoding="utf-8")
+        result = subprocess.run(
+            [shell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(driver), str(path)],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        return result.stdout.strip()
+
+    def test_both_parsers_agree_on_every_state(self) -> None:
+        shells = powershell_editions_or_fail(self) if sys.platform.startswith("win") else []
+        with tempfile.TemporaryDirectory() as tmpdir:
+            work = Path(tmpdir)
+            for label, content, expected in self._cases():
+                path = work / "agent-config.yaml"
+                path.write_text(content, encoding="utf-8", newline="\n")
+                with self.subTest(case=label, entrypoint="bash"):
+                    self.assertEqual(self._bash_state(path, work), expected, content)
+                for shell in shells:
+                    with self.subTest(case=label, entrypoint=Path(shell).stem):
+                        self.assertEqual(
+                            self._powershell_state(shell, path, work), expected, content
+                        )
+
+    def test_an_empty_path_answers_none_without_complaining(self) -> None:
+        # Get-UserConfigPath returns an empty string when no user-config home
+        # resolves, and that value reaches this function. `Test-Path
+        # -LiteralPath ''` answers $false on PowerShell 7. On Windows
+        # PowerShell 5.1 it fails to bind, writes a non-terminating error, and
+        # produces no result, and the surrounding `if (-not ...)` then takes the
+        # branch for a path that exists. Measured with the guard removed from a
+        # standalone copy: `answer=none` under 7, and under 5.1 a
+        # ParameterBindingValidationException followed by `answer=exists`.
+        #
+        # Both scanners carry the guard, so removing one leaves the other to
+        # answer `none` and the returned value alone cannot see the difference.
+        # The empty stderr assertion is what makes each of them load-bearing.
+        shells = powershell_editions_or_fail(self) if sys.platform.startswith("win") else []
+        source = self.BOOTSTRAP_PS1.read_text(encoding="utf-8")
+        body = "\n".join(
+            self._powershell_function(source, name)
+            for name in ("Get-RulePacksConfigState", "Get-RulePacksKeyState",
+                         "Get-RulePacksKeyTail")
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            work = Path(tmpdir)
+            driver = work / "emptypath.ps1"
+            driver.write_text(body + "\nGet-RulePacksConfigState ''\n", encoding="utf-8")
+            for shell in shells:
+                with self.subTest(entrypoint=Path(shell).stem):
+                    result = subprocess.run(
+                        [shell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(driver)],
+                        capture_output=True, text=True,
+                    )
+                    self.assertEqual(result.returncode, 0, msg=result.stderr)
+                    self.assertEqual(result.stdout.strip(), "none", msg=result.stderr)
+                    self.assertEqual(
+                        "", result.stderr.strip(),
+                        "an empty path reached a cmdlet that rejects it",
+                    )
+            # The bash half has no equivalent trap, `[ -f "" ]` being false, but
+            # the two must still answer the same thing.
+            if BASH:
+                text = self.BOOTSTRAP_SH.read_text(encoding="utf-8")
+                start = text.index("_rule_packs_config_state() {")
+                end = text.index("\n}\n", text.index("_rule_packs_key_state() {")) + len("\n}\n")
+                sh_driver = work / "emptypath.sh"
+                sh_driver.write_text(
+                    text[start:end] + '\n_rule_packs_config_state ""\nprintf "\\n"\n',
+                    encoding="utf-8", newline="\n",
+                )
+                result = subprocess.run(
+                    [BASH, str(sh_driver)], capture_output=True, text=True,
+                )
+                self.assertEqual(result.returncode, 0, msg=result.stderr)
+                self.assertEqual(result.stdout.strip(), "none", msg=result.stderr)
+
+    def test_key_match_is_case_sensitive_in_both(self) -> None:
+        # PowerShell's -match is case-insensitive by default, so `Rule_Packs:`
+        # read as `empty` there and `none` in bash. The PowerShell answer routes
+        # to the silent bare-copy path, which is the outcome the marker exists
+        # to prevent.
+        shells = powershell_editions_or_fail(self) if sys.platform.startswith("win") else []
+        with tempfile.TemporaryDirectory() as tmpdir:
+            work = Path(tmpdir)
+            path = work / "agent-config.yaml"
+            path.write_text("Rule_Packs: []\n", encoding="utf-8", newline="\n")
+            self.assertEqual(self._bash_state(path, work), "none")
+            for shell in shells:
+                with self.subTest(entrypoint=Path(shell).stem):
+                    self.assertEqual(self._powershell_state(shell, path, work), "none")
+
+
+class ComposedArtifactPredicateTests(unittest.TestCase):
+    """Both composed-artifact predicates, driven directly over marker shapes.
+
+    The end-to-end preservation tests use one marker, so they cannot tell a
+    predicate that reads the marker from one that matches any line containing
+    `rule-pack:`. Both failure directions destroy something. Rejecting an
+    authentic marker deletes the pack blocks the preservation exists to save;
+    accepting a fake freezes a consumer on an un-composed file that no later
+    run will refresh.
+
+    The first version keyed on `<!-- rule-pack:[^ :]*:begin`. A pack name is
+    free text in the manifest, so a name with a space or a colon produced an
+    authentic artifact the predicate called plain. The same pattern accepted
+    `:begin-fake` and a `:begin` with no digest at all.
+    """
+
+    BOOTSTRAP_SH = ROOT / "bootstrap" / "bootstrap.sh"
+    BOOTSTRAP_PS1 = ROOT / "bootstrap" / "bootstrap.ps1"
+
+    @staticmethod
+    def _marker(name: str = "agent-style", version: str = "v0.4.2",
+                digest: str = EMPTY_SHA256) -> str:
+        return "<!-- rule-pack:%s:begin version=%s sha256=%s -->" % (name, version, digest)
+
+    def _cases(self) -> list[tuple[str, str, bool]]:
+        body = "\npack body\n<!-- rule-pack:agent-style:end -->\n"
+        return [
+            # label, AGENTS.md content, expected "is composed"
+            ("plain marker", "# heading\n" + self._marker() + body, True),
+            ("marker on the first line", self._marker() + body, True),
+            ("pack name with a space", self._marker(name="my pack") + body, True),
+            ("pack name with a colon", self._marker(name="org:pack") + body, True),
+            ("uppercase digest", self._marker(digest=EMPTY_SHA256.upper()) + body, True),
+            ("version with a slash", self._marker(version="refs/tags/v1.2") + body, True),
+            # The v2 schema accepts any nonempty source.ref and the composer
+            # formats it into the marker unchanged. A narrow character class
+            # copied from the legacy raw-URL validator called this authentic
+            # marker plain, which deletes the pack block it protects.
+            ("version with SemVer build metadata",
+             self._marker(version="v1.2.3+build.7") + body, True),
+            ("version with a tilde", self._marker(version="v1.2~rc1") + body, True),
+            ("CRLF line endings", ("# heading\n" + self._marker() + body).replace("\n", "\r\n"), True),
+            ("trailing blanks after the marker",
+             self._marker() + "  \t" + body, True),
+            # Rejections.
+            ("begin-fake suffix",
+             self._marker().replace(":begin ", ":begin-fake ") + body, False),
+            ("begin with no digest", "<!-- rule-pack:agent-style:begin -->" + body, False),
+            ("short digest", self._marker(digest="abc123") + body, False),
+            ("63-digit digest", self._marker(digest=EMPTY_SHA256[:-1]) + body, False),
+            ("65-digit digest", self._marker(digest=EMPTY_SHA256 + "a") + body, False),
+            ("non-hex digest", self._marker(digest="z" * 64) + body, False),
+            ("marker indented", "  " + self._marker() + body, False),
+            ("marker mid-line", "text " + self._marker() + body, False),
+            ("end marker only", "# heading\n<!-- rule-pack:agent-style:end -->\n", False),
+            ("skipped-composition marker",
+             "<!-- rule-pack composition skipped: no Python 3 interpreter found; "
+             "run anywhere-agents to compose -->\nbody\n", False),
+            ("no marker at all", "# hand-written AGENTS.md\n", False),
+            ("empty file", "", False),
+        ]
+
+    def _bash_verdict(self, work: Path) -> bool:
+        if not BASH:
+            raise unittest.SkipTest("bash not available")
+        text = self.BOOTSTRAP_SH.read_text(encoding="utf-8")
+        start = text.index("_agents_md_is_composed() {")
+        end = text.index("\n}\n", start) + len("\n}\n")
+        driver = work / "composed.sh"
+        driver.write_text(
+            text[start:end]
+            + '\nif _agents_md_is_composed; then printf composed; else printf plain; fi\n',
+            encoding="utf-8", newline="\n",
+        )
+        env = os.environ.copy()
+        env["PATH"] = str(Path(BASH).parent) + os.pathsep + env.get("PATH", "")
+        result = subprocess.run(
+            [BASH, "composed.sh"],
+            capture_output=True, text=True, cwd=str(work), env=env,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertNotIn("command not found", result.stderr, result.stderr.strip())
+        return result.stdout.strip() == "composed"
+
+    def _powershell_verdict(self, shell: str, work: Path) -> bool:
+        source = self.BOOTSTRAP_PS1.read_text(encoding="utf-8")
+        start = source.index("function Test-AgentsMdIsComposed")
+        depth = 0
+        for index in range(start, len(source)):
+            if source[index] == "{":
+                depth += 1
+            elif source[index] == "}":
+                depth -= 1
+                if depth == 0:
+                    body = source[start:index + 1]
+                    break
+        driver = work / "composed.ps1"
+        driver.write_text(
+            body + "\nif (Test-AgentsMdIsComposed) { 'composed' } else { 'plain' }\n",
+            encoding="utf-8",
+        )
+        result = subprocess.run(
+            [shell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "composed.ps1"],
+            capture_output=True, text=True, cwd=str(work),
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        return result.stdout.strip() == "composed"
+
+    def test_both_predicates_agree_on_every_marker_shape(self) -> None:
+        shells = powershell_editions_or_fail(self) if sys.platform.startswith("win") else []
+        with tempfile.TemporaryDirectory() as tmpdir:
+            work = Path(tmpdir)
+            agents = work / "AGENTS.md"
+            for label, content, expected in self._cases():
+                agents.write_bytes(content.encode("utf-8"))
+                with self.subTest(case=label, entrypoint="bash"):
+                    self.assertEqual(self._bash_verdict(work), expected, content)
+                for shell in shells:
+                    with self.subTest(case=label, entrypoint=Path(shell).stem):
+                        self.assertEqual(
+                            self._powershell_verdict(shell, work), expected, content
+                        )
+
+    def test_a_missing_agents_md_is_not_composed(self) -> None:
+        shells = powershell_editions_or_fail(self) if sys.platform.startswith("win") else []
+        with tempfile.TemporaryDirectory() as tmpdir:
+            work = Path(tmpdir)
+            self.assertFalse(self._bash_verdict(work))
+            for shell in shells:
+                with self.subTest(entrypoint=Path(shell).stem):
+                    self.assertFalse(self._powershell_verdict(shell, work))
+
+
+class QuietSpawnContractTests(unittest.TestCase):
+    """Both halves of the anywhere-agents#38 fix, asserted rather than assumed.
+
+    The suite imported `_quiet_spawn` and used `.ps1` stubs and passed, but
+    nothing failed if either half were undone. Returning kwargs unchanged from
+    `_with_flag`, making `install()` a no-op, or restoring the `.cmd` stubs all
+    left every functional assertion green while restoring the visual failure.
+
+    These are structural rather than behavioural on purpose. Window creation is
+    not observable from inside the child, and three earlier attempts to measure
+    it from outside each ended up measuring a process shape the real failure
+    never takes. Asserting the two decisions the fix actually makes is honest
+    about what a test can see here.
+    """
+
+    WINDOWS_ONLY = "the flag and the stub split are Windows-only"
+
+    def setUp(self) -> None:
+        if not sys.platform.startswith("win"):
+            self.skipTest(self.WINDOWS_ONLY)
+        sys.path.insert(0, str(ROOT / "tests"))
+        self.addCleanup(lambda: sys.path.remove(str(ROOT / "tests")))
+
+    def test_with_flag_adds_create_no_window(self) -> None:
+        import _quiet_spawn
+
+        self.assertEqual(
+            _quiet_spawn._with_flag({})["creationflags"],
+            _quiet_spawn.CREATE_NO_WINDOW,
+        )
+
+    def test_with_flag_preserves_a_caller_flag(self) -> None:
+        # Or-ing rather than assigning. A caller that already asked for
+        # something must not lose it to this default.
+        import _quiet_spawn
+
+        detached = 0x00000008
+        merged = _quiet_spawn._with_flag({"creationflags": detached})["creationflags"]
+        self.assertEqual(merged, detached | _quiet_spawn.CREATE_NO_WINDOW)
+
+    def test_install_patches_and_is_idempotent(self) -> None:
+        import _quiet_spawn
+
+        self.assertTrue(getattr(subprocess, "_agent_config_quiet_spawn_installed", False))
+        self.assertIs(subprocess.Popen.__module__ == "_quiet_spawn", True)
+        self.assertFalse(_quiet_spawn.install(), "a second install must be a no-op")
+
+    def test_powershell_stub_dir_holds_ps1_and_nothing_cmd_can_run(self) -> None:
+        # PowerShell runs a .ps1 in-process, so no process is created and no
+        # console can be allocated. A .cmd goes through cmd.exe, which is what
+        # owned the visible windows. The extensionless shell stub must stay out
+        # of this directory: PowerShell prefers it over the .ps1, cannot run it,
+        # and falls back to ShellExecute, which raises a file-association dialog
+        # that blocks the run.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stub_dir = Path(tmpdir) / "stub_path"
+            _make_stub_git(stub_dir, "git version 2.50.0")
+            ps_dir = powershell_stub_dir(stub_dir)
+            self.assertTrue((ps_dir / "git.ps1").is_file())
+            for forbidden in ("git.cmd", "git.bat", "git"):
+                with self.subTest(name=forbidden):
+                    self.assertFalse(
+                        (ps_dir / forbidden).exists(),
+                        f"{forbidden} in the PowerShell stub directory reintroduces "
+                        f"either a cmd.exe spawn or the ShellExecute dialog",
+                    )
+            # The bash side keeps its extensionless script, one level up.
+            self.assertTrue((stub_dir / "git").is_file())
+
+    def test_no_fixture_writes_a_cmd_stub(self) -> None:
+        # A static scan, because the stub writers are spread across three
+        # fixtures and a fourth added later would not be covered by the
+        # directory assertion above.
+        # Matches the path-join form the stub writers use rather than any
+        # quoted string. Two earlier versions of this scan flagged themselves:
+        # first the forbidden-name list in the test above, then an example in
+        # this comment. Nothing here may spell the shape it looks for.
+        source = Path(__file__).read_text(encoding="utf-8")
+        offenders = re.findall(r'/\s*"[A-Za-z0-9_]+\.(?:cmd|bat)"', source)
+        self.assertEqual(
+            [], offenders,
+            "a .cmd or .bat stub is run through cmd.exe, which allocates a "
+            "console window the Python-side creation flags cannot reach",
+        )
+
+
+class UserConfigLayerPathTests(unittest.TestCase):
+    """The user-level layer must land on the file the resolver actually reads.
+
+    `config.user_config_home` branches on the platform rather than cascading:
+    Windows reads `%APPDATA%` and stops, POSIX reads `$XDG_CONFIG_HOME` then
+    `$HOME/.config` and never looks at `%APPDATA%`. The first version of these
+    pre-parsers walked all three in one order for every platform. That agreed
+    whenever `%APPDATA%` was set on Windows, which is the ordinary case, and
+    disagreed in six of fourteen environment shapes otherwise. In one of them it
+    pointed the layer at a POSIX-shaped file on Windows, where an explicit
+    `packs: []` would clear a selection the resolver never sees and take a
+    composed `AGENTS.md` with it.
+
+    `$OSTYPE` is set by bash itself and cannot be overridden from the parent
+    environment, and `$IsWindows` is fixed at build time, so each platform can
+    exercise only its own branch. The table is keyed on the running platform,
+    and the differential against the resolver runs wherever
+    `scripts/packs/config.py` is present, which is `anywhere-agents` and not
+    here.
+    """
+
+    BOOTSTRAP_SH = ROOT / "bootstrap" / "bootstrap.sh"
+    BOOTSTRAP_PS1 = ROOT / "bootstrap" / "bootstrap.ps1"
+
+    # label -> the three variables, empty meaning unset. Both entry points read
+    # an empty value as absent, so one shape covers both.
+    ENVIRONMENTS = [
+        ("all three set", {"APPDATA": "/A", "XDG_CONFIG_HOME": "/X", "HOME": "/H"}),
+        ("appdata only", {"APPDATA": "/A", "XDG_CONFIG_HOME": "", "HOME": ""}),
+        ("xdg only", {"APPDATA": "", "XDG_CONFIG_HOME": "/X", "HOME": ""}),
+        ("home only", {"APPDATA": "", "XDG_CONFIG_HOME": "", "HOME": "/H"}),
+        ("xdg and home", {"APPDATA": "", "XDG_CONFIG_HOME": "/X", "HOME": "/H"}),
+        ("appdata and home", {"APPDATA": "/A", "XDG_CONFIG_HOME": "", "HOME": "/H"}),
+        ("none set", {"APPDATA": "", "XDG_CONFIG_HOME": "", "HOME": ""}),
+    ]
+
+    WINDOWS_EXPECTED = {
+        "all three set": "/A/anywhere-agents/config.yaml",
+        "appdata only": "/A/anywhere-agents/config.yaml",
+        "xdg only": "",
+        "home only": "",
+        "xdg and home": "",
+        "appdata and home": "/A/anywhere-agents/config.yaml",
+        "none set": "",
+    }
+
+    POSIX_EXPECTED = {
+        "all three set": "/X/anywhere-agents/config.yaml",
+        "appdata only": "",
+        "xdg only": "/X/anywhere-agents/config.yaml",
+        "home only": "/H/.config/anywhere-agents/config.yaml",
+        "xdg and home": "/X/anywhere-agents/config.yaml",
+        "appdata and home": "/H/.config/anywhere-agents/config.yaml",
+        "none set": "",
+    }
+
+    @property
+    def expected(self) -> dict[str, str]:
+        return (
+            self.WINDOWS_EXPECTED
+            if sys.platform.startswith("win")
+            else self.POSIX_EXPECTED
+        )
+
+    @staticmethod
+    def _normalize(path: str) -> str:
+        return path.strip().replace("\\", "/")
+
+    def _bash_path(self, environment: dict, work: Path) -> str:
+        if not BASH:
+            raise unittest.SkipTest("bash not available")
+        text = self.BOOTSTRAP_SH.read_text(encoding="utf-8")
+        start = text.index("_user_config_path() {")
+        end = text.index("\n}\n", start) + len("\n}\n")
+        assignments = "".join(
+            f'export {name}="{value}"\n' for name, value in sorted(environment.items())
+        )
+        driver = work / "userpath.sh"
+        driver.write_text(
+            text[start:end] + "\n" + assignments + '_user_config_path\nprintf "\\n"\n',
+            encoding="utf-8", newline="\n",
+        )
+        # An empty PATH, as in RulePacksConfigStateTests: the branch reads
+        # $OSTYPE rather than shelling out, and this fails if that regresses.
+        env = os.environ.copy()
+        empty_path = work / "no-tools"
+        empty_path.mkdir(exist_ok=True)
+        env["PATH"] = str(empty_path)
+        result = subprocess.run(
+            [BASH, str(driver)], capture_output=True, text=True, env=env,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertNotIn("command not found", result.stderr, result.stderr)
+        return self._normalize(result.stdout)
+
+    def _powershell_path(self, shell: str, environment: dict, work: Path) -> str:
+        source = self.BOOTSTRAP_PS1.read_text(encoding="utf-8")
+        body = RulePacksConfigStateTests._powershell_function(source, "Get-UserConfigPath")
+        assignments = "".join(
+            f"$env:{name} = '{value}'\n" for name, value in sorted(environment.items())
+        )
+        driver = work / "userpath.ps1"
+        driver.write_text(body + "\n" + assignments + "Get-UserConfigPath\n", encoding="utf-8")
+        result = subprocess.run(
+            [shell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(driver)],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        return self._normalize(result.stdout)
+
+    def test_both_entry_points_pick_the_platform_branch(self) -> None:
+        shells = powershell_editions_or_fail(self) if sys.platform.startswith("win") else []
+        with tempfile.TemporaryDirectory() as tmpdir:
+            work = Path(tmpdir)
+            for label, environment in self.ENVIRONMENTS:
+                expected = self.expected[label]
+                with self.subTest(case=label, entrypoint="bash"):
+                    self.assertEqual(self._bash_path(environment, work), expected)
+                for shell in shells:
+                    with self.subTest(case=label, entrypoint=Path(shell).stem):
+                        self.assertEqual(
+                            self._powershell_path(shell, environment, work), expected
+                        )
+
+    def test_the_table_matches_the_resolver(self) -> None:
+        # The differential the table stands in for. Only anywhere-agents ships
+        # the resolver, so this skips here and carries the contract there.
+        if not (ROOT / "scripts" / "packs" / "config.py").is_file():
+            self.skipTest("scripts/packs/config.py is not in this repo")
+        sys.path.insert(0, str(ROOT))
+        self.addCleanup(lambda: sys.path.remove(str(ROOT)))
+        from scripts.packs import config as resolver  # noqa: PLC0415
+
+        for label, environment in self.ENVIRONMENTS:
+            with self.subTest(case=label):
+                live = {k: v for k, v in environment.items() if v}
+                answer = resolver.user_config_path(live)
+                self.assertEqual(
+                    self._normalize(str(answer)) if answer is not None else "",
+                    self.expected[label],
+                )
+
+
+class EnvOverlayGrammarTests(unittest.TestCase):
+    """Where the overlay pre-parsers disagree with the resolver, and which way.
+
+    The overlay is additive with a `-name` subtract form, so only a positive
+    entry counts as a selection. `config.parse_env_var` splits on commas alone
+    and strips each token; both pre-parsers split on whitespace as well, because
+    trimming a token in shell without an external utility is what the `tr`
+    defect was made of. The two therefore read `-a b` differently.
+
+    The contract is not equality, it is direction. A pre-parser that reads an
+    overlay as adding when the resolver would not preserves a composed
+    `AGENTS.md` the operator may no longer want. The reverse loses one, which is
+    the failure this release exists to stop, so it must never happen.
+    """
+
+    BOOTSTRAP_SH = ROOT / "bootstrap" / "bootstrap.sh"
+    BOOTSTRAP_PS1 = ROOT / "bootstrap" / "bootstrap.ps1"
+
+    VALUES = [
+        "",
+        "agent-style",
+        "-agent-style",
+        "a,b",
+        "-a,-b",
+        "a,-b",
+        "-a,b",
+        " , ",
+        "   ",
+        "a b",
+        "-a b",
+        "-a -b",
+        # Values config.parse_env_var rejects outright. With Python present the
+        # run fails and the artifact is untouched, so the pre-parser has to
+        # answer "adds" for them or it deletes what the resolver refuses to
+        # touch. The earlier twelve were all valid, which is why the direction
+        # test could not see this.
+        "-",
+        "-bad/name",
+        "-bad:name",
+        "-bad@ref",
+        "bad/name",
+    ]
+
+    # The shapes where whitespace splitting makes the pre-parsers see an
+    # addition the resolver does not. Listed rather than derived, so a new
+    # disagreement shows up as a failure instead of being absorbed.
+    KNOWN_WHITESPACE_DISAGREEMENTS = {"-a b"}
+
+    def _bash_adds(self, value: str, work: Path) -> bool:
+        if not BASH:
+            raise unittest.SkipTest("bash not available")
+        text = self.BOOTSTRAP_SH.read_text(encoding="utf-8")
+        start = text.index("_env_pack_selection_adds() {")
+        end = text.index("\n}\n", start) + len("\n}\n")
+        driver = work / "overlay.sh"
+        driver.write_text(
+            text[start:end]
+            + '\nif _env_pack_selection_adds; then printf "yes\\n"; else printf "no\\n"; fi\n',
+            encoding="utf-8", newline="\n",
+        )
+        env = os.environ.copy()
+        empty_path = work / "no-tools"
+        empty_path.mkdir(exist_ok=True)
+        env["PATH"] = str(empty_path)
+        env["AGENT_CONFIG_PACKS"] = value
+        env.pop("AGENT_CONFIG_RULE_PACKS", None)
+        result = subprocess.run(
+            [BASH, str(driver)], capture_output=True, text=True, env=env,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        return result.stdout.strip() == "yes"
+
+    def _powershell_adds(self, shell: str, value: str, work: Path) -> bool:
+        source = self.BOOTSTRAP_PS1.read_text(encoding="utf-8")
+        body = RulePacksConfigStateTests._powershell_function(source, "Test-EnvPackSelectionAdds")
+        driver = work / "overlay.ps1"
+        driver.write_text(
+            body + "\nif (Test-EnvPackSelectionAdds) { 'yes' } else { 'no' }\n",
+            encoding="utf-8",
+        )
+        env = os.environ.copy()
+        env["AGENT_CONFIG_PACKS"] = value
+        env.pop("AGENT_CONFIG_RULE_PACKS", None)
+        result = subprocess.run(
+            [shell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(driver)],
+            capture_output=True, text=True, env=env,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        return result.stdout.strip() == "yes"
+
+    def _resolver_adds(self, value: str) -> bool:
+        """Whether the resolver would leave a composed artifact in place.
+
+        A rejected value is not "no selection". The composer stops, nothing is
+        rewritten, and the artifact survives, so the pre-parser has to answer
+        the same way. Letting ConfigError escape here was what let an invalid
+        overlay delete an artifact while the test reported agreement.
+        """
+        from scripts.packs import config as resolver  # noqa: PLC0415
+
+        try:
+            add, _subtract = resolver.parse_env_var({"AGENT_CONFIG_PACKS": value})
+        except resolver.ConfigError:
+            return True
+        return bool(add)
+
+    def test_both_entry_points_agree_with_each_other(self) -> None:
+        shells = powershell_editions_or_fail(self) if sys.platform.startswith("win") else []
+        with tempfile.TemporaryDirectory() as tmpdir:
+            work = Path(tmpdir)
+            for value in self.VALUES:
+                answer = self._bash_adds(value, work)
+                for shell in shells:
+                    with self.subTest(value=value, entrypoint=Path(shell).stem):
+                        self.assertEqual(self._powershell_adds(shell, value, work), answer)
+
+    def test_every_character_python_strips_lands_on_the_preserving_side(self) -> None:
+        """The generated half of the case above.
+
+        `config.parse_env_var` strips each token with Python's `str.strip()`
+        before validating, so `-\\r` arrives there as a bare `-` and is
+        rejected while reaching the pre-parsers intact. A fixed list of
+        separators loses that race every time one is missed: bash does not
+        split on `\\r` at all, and the two PowerShell editions disagree about
+        whether `\\s` covers U+001C. This walks the whole set rather than the
+        four names that were found by hand.
+        """
+        if not (ROOT / "scripts" / "packs" / "config.py").is_file():
+            self.skipTest("scripts/packs/config.py is not in this repo")
+        sys.path.insert(0, str(ROOT))
+        self.addCleanup(lambda: sys.path.remove(str(ROOT)))
+        stripped = [chr(code) for code in range(0x100) if chr(code).isspace()]
+        self.assertIn("\r", stripped, "the sweep did not find the character that started this")
+        shells = powershell_editions_or_fail(self) if sys.platform.startswith("win") else []
+        with tempfile.TemporaryDirectory() as tmpdir:
+            work = Path(tmpdir)
+            for char in stripped:
+                value = "-" + char
+                with self.subTest(codepoint=f"U+{ord(char):04X}"):
+                    self.assertTrue(
+                        self._resolver_adds(value),
+                        "this sweep assumes the resolver rejects the value",
+                    )
+                    self.assertTrue(
+                        self._bash_adds(value, work),
+                        "the pre-parser reads a subtraction where the resolver "
+                        "refuses the whole overlay, which deletes the artifact",
+                    )
+                    for shell in shells:
+                        self.assertTrue(
+                            self._powershell_adds(shell, value, work),
+                            f"{Path(shell).stem} reads a subtraction where the "
+                            f"resolver refuses the whole overlay",
+                        )
+
+    def test_no_disagreement_with_the_resolver_can_delete(self) -> None:
+        if not (ROOT / "scripts" / "packs" / "config.py").is_file():
+            self.skipTest("scripts/packs/config.py is not in this repo")
+        sys.path.insert(0, str(ROOT))
+        self.addCleanup(lambda: sys.path.remove(str(ROOT)))
+        with tempfile.TemporaryDirectory() as tmpdir:
+            work = Path(tmpdir)
+            for value in self.VALUES:
+                shell_adds = self._bash_adds(value, work)
+                resolver_adds = self._resolver_adds(value)
+                with self.subTest(value=value):
+                    if shell_adds == resolver_adds:
+                        self.assertNotIn(value, self.KNOWN_WHITESPACE_DISAGREEMENTS)
+                        continue
+                    self.assertTrue(
+                        shell_adds,
+                        f"{value!r}: the pre-parser reads no addition where the "
+                        f"resolver reads one, which clears a selection and "
+                        f"deletes the composed AGENTS.md it asked for",
+                    )
+                    self.assertIn(
+                        value, self.KNOWN_WHITESPACE_DISAGREEMENTS,
+                        f"{value!r} is a new disagreement; it preserves rather "
+                        f"than deletes, but it belongs in the recorded list",
+                    )
+
+
+class QuietSpawnImportPathTests(unittest.TestCase):
+    """The sibling import must survive every way the suite is started.
+
+    `unittest discover -s tests` puts tests/ on sys.path, so a bare
+    `import _quiet_spawn` resolved and both full suites passed. The dotted form,
+    `python -m unittest tests.<module>`, does not, and validate.yml runs the
+    Sentinel redaction smoke that way against a module carrying the import. The
+    green suites said nothing about it because they never used that form.
+
+    Not Windows-gated. The import line is unconditional, so it fails on any
+    platform; only what the module then does is Windows-specific.
+    """
+
+    GUARD = "sys.path.insert(0, str("
+
+    def _modules_importing_quiet_spawn(self) -> list[Path]:
+        return [
+            path
+            for path in sorted((ROOT / "tests").glob("test_*.py"))
+            if re.search(r"^import _quiet_spawn\b", path.read_text(encoding="utf-8"), re.M)
+        ]
+
+    def test_every_import_site_carries_a_sys_path_guard(self) -> None:
+        offenders = []
+        for path in self._modules_importing_quiet_spawn():
+            text = path.read_text(encoding="utf-8")
+            before = text.split("import _quiet_spawn", 1)[0]
+            if self.GUARD not in before:
+                offenders.append(path.name)
+        self.assertEqual(
+            [], offenders,
+            "these modules import the sibling helper without first putting "
+            "tests/ on sys.path, so they raise ModuleNotFoundError under "
+            "`python -m unittest tests.<module>`",
+        )
+
+    def test_every_module_imports_under_a_dotted_unittest_run(self) -> None:
+        # The static check above cannot tell whether the guard actually works.
+        # Run the invocation that broke, with a filter that matches no test, so
+        # each module is imported and nothing else costs anything. Every module
+        # rather than one: the first version checked only the first name in the
+        # list, so removing the guard from any later one left it green while
+        # the release note claimed otherwise.
+        modules = self._modules_importing_quiet_spawn()
+        self.assertTrue(modules, "no module imports the helper; this test is vacuous")
+        targets = ["tests." + path.stem for path in modules]
+        result = subprocess.run(
+            [sys.executable, "-B", "-m", "unittest", "-k", "zzz_matches_no_test", *targets],
+            cwd=str(ROOT),
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        combined = result.stdout + result.stderr
+        self.assertNotIn(
+            "ModuleNotFoundError", combined,
+            f"one of {len(targets)} modules cannot be imported by a dotted "
+            f"unittest run:\n{combined}",
+        )
+        self.assertNotIn("Traceback", combined, combined)
+
+
+class SettingsMergeEncodingTests(unittest.TestCase):
+    """Regression for anywhere-agents#36: the settings.json merge round trip.
+
+    Neither entry point pinned the text encoding. `Get-Content` / `Set-Content`
+    without `-Encoding` use the machine's ANSI codepage on Windows PowerShell
+    5.1, and Python's text mode does the same, so a UTF-8 settings.json was
+    decoded as cp1252 and written back with every character outside that
+    codepage destroyed. The file stayed valid JSON, so nothing failed and
+    nothing was reported. Five U+FFFD were observed in a live
+    ~/.claude/settings.json, all inside the block that configures the
+    permission classifier.
+
+    The behavioural assertions cannot detect that on a host whose ANSI
+    codepage is already UTF-8, which is this machine and may be the CI runner,
+    so the static check carries the encoding contract and runs everywhere. The
+    behavioural checks carry the properties that hold on any host: no BOM, LF
+    line endings, a stable second run, and the same bytes from both entry
+    points.
+    """
+
+    BOOTSTRAP_PS1 = ROOT / "bootstrap" / "bootstrap.ps1"
+    BOOTSTRAP_SH = ROOT / "bootstrap" / "bootstrap.sh"
+
+    # A settings document shaped like the real ones, plus the cases where two
+    # JSON serializers usually part company.
+    SAMPLE = {
+        "permissions": {"allow": ["Bash(ls:*)"], "deny": [], "ask": ["Bash(git push:*)"]},
+        "env": {"CLAUDE_CODE_EFFORT_LEVEL": "max"},
+        "note": "alpha — beta é 中文",
+        "path": "https://example.invalid/a/b",
+        "angle": "<tag> & 'quote' \"dquote\"",
+        "empty_obj": {},
+        "empty_arr": [],
+        "flags": {"on": True, "off": False, "none": None, "n": 12345},
+        "hooks": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "x --quiet"}]}],
+    }
+
+    def test_powershell_pins_encoding_at_every_json_site(self) -> None:
+        text = self.BOOTSTRAP_PS1.read_text(encoding="utf-8")
+        for pattern, why in (
+            (r"Get-Content[^\n]*-Raw[^\n]*ConvertFrom-Json",
+             "reads JSON through the ANSI codepage"),
+            (r"ConvertTo-Json[^\n]*\|\s*Set-Content",
+             "writes JSON through the ANSI codepage, with a BOM on 5.1"),
+        ):
+            hits = re.findall(pattern, text)
+            self.assertEqual(
+                hits, [],
+                f"bootstrap.ps1 still {why}: {hits}. Use Read-JsonFileUtf8 / "
+                f"Write-JsonFileUtf8 with ConvertTo-CanonicalJson instead.",
+            )
+        for helper in ("Read-JsonFileUtf8", "ConvertTo-CanonicalJson", "Write-JsonFileUtf8"):
+            self.assertIn(f"function {helper}", text)
+
+    def test_bash_pins_encoding_and_newlines_at_every_json_site(self) -> None:
+        text = self.BOOTSTRAP_SH.read_text(encoding="utf-8")
+        for pattern, why in (
+            (r"\.read_text\(\)", "reads JSON in text mode, which picks the locale codepage"),
+            (r"write_text\(json\.dumps", "writes JSON in text mode, which also rewrites newlines"),
+            (r"os\.fdopen\(fd, 'w'", "writes JSON in text mode, which also rewrites newlines"),
+        ):
+            hits = re.findall(pattern, text)
+            self.assertEqual(hits, [], f"bootstrap.sh still {why}: {hits}")
+
+    def _merge_via_powershell(self, shell: str, work: Path, target: Path, shared: Path) -> None:
+        source = self.BOOTSTRAP_PS1.read_text(encoding="utf-8")
+        # The shared slicer, not a second copy of it. This method used to carry
+        # its own, which appended nothing when the braces did not balance
+        # instead of raising, so a function simply went missing from the driver
+        # and the merge wrote `null` over the target. The test then reported a
+        # lost em dash, which is a true statement about a file that no longer
+        # had anything to do with the behaviour under test.
+        bodies = [
+            RulePacksConfigStateTests._powershell_function(source, name)
+            for name in ("Merge-Json", "Test-PythonScalarEqual", "Get-PythonNumericKey",
+                         "Read-JsonFileUtf8", "ConvertTo-CanonicalJson", "Write-JsonFileUtf8")
+        ]
+        script = work / "merge.ps1"
+        script.write_text(
+            "$script:JsonDepth = 64\n"
+            + "\n".join(bodies)
+            + "\n$t = $args[0]\n$s = $args[1]\n"
+            "$o = Read-JsonFileUtf8 $t\n"
+            "$sh = Read-JsonFileUtf8 $s\n"
+            "Merge-Json $o $sh\n"
+            "Write-JsonFileUtf8 $t (ConvertTo-CanonicalJson $o)\n",
+            encoding="utf-8",
+        )
+        result = subprocess.run(
+            [shell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script),
+             str(target), str(shared)],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+
+    def _merge_via_helper(self, target: Path, shared: Path) -> None:
+        result = subprocess.run(
+            [sys.executable, str(ROOT / "scripts" / "merge_settings.py"),
+             str(target), str(shared)],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+
+    @staticmethod
+    def _assert_canonical(case: unittest.TestCase, data: bytes, label: str) -> None:
+        case.assertFalse(data.startswith(b"\xef\xbb\xbf"), f"{label} carries a BOM")
+        case.assertNotIn(b"\r\n", data, f"{label} carries CRLF")
+        case.assertIn("—".encode("utf-8"), data, f"{label} lost the em dash")
+        case.assertIn("中文".encode("utf-8"), data, f"{label} lost the CJK text")
+
+    SHARED = {"permissions": {"allow": ["Bash(git:*)"]}, "attribution": {"co_authored_by": False}}
+
+    def test_both_entry_points_call_the_shared_helper(self) -> None:
+        # The formatting divergence cannot be closed by making two serializers
+        # agree: ConvertTo-Json indents with four spaces and aligns nested
+        # objects on Windows PowerShell 5.1, and with two spaces on
+        # PowerShell 7, so neither matches json.dumps. One implementation is
+        # the only thing that makes the bytes agree, so pin that both entry
+        # points reach for it.
+        self.assertTrue((ROOT / "scripts" / "merge_settings.py").is_file())
+        for script in (self.BOOTSTRAP_SH, self.BOOTSTRAP_PS1):
+            text = script.read_text(encoding="utf-8")
+            self.assertIn(
+                "scripts/merge_settings.py", text,
+                f"{script.name} does not call the shared settings merge helper",
+            )
+
+    # Scalar-array cases where .NET and Python disagree about what one key is.
+    # Python's dict.fromkeys treats 1, 1.0 and True as the same key and keeps
+    # "1" apart; a hash set over boxed .NET values does the opposite on both
+    # counts. The PowerShell fallback runs only on a machine with no Python,
+    # but it is supposed to reach the same answer as the shared helper.
+    SCALAR_DEDUP_CASES = (
+        ("int and its float", [1], [1.0]),
+        ("int and true", [1], [True]),
+        ("int and its string", [1], ["1"]),
+        ("case-distinct strings", ["a"], ["A"]),
+        ("plain duplicate", ["x", "y"], ["y", "z"]),
+        ("zero and false", [0], [False]),
+        ("null twice", [None], [None]),
+        # Python compares a bool as the integer 1 or 0, so True is 1 and not 2.
+        # PowerShell converts toward the left operand's type, so the answer
+        # depends on which side the bool is on: `2` then `True` compares as
+        # numbers and keeps both, while `True` then `2` converts 2 to a bool and
+        # merges them. Both orders are listed, because a settings file decides
+        # the order and the earlier cases all happened to use the safe one.
+        ("two then true", [2], [True]),
+        ("true then two", [True], [2]),
+        ("true then minus one", [True], [-1]),
+        ("false then two", [False], [2]),
+        # Above 2**53 a double can no longer name every integer, so widening
+        # the integer to a double before comparing merges two distinct values.
+        # Measured: PowerShell 7 collapsed both orderings of the first pair,
+        # and both editions collapsed the second. The two editions do not even
+        # agree on the parsed type; 5.1 reads a number written with a decimal
+        # point as a Decimal and 7 reads it as a Double.
+        ("int and the float below it", [2 ** 53 + 1], [float(2 ** 53)]),
+        ("float below it and the int", [float(2 ** 53)], [2 ** 53 + 1]),
+        ("max int and its rounded float", [2 ** 63 - 1], [float(2 ** 63 - 1)]),
+        ("rounded float and the max int", [float(2 ** 63 - 1)], [2 ** 63 - 1]),
+        ("big int and its exact float", [10 ** 20], [1e20]),
+        ("negative zero and zero", [-0.0], [0]),
+        ("int and a fraction", [1], [1.5]),
+        ("fraction twice", [1.5], [1.5]),
+    )
+
+    def test_powershell_fallback_dedups_scalars_like_the_helper(self) -> None:
+        shells = powershell_editions_or_fail(self) if sys.platform.startswith("win") else []
+        for label, base_list, over_list in self.SCALAR_DEDUP_CASES:
+            base = {"env": {"values": base_list}}
+            over = {"env": {"values": over_list}}
+            with tempfile.TemporaryDirectory() as tmpdir:
+                work = Path(tmpdir)
+                shared_path = work / "shared.json"
+                shared_path.write_bytes(
+                    (json.dumps(over, indent=2) + "\n").encode("utf-8"))
+                reference = work / "reference.json"
+                reference.write_bytes(
+                    (json.dumps(base, indent=2) + "\n").encode("utf-8"))
+                self._merge_via_helper(reference, shared_path)
+                expected = json.loads(reference.read_text(encoding="utf-8"))
+                for shell in shells:
+                    target = work / f"target-{Path(shell).stem}.json"
+                    target.write_bytes(
+                        (json.dumps(base, indent=2) + "\n").encode("utf-8"))
+                    self._merge_via_powershell(shell, work, target, shared_path)
+                    actual = json.loads(target.read_text(encoding="utf-8"))
+                    with self.subTest(case=label, entrypoint=Path(shell).stem):
+                        self.assertEqual(
+                            expected["env"]["values"], actual["env"]["values"],
+                            f"{label}: fallback disagrees with merge_settings.py",
+                        )
+
+    # Inputs the shared helper reads and then refuses. Each is a state where
+    # the target must survive untouched.
+    HELPER_REFUSALS = (
+        ("malformed json", b"{", b'{"values": [2]}\n'),
+        ("invalid utf-8", b'{"note":"\xe9","values":[1]}\n', b'{"values": [2]}\n'),
+        ("empty result", b"{}", b"{}\n"),
+        ("mixed array", b'{"values": [0]}', b'{"values": [1, {"a": 1}]}\n'),
+    )
+
+    def test_the_json_reader_rejects_invalid_utf8(self) -> None:
+        # `[System.Text.Encoding]::UTF8` substitutes U+FFFD for an invalid byte
+        # and reports nothing. The Bash half decodes with `utf-8-sig`, which
+        # raises, so the two disagreed on the input this release is about: the
+        # `~/.claude.json` heal read a file already damaged by the cp1252 round
+        # trip, substituted its own damage, and wrote the whole file back. That
+        # path has no Python helper in front of it.
+        shells = powershell_editions_or_fail(self) if sys.platform.startswith("win") else []
+        body = RulePacksConfigStateTests._powershell_function(
+            self.BOOTSTRAP_PS1.read_text(encoding="utf-8"), "Read-JsonFileUtf8")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            work = Path(tmpdir)
+            driver = work / "read.ps1"
+            driver.write_text(
+                body + "\ntry { $null = Read-JsonFileUtf8 $args[0]; 'accepted' } "
+                "catch { 'rejected' }\n",
+                encoding="utf-8",
+            )
+            bad = work / "bad.json"
+            bad.write_bytes(b'{"note":"\xe9","values":[1]}\n')
+            good = work / "good.json"
+            good.write_bytes('{"note":"é","values":[1]}\n'.encode("utf-8"))
+            for shell in shells:
+                for label, path, expected in (("invalid", bad, "rejected"),
+                                              ("valid", good, "accepted")):
+                    with self.subTest(case=label, entrypoint=Path(shell).stem):
+                        result = subprocess.run(
+                            [shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy",
+                             "Bypass", "-File", str(driver), str(path)],
+                            capture_output=True, text=True,
+                        )
+                        self.assertEqual(result.returncode, 0, msg=result.stderr)
+                        self.assertEqual(expected, result.stdout.strip(), msg=result.stderr)
+
+    # Inputs the in-shell fallback must refuse when no helper is available.
+    # `{` is valid UTF-8, so the strict decoder does not see it; a bare array
+    # root parses cleanly and is not an object; `{}` merged with `{}` is the
+    # empty result the helper already refuses.
+    FALLBACK_REFUSALS = (
+        ("malformed json", b"{", b'{"values": [2]}\n'),
+        ("invalid utf-8", b'{"note":"\xe9","values":[1]}\n', b'{"values": [2]}\n'),
+        ("array root", b'[1, 2]', b'{"values": [2]}\n'),
+        ("string root", b'"hello"', b'{"values": [2]}\n'),
+        ("empty result", b"{}", b"{}\n"),
+    )
+
+    def test_the_no_helper_fallback_leaves_unreadable_targets_alone(self) -> None:
+        # The path the previous test does not reach. With no Python at all,
+        # `Invoke-SettingsMerge` returns false and the in-shell merge runs, and
+        # that is where a target holding `{` came back as one newline under
+        # Windows PowerShell 5.1 and as `null` under PowerShell 7. A strict
+        # decoder is not enough on its own, because `ConvertFrom-Json` fails
+        # without throwing; it needs -ErrorAction Stop. This runs the shipped
+        # call-site statements with $pyCmd forced to null.
+        shells = powershell_editions_or_fail(self) if sys.platform.startswith("win") else []
+        source = self.BOOTSTRAP_PS1.read_text(encoding="utf-8")
+        names = ("Invoke-SettingsMerge", "Merge-Json", "Test-PythonScalarEqual",
+                 "Get-PythonNumericKey", "Read-JsonFileUtf8", "ConvertTo-CanonicalJson",
+                 "Write-JsonFileUtf8")
+        bodies = "\n".join(
+            RulePacksConfigStateTests._powershell_function(source, name) for name in names
+        )
+        call_site = RulePacksConfigStateTests._powershell_block(
+            source,
+            "if (-not (Invoke-SettingsMerge '.claude/settings.json'",
+            "the project settings call site",
+        )
+        driver_text = (
+            "$script:JsonDepth = 64\n$pyCmd = $null\n"
+            + bodies
+            + "\nSet-Location $args[0]\n"
+            + call_site
+            + "\n"
+        )
+        for label, target_bytes, shared_bytes in self.FALLBACK_REFUSALS:
+            for shell in shells:
+                with self.subTest(case=label, entrypoint=Path(shell).stem):
+                    with tempfile.TemporaryDirectory() as tmpdir:
+                        work = Path(tmpdir)
+                        (work / ".claude").mkdir()
+                        (work / ".agent-config" / "repo" / ".claude").mkdir(parents=True)
+                        target = work / ".claude" / "settings.json"
+                        target.write_bytes(target_bytes)
+                        (work / ".agent-config" / "repo" / ".claude" / "settings.json").write_bytes(
+                            shared_bytes)
+                        driver = work / "driver.ps1"
+                        driver.write_text(driver_text, encoding="utf-8")
+                        result = subprocess.run(
+                            [shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy",
+                             "Bypass", "-File", str(driver), str(work)],
+                            capture_output=True, text=True,
+                        )
+                        self.assertEqual(result.returncode, 0, msg=result.stderr)
+                        self.assertEqual(
+                            target_bytes, target.read_bytes(),
+                            f"{label}: the no-helper fallback rewrote an unreadable target",
+                        )
+
+    def test_the_claude_json_heal_leaves_an_unreadable_file_alone(self) -> None:
+        # The third call site, and the only one with no helper in front of it
+        # at all. Its catch was already there; what made it ineffective was a
+        # reader that substituted U+FFFD instead of failing. A file damaged by
+        # the cp1252 round trip is exactly the input it would meet.
+        shells = powershell_editions_or_fail(self) if sys.platform.startswith("win") else []
+        source = self.BOOTSTRAP_PS1.read_text(encoding="utf-8")
+        bodies = "\n".join(
+            RulePacksConfigStateTests._powershell_function(source, name)
+            for name in ("Read-JsonFileUtf8", "ConvertTo-CanonicalJson", "Write-JsonFileUtf8")
+        )
+        heal = RulePacksConfigStateTests._powershell_block(
+            source, "if (Test-Path $claudeJson) {", "the claude.json heal")
+        driver_text = (
+            "$script:JsonDepth = 64\n"
+            + bodies
+            + "\n$claudeJson = $args[0]\n"
+            + heal
+            + "\n"
+        )
+        # autoUpdates is false, so a reader that does not fail rewrites the file.
+        damaged = b'{"autoUpdates": false, "note": "\xe9"}\n'
+        healthy = '{"autoUpdates": false, "note": "é"}\n'.encode("utf-8")
+        for shell in shells:
+            for label, original, expect_changed in (("invalid utf-8", damaged, False),
+                                                    ("valid utf-8", healthy, True)):
+                with self.subTest(case=label, entrypoint=Path(shell).stem):
+                    with tempfile.TemporaryDirectory() as tmpdir:
+                        work = Path(tmpdir)
+                        state = work / ".claude.json"
+                        state.write_bytes(original)
+                        driver = work / "heal.ps1"
+                        driver.write_text(driver_text, encoding="utf-8")
+                        result = subprocess.run(
+                            [shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy",
+                             "Bypass", "-File", str(driver), str(state)],
+                            capture_output=True, text=True,
+                        )
+                        self.assertEqual(result.returncode, 0, msg=result.stderr)
+                        changed = state.read_bytes() != original
+                        self.assertEqual(
+                            expect_changed, changed,
+                            f"{label}: heal {'skipped' if expect_changed else 'rewrote'} "
+                            f"the file; bytes are {state.read_bytes()!r}",
+                        )
+                        if not expect_changed:
+                            self.assertNotIn(
+                                "�".encode("utf-8"), state.read_bytes(),
+                                "the heal wrote a replacement character into user state",
+                            )
+
+    def test_a_refused_merge_does_not_fall_back_onto_the_same_input(self) -> None:
+        # `Invoke-SettingsMerge` returned $false for every nonzero exit, and the
+        # call site reads $false as "the helper was unavailable" and runs the
+        # in-shell merge over the same bytes. Those are different states: a
+        # helper that read the file and refused has already decided it must not
+        # change. Measured before the fix: `{` came back as one newline under
+        # 5.1 and as `null` under 7, and an invalid UTF-8 byte came back as
+        # U+FFFD, both with the run reporting success. Bash leaves all of them
+        # alone, so this is also what makes the two entry points agree.
+        shells = powershell_editions_or_fail(self) if sys.platform.startswith("win") else []
+        source = self.BOOTSTRAP_PS1.read_text(encoding="utf-8")
+        names = ("Invoke-SettingsMerge", "Merge-Json", "Test-PythonScalarEqual",
+                 "Get-PythonNumericKey", "Read-JsonFileUtf8", "ConvertTo-CanonicalJson",
+                 "Write-JsonFileUtf8")
+        bodies = "\n".join(
+            RulePacksConfigStateTests._powershell_function(source, name) for name in names
+        )
+        helper = str(ROOT / "scripts" / "merge_settings.py").replace("'", "''")
+        bodies = bodies.replace(
+            "$helper = '.agent-config/repo/scripts/merge_settings.py'",
+            f"$helper = '{helper}'",
+        )
+        driver_text = (
+            "$script:JsonDepth = 64\n"
+            f"$pyCmd = [pscustomobject]@{{ Path = '{sys.executable}' }}\n"
+            + bodies
+            + "\n$target = $args[0]\n$sharedPath = $args[1]\n"
+            "if (-not (Invoke-SettingsMerge $target $sharedPath)) {\n"
+            "  $shared = Read-JsonFileUtf8 $sharedPath\n"
+            "  $project = Read-JsonFileUtf8 $target\n"
+            "  Merge-Json $project $shared\n"
+            "  Write-JsonFileUtf8 $target (ConvertTo-CanonicalJson $project)\n"
+            "}\n"
+        )
+        for label, target_bytes, shared_bytes in self.HELPER_REFUSALS:
+            for shell in shells:
+                with self.subTest(case=label, entrypoint=Path(shell).stem):
+                    with tempfile.TemporaryDirectory() as tmpdir:
+                        work = Path(tmpdir)
+                        driver = work / "driver.ps1"
+                        driver.write_text(driver_text, encoding="utf-8")
+                        target = work / "target.json"
+                        target.write_bytes(target_bytes)
+                        shared_path = work / "shared.json"
+                        shared_path.write_bytes(shared_bytes)
+                        result = subprocess.run(
+                            [shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy",
+                             "Bypass", "-File", str(driver), str(target), str(shared_path)],
+                            capture_output=True, text=True,
+                        )
+                        self.assertEqual(result.returncode, 0, msg=result.stderr)
+                        self.assertEqual(
+                            target_bytes, target.read_bytes(),
+                            f"{label}: the fallback rewrote a target the helper refused",
+                        )
+
+    def test_a_mixed_array_is_reported_rather_than_traced(self) -> None:
+        # The branch that chooses dedup over replace reads the incoming list's
+        # first element alone, which is deliberate parity with the inline
+        # program the helper replaced. A scalar first and an object later
+        # therefore reaches dict.fromkeys with an unhashable element. The Bash
+        # entry point does not read the helper's exit code, so an uncaught
+        # TypeError printed a traceback and the run continued past it.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            work = Path(tmpdir)
+            shared_path = work / "shared.json"
+            shared_path.write_bytes(
+                (json.dumps({"env": {"values": [1, {"a": 1}]}}, indent=2) + "\n").encode("utf-8"))
+            target = work / "target.json"
+            original = (json.dumps({"env": {"values": [0]}}, indent=2) + "\n").encode("utf-8")
+            target.write_bytes(original)
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "scripts" / "merge_settings.py"),
+                 str(target), str(shared_path)],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 1, msg=result.stdout + result.stderr)
+            self.assertIn("cannot merge", result.stderr)
+            self.assertNotIn("Traceback", result.stderr)
+            self.assertEqual(
+                original, target.read_bytes(),
+                "a merge that cannot complete must leave the file alone",
+            )
+
+    def test_helper_writes_canonical_bytes_and_is_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            work = Path(tmpdir)
+            shared_path = work / "shared.json"
+            shared_path.write_bytes(
+                (json.dumps(self.SHARED, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+            )
+            target = work / "target.json"
+            target.write_bytes(
+                (json.dumps(self.SAMPLE, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+            )
+            self._merge_via_helper(target, shared_path)
+            first = target.read_bytes()
+            self._assert_canonical(self, first, "shared helper")
+            merged = json.loads(first.decode("utf-8"))
+            self.assertIn("Bash(git:*)", merged["permissions"]["allow"])
+            self.assertIn("Bash(ls:*)", merged["permissions"]["allow"])
+            self.assertIs(merged["attribution"]["co_authored_by"], False)
+            self._merge_via_helper(target, shared_path)
+            self.assertEqual(
+                first, target.read_bytes(),
+                "the helper is not idempotent, so every bootstrap rewrites the file",
+            )
+
+    def test_helper_reads_a_bom_prefixed_file(self) -> None:
+        # An earlier `Set-Content -Encoding UTF8` on Windows PowerShell 5.1
+        # left a BOM on some machines. Reading that back must work, and the
+        # BOM must not survive the write.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            work = Path(tmpdir)
+            shared_path = work / "shared.json"
+            shared_path.write_bytes((json.dumps(self.SHARED, indent=2) + "\n").encode("utf-8"))
+            target = work / "target.json"
+            target.write_bytes(
+                b"\xef\xbb\xbf" + (json.dumps(self.SAMPLE, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+            )
+            self._merge_via_helper(target, shared_path)
+            data = target.read_bytes()
+            self._assert_canonical(self, data, "shared helper on a BOM-prefixed file")
+
+    def test_helper_refuses_to_write_an_empty_object(self) -> None:
+        # The user-level settings.json was truncated to zero bytes once. A
+        # merge that produces nothing is a defect rather than a state to
+        # persist, so the old content stays readable.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            work = Path(tmpdir)
+            shared_path = work / "shared.json"
+            shared_path.write_bytes(b"{}\n")
+            target = work / "target.json"
+            # No trailing newline, so a write would be visible. With `{}\n` on
+            # both sides the canonical form of the empty result is the original
+            # bytes, and the byte check could not tell a refusal from a write.
+            original = b"{}"
+            target.write_bytes(original)
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "scripts" / "merge_settings.py"),
+                 str(target), str(shared_path)],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("refusing to write an empty object", result.stderr)
+            # The exit code and the message alone stayed green if the helper
+            # wrote `{}` and then complained about it. What matters is the file.
+            self.assertEqual(original, target.read_bytes())
+
+    def test_powershell_fallback_is_canonical_where_it_can_be(self) -> None:
+        # The fallback runs only when no Python is available. It cannot match
+        # the helper's bytes, for the ConvertTo-Json reason above, but it must
+        # still write UTF-8 without a BOM, use LF, keep non-ASCII, and be
+        # stable across runs so it does not rewrite the file every session.
+        shells = powershell_editions_or_fail(self)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            work = Path(tmpdir)
+            shared_path = work / "shared.json"
+            shared_path.write_bytes(
+                (json.dumps(self.SHARED, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+            )
+            original = (json.dumps(self.SAMPLE, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+            for shell in shells:
+                with self.subTest(shell=Path(shell).stem):
+                    target = work / f"ps-{Path(shell).stem}.json"
+                    target.write_bytes(original)
+                    self._merge_via_powershell(shell, work, target, shared_path)
+                    first = target.read_bytes()
+                    self._assert_canonical(self, first, f"{Path(shell).stem} fallback")
+                    merged = json.loads(first.decode("utf-8"))
+                    self.assertIn("Bash(git:*)", merged["permissions"]["allow"])
+                    self.assertIn("Bash(ls:*)", merged["permissions"]["allow"])
+                    self._merge_via_powershell(shell, work, target, shared_path)
+                    self.assertEqual(
+                        first, target.read_bytes(),
+                        "the fallback is not idempotent, so every bootstrap rewrites the file",
+                    )
+
+
+class PowerShellPythonProbeQuotingTests(unittest.TestCase):
+    """Regression: bootstrap.ps1's Test-PythonRuns probe under both PowerShell
+    editions.
+
+    Windows PowerShell 5.1 rebuilds a single command-line string when calling a
+    native executable and does not escape a double quote inside an argument. A
+    probe written as `-c '...write("SENTINEL")...'` therefore reaches Python as
+    a truncated program, which fails to parse. The probe returns false for every
+    interpreter, Find-RealPython yields null, and composition plus config
+    generation both skip while the run blames a missing Python. PowerShell 7
+    quotes the argument correctly, so the defect is invisible to anyone testing
+    only with pwsh.
+
+    Two layers, because each covers what the other cannot:
+
+    - The static check runs everywhere, including the Linux and macOS CI legs
+      that have no PowerShell at all.
+    - The live check proves actual behavior, and runs against every installed
+      edition rather than the first one found. Picking one edition is how the
+      defect reached six green CI legs: this file's POWERSHELL constant prefers
+      pwsh, and windows-latest ships both.
+    """
+
+    BOOTSTRAP_PS1 = ROOT / "bootstrap" / "bootstrap.ps1"
+    SENTINEL = "__ANYWHERE_AGENTS_PY3__"
+
+    def _probe_argument(self) -> str:
+        """Return the -c argument text from Test-PythonRuns, quotes stripped."""
+        text = self.BOOTSTRAP_PS1.read_text(encoding="utf-8")
+        match = re.search(
+            r"-c\s+(['\"])(.*?import sys.*?sys\.stdout\.write.*?)\1",
+            text,
+        )
+        self.assertIsNotNone(
+            match, "bootstrap.ps1 must contain a Test-PythonRuns probe command"
+        )
+        return match.group(2)
+
+    def _function_text(self) -> str:
+        """Return the source of the Test-PythonRuns function, braces balanced."""
+        text = self.BOOTSTRAP_PS1.read_text(encoding="utf-8")
+        start = text.index("function Test-PythonRuns")
+        depth = 0
+        for index in range(start, len(text)):
+            char = text[index]
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start:index + 1]
+        self.fail("Test-PythonRuns function is not brace-balanced")
+
+    def test_probe_argument_carries_no_double_quote(self) -> None:
+        argument = self._probe_argument()
+        self.assertNotIn(
+            '"',
+            argument,
+            "the -c argument must contain no double quote: Windows PowerShell "
+            "5.1 does not escape one when it rebuilds the native command line, "
+            "so Python receives a truncated program. Quote the argument with "
+            "double quotes and use single quotes inside it.",
+        )
+        self.assertIn(self.SENTINEL, argument)
+
+    def test_no_powershell_script_nests_double_quotes_in_a_c_argument(self) -> None:
+        """The same defect class, across every .ps1 in the repo.
+
+        Scoping this check to bootstrap.ps1 is what let a second live instance
+        survive in skills/implement-review/scripts/dispatch-codex.ps1, where
+        the interpreter probe rejected a working Python under Windows
+        PowerShell 5.1 and the reviewer dispatched without one. A defect that
+        recurs across files needs a check that reads every file.
+        """
+        offenders = []
+        for script in sorted(ROOT.rglob("*.ps1")):
+            if ".agent-config" in script.parts or "build" in script.parts:
+                continue
+            for number, line in enumerate(
+                script.read_text(encoding="utf-8", errors="replace").splitlines(), 1
+            ):
+                stripped = line.strip()
+                # A Python program passed as a single-quoted PowerShell string:
+                # any double quote inside it reaches the native command line
+                # unescaped on 5.1.
+                if stripped.startswith("'") and stripped.endswith("'") and '"' in stripped:
+                    if "import " in stripped or "print(" in stripped:
+                        offenders.append(f"{script.relative_to(ROOT)}:{number}")
+                elif re.search(r"-c\s+'[^']*\"", stripped):
+                    offenders.append(f"{script.relative_to(ROOT)}:{number}")
+        self.assertEqual(
+            offenders, [],
+            "these lines pass a double quote inside a single-quoted PowerShell "
+            "string to a native executable; Windows PowerShell 5.1 drops the "
+            "escaping and the program arrives truncated: " + ", ".join(offenders),
+        )
+
+    def test_probe_argument_is_python_that_emits_the_sentinel(self) -> None:
+        argument = self._probe_argument()
+        result = subprocess.run(
+            [sys.executable, "-c", argument],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertEqual(result.stdout.strip(), self.SENTINEL)
+
+    @unittest.skipUnless(sys.platform.startswith("win"), "PowerShell editions are Windows-only here")
+    def test_probe_succeeds_under_every_installed_powershell(self) -> None:
+        available = [(Path(p).stem.lower(), p) for p in powershell_editions_or_fail(self)]
+
+        # Run the real function from a script file rather than through
+        # -Command, so the test does not add a quoting layer the shipped code
+        # does not have.
+        body = self._function_text()
+        interpreter = sys.executable.replace("'", "''")
+        script = (
+            f"{body}\n"
+            f"if (Test-PythonRuns '{interpreter}') {{ 'PROBE_OK' }} else {{ 'PROBE_FAILED' }}\n"
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            script_path = Path(tmpdir) / "probe.ps1"
+            script_path.write_text(script, encoding="utf-8")
+            for name, path in available:
+                with self.subTest(edition=name):
+                    result = subprocess.run(
+                        [path, "-NoProfile", "-ExecutionPolicy", "Bypass",
+                         "-File", str(script_path)],
+                        capture_output=True,
+                        text=True,
+                    )
+                    self.assertEqual(
+                        result.stdout.strip(),
+                        "PROBE_OK",
+                        f"Test-PythonRuns rejected a working Python 3 under "
+                        f"{name}; stdout={result.stdout!r} stderr={result.stderr!r}",
+                    )
 
 
 if __name__ == "__main__":

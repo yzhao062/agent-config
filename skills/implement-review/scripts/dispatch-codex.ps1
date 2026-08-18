@@ -133,7 +133,11 @@ function Resolve-ProbedPython {
     try {
         $probeArgs = @($PrefixArgs) + @(
             '-I', '-c',
-            'import os,sys;print("IMPLEMENT_REVIEW_PYTHON="+sys.executable);print("IMPLEMENT_REVIEW_REALPATH="+os.path.realpath(sys.executable))'
+            # The -c argument carries no double quote: Windows PowerShell 5.1
+            # rebuilds the native command line without escaping one, so Python
+            # receives a truncated program and the probe rejects a working
+            # interpreter. Same defect as anywhere-agents#34 in bootstrap.ps1.
+            "import os,sys;print('IMPLEMENT_REVIEW_PYTHON='+sys.executable);print('IMPLEMENT_REVIEW_REALPATH='+os.path.realpath(sys.executable))"
         )
         $probeOutput = @(& $launchPath @probeArgs 2>$null)
         $probeExit = $LASTEXITCODE

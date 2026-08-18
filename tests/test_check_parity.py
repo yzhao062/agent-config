@@ -13,8 +13,15 @@ import pathlib
 import platform
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
+
+# tests/ is on sys.path under `unittest discover -s tests` but not under
+# `python -m unittest tests.<module>`, which validate.yml uses for the
+# Sentinel redaction smoke. Put it there before the sibling import.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import _quiet_spawn  # noqa: E402,F401  installs a windowless spawn default on Windows
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -71,6 +78,7 @@ def _build_fake_tree(base: pathlib.Path):
         "scripts/statusline.py": "# statusline stub\n",
         "scripts/agent-quota.py": "# agent-quota stub\n",
         "scripts/generate_agent_configs.py": "# generator stub\n",
+        "scripts/merge_settings.py": "# settings merge stub\n",
         "scripts/pre-push-smoke.sh": "#!/bin/bash\nexit 0\n",
         "scripts/remote-smoke.sh": "#!/bin/bash\nexit 0\n",
         ".claude/settings.json": "{}\n",
@@ -104,6 +112,9 @@ def _build_fake_tree(base: pathlib.Path):
         "tests/test_dispatch_path_resolution.py",
         "tests/test_codex_usage.py",
         "tests/test_line_endings.py",
+        # Not a test: shared test infrastructure gated alongside the tests that
+        # import it.
+        "tests/_quiet_spawn.py",
     )
     for repo in (ac, aa):
         (repo / "tests").mkdir(exist_ok=True)
@@ -245,6 +256,32 @@ class CheckParityBehavior(unittest.TestCase):
                 text=True,
             )
             self.assertEqual(result.returncode, 2)
+
+    def test_both_roots_the_same_tree_exits_2(self):
+        # The argument names the anywhere-agents clone. Handed the agent-config
+        # one, both roots resolve to the same tree and every comparison passes
+        # because nothing is being compared. Two runs during the v0.7.15 review
+        # reported STRICT clean that way, one of them the reviewer's own
+        # verification, so the vacuous pass has to be refused rather than
+        # printed.
+        with tempfile.TemporaryDirectory() as d:
+            ac, _aa = _build_fake_tree(pathlib.Path(d))
+            rc, out = _run(ac, ac)
+            self.assertEqual(rc, 2, f"expected 2, got {rc}; output:\n{out}")
+            self.assertIn("both roots resolve to", out)
+
+    def test_a_symlink_to_the_same_tree_exits_2(self):
+        # `pwd -P` rather than a string compare: two spellings of one directory
+        # are the same self-comparison.
+        with tempfile.TemporaryDirectory() as d:
+            ac, _aa = _build_fake_tree(pathlib.Path(d))
+            alias = pathlib.Path(d) / "alias"
+            try:
+                alias.symlink_to(ac, target_is_directory=True)
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest(f"cannot create a directory symlink here: {exc}")
+            rc, out = _run(ac, alias)
+            self.assertEqual(rc, 2, f"expected 2, got {rc}; output:\n{out}")
 
 
 if __name__ == "__main__":

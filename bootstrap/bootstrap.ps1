@@ -11,10 +11,16 @@ param(
 # Verify a candidate python actually executes before trusting it. Exit status
 # alone is not proof that Python ran, so require the interpreter to echo a
 # sentinel produced by the -c program.
+#
+# The -c argument must contain no double quote. Windows PowerShell 5.1 rebuilds
+# a single command-line string for a native executable and does not escape a
+# double quote inside the argument, so Python receives a truncated program and
+# fails to parse it. Quote the argument with double quotes and use single quotes
+# inside; keep `$` out of it, because the outer double quotes interpolate.
 function Test-PythonRuns([string]$PythonPath) {
   try {
     $global:LASTEXITCODE = $null
-    $probeOutput = & $PythonPath -c 'import sys; sys.stdout.write("__ANYWHERE_AGENTS_PY3__" if sys.version_info[0] >= 3 else "")' 2>$null
+    $probeOutput = & $PythonPath -c "import sys; sys.stdout.write('__ANYWHERE_AGENTS_PY3__' if sys.version_info[0] >= 3 else '')" 2>$null
     $launched = $?
     return ($launched -and $LASTEXITCODE -eq 0 -and ([string]$probeOutput).Trim() -eq '__ANYWHERE_AGENTS_PY3__')
   } catch {
@@ -53,26 +59,81 @@ function Find-RealPython {
   return $null
 }
 
-# Read the legacy passive-pack selection from one config layer without Python
-# or PyYAML. The return value is one of: none, empty, nonempty.
+# Read the passive-pack selection from one config layer without Python or
+# PyYAML. The return value is one of: none, empty, nonempty.
+#
+# `packs:` is the canonical key and `rule_packs:` the deprecated alias, and
+# within one file the resolver prefers the canonical one. A pre-parser that
+# knew only the alias read a consumer on the canonical key as having no
+# selection at all, which is the answer that both deletes composed pack blocks
+# and freezes opted-out ones. See scripts/packs/config.py.
 function Get-RulePacksConfigState([string]$ConfigPath) {
+  # The empty-string check comes first on purpose. Get-UserConfigPath returns
+  # one when no user-config home resolves. `Test-Path -LiteralPath ''` answers
+  # $false on PowerShell 7, but on Windows PowerShell 5.1 it fails to bind,
+  # writes a non-terminating error, and returns nothing, and the surrounding
+  # `if (-not ...)` then takes the branch for a path that exists.
+  if (-not $ConfigPath) { return 'none' }
+  if (-not (Test-Path -LiteralPath $ConfigPath)) { return 'none' }
+  $canonical = Get-RulePacksKeyState $ConfigPath 'packs'
+  if ($canonical -ne 'none') { return $canonical }
+  return (Get-RulePacksKeyState $ConfigPath 'rule_packs')
+}
+
+# Return the value that follows a top-level `<key>:` on this line, or $null
+# when the line is not that key. See the bash half: matching only the bare
+# spelling answered `none` for `"packs": [agent-style]` and
+# `packs : [agent-style]`, which the resolver reads as a selection. $null and
+# the empty string are different answers here, so callers compare against $null
+# rather than testing truthiness.
+function Get-RulePacksKeyTail([string]$Line, [string]$Key) {
+  if ($Line -match '^\s') { return $null }
+  $colon = $Line.IndexOf(':')
+  if ($colon -lt 0) { return $null }
+  $head = ($Line.Substring(0, $colon) -replace '\s', '')
+  if ($head.Length -ge 2) {
+    $first = $head[0]
+    $last = $head[$head.Length - 1]
+    if (($first -eq '"' -and $last -eq '"') -or ($first -eq "'" -and $last -eq "'")) {
+      $head = $head.Substring(1, $head.Length - 2)
+    }
+  }
+  # -cne, not -ne: PowerShell compares case-insensitively by default, so
+  # `Rule_Packs:` read as `empty` here and as `none` in bash, and the
+  # PowerShell answer routes to the silent bare-copy path.
+  if ($head -cne $Key) { return $null }
+  return $Line.Substring($colon + 1)
+}
+
+# The single-key scanner behind Get-RulePacksConfigState.
+function Get-RulePacksKeyState([string]$ConfigPath, [string]$Key) {
+  if (-not $ConfigPath) { return 'none' }
   if (-not (Test-Path -LiteralPath $ConfigPath)) { return 'none' }
   $found = $false
   $inList = $false
   foreach ($line in [System.IO.File]::ReadAllLines((Resolve-Path -LiteralPath $ConfigPath))) {
-    if ($line -match '^rule_packs:(.*)$') {
+    $keyTail = Get-RulePacksKeyTail $line $Key
+    if ($null -ne $keyTail) {
       $found = $true
       $inList = $true
-      $tail = (($matches[1] -replace '#.*$', '') -replace '\s', '').ToLowerInvariant()
+      $tail = (($keyTail -replace '#.*$', '') -replace '\s', '').ToLowerInvariant()
       if ($tail -and $tail -notin @('[]', 'null', '~')) { return 'nonempty' }
       continue
     }
     if ($inList) {
       if ([string]::IsNullOrWhiteSpace($line) -or $line -match '^\s*#') { continue }
-      if ($line -match '^\s+') {
-        if ($line -match '^\s*-') { return 'nonempty' }
-        continue
-      }
+      # A block sequence may sit at the same indentation as its key. That is
+      # what PyYAML's safe_dump emits, and anywhere-agents writes this file
+      # with safe_dump, so the zero-indent shape is the common one rather than
+      # an edge case. Requiring indentation here read every such file as an
+      # empty list, which is the explicit opt-out.
+      if ($line -match '^\s*-') { return 'nonempty' }
+      # The three spellings of an empty value; see the bash half.
+      if ((($line -replace '\s', '').ToLowerInvariant()) -in @('[]', 'null', '~')) { continue }
+      # An indented node belongs to the key, and anything that is not a proven
+      # empty list counts as a selection. See the bash half: an indented flow
+      # sequence read as the explicit opt-out and deleted every pack block.
+      if ($line -match '^\s+') { return 'nonempty' }
       break
     }
   }
@@ -80,23 +141,159 @@ function Get-RulePacksConfigState([string]$ConfigPath) {
   return 'none'
 }
 
+# Report whether the AGENTS.md already on disk is a composed artifact. The
+# composer stamps `<!-- rule-pack:<name>:begin ... -->` above each pack block,
+# so that marker is the one signal available without re-running composition.
+# The skipped-composition marker reads `rule-pack composition skipped`, with a
+# space rather than a colon after `rule-pack`, so it does not match here.
+function Test-AgentsMdIsComposed {
+  if (-not (Test-Path -LiteralPath 'AGENTS.md')) { return $false }
+  try {
+    $text = [System.IO.File]::ReadAllText((Resolve-Path -LiteralPath 'AGENTS.md'))
+  } catch {
+    return $false
+  }
+  # A complete marker line. See the bash half for why a prefix match both
+  # discarded authentic artifacts and accepted fakes, and for why the version
+  # field is any non-whitespace run rather than a narrow character class.
+  # -cmatch, not -match: the default is case-insensitive, so an uppercase fake
+  # passed here while bash rejected it. The trailing class tolerates CRLF and
+  # trailing blanks, matching the bash half's [[:space:]]*; \s is not usable
+  # here because it also matches the newline and would run the match past the
+  # line, and the version class excludes \n for the same reason.
+  return ($text -cmatch '(?m)^<!-- rule-pack:.+:begin version=[^ \t\r\n]+ sha256=[0-9A-Fa-f]{64} -->[ \t\r]*$')
+}
+
+# Append one entry to .gitignore, once. The previous inline form prefixed the
+# value with a newline escape, which emitted a blank line whenever the file
+# already ended in one, and a leading blank line when it created the file.
+# Probe the last byte instead, and write without the BOM Add-Content adds on
+# some editions.
+function Add-GitignoreEntry([string]$Pattern, [string]$Line) {
+  # -CaseSensitive, because Select-String is case-insensitive by default while
+  # the bash half's `grep -qE` is not. With an existing `/AGENTS.MD`, the two
+  # entry points disagreed: PowerShell called the rule present and Bash
+  # appended the lowercase one. On a case-sensitive checkout `/AGENTS.MD` does
+  # not cover `AGENTS.md`, so the generated file becomes visible again.
+  if ((Test-Path .gitignore) -and (Select-String -Quiet -CaseSensitive -Pattern $Pattern .gitignore)) { return }
+  $path = Join-Path (Get-Location).Path '.gitignore'
+  $prefix = ''
+  if (Test-Path -LiteralPath $path) {
+    $bytes = [System.IO.File]::ReadAllBytes($path)
+    if ($bytes.Length -gt 0 -and $bytes[$bytes.Length - 1] -ne 0x0A) { $prefix = "`n" }
+  }
+  $encoding = New-Object System.Text.UTF8Encoding $false
+  $existing = if (Test-Path -LiteralPath $path) { [System.IO.File]::ReadAllBytes($path) } else { [byte[]]@() }
+  $addition = $encoding.GetBytes($prefix + $Line + "`n")
+  $combined = New-Object byte[] ($existing.Length + $addition.Length)
+  [System.Array]::Copy($existing, 0, $combined, 0, $existing.Length)
+  [System.Array]::Copy($addition, 0, $combined, $existing.Length, $addition.Length)
+  [System.IO.File]::WriteAllBytes($path, $combined)
+}
+
+# Report whether git already tracks a path in this repo.
+function Test-GitTracks([string]$RelativePath) {
+  try {
+    $global:LASTEXITCODE = $null
+    & git ls-files --error-unmatch -- $RelativePath 2>$null | Out-Null
+    return ($LASTEXITCODE -eq 0)
+  } catch {
+    return $false
+  }
+}
+
+# Where the user-level config layer lives, mirroring config.user_config_home.
+# That function branches on the platform rather than cascading: Windows reads
+# %APPDATA% and stops, POSIX reads $XDG_CONFIG_HOME then $HOME/.config and
+# never looks at %APPDATA%. See the bash half for the shapes a cascade got
+# wrong. Returns an empty string when nothing resolves, which the caller
+# treats as no layer.
+function Get-UserConfigPath {
+  # $IsWindows exists from PowerShell 6 on. Windows PowerShell 5.1 leaves it
+  # undefined and only ever runs on Windows, so a null value means Windows.
+  if ($null -eq $IsWindows -or $IsWindows) {
+    if ($env:APPDATA) { return (Join-Path (Join-Path $env:APPDATA 'anywhere-agents') 'config.yaml') }
+    return ''
+  }
+  if ($env:XDG_CONFIG_HOME) { return (Join-Path (Join-Path $env:XDG_CONFIG_HOME 'anywhere-agents') 'config.yaml') }
+  if ($env:HOME) { return (Join-Path (Join-Path (Join-Path $env:HOME '.config') 'anywhere-agents') 'config.yaml') }
+  return ''
+}
+
+# True when the environment overlay names at least one pack to ADD. The overlay
+# grammar is additive with a `-name` subtract form, so a value made only of
+# subtractions adds nothing and must not be read as a selection. See the bash
+# half for the recorded difference from config.parse_env_var on whitespace.
+function Test-EnvPackSelectionAdds {
+  $raw = [string]$env:AGENT_CONFIG_PACKS
+  if (-not $raw) { $raw = [string]$env:AGENT_CONFIG_RULE_PACKS }
+  if (-not $raw) { return $false }
+  foreach ($entry in ($raw -split '[\s,]+')) {
+    if (-not $entry) { continue }
+    if ($entry.StartsWith('-')) {
+      # An entry the resolver rejects outright, or a name carrying anything a
+      # pack name is not made of; see the bash half for why this is a whitelist.
+      $name = $entry.Substring(1)
+      if (-not $name -or $entry -match '[/@:]' -or $name -notmatch '^[A-Za-z0-9._-]+$') {
+        return $true
+      }
+      continue
+    }
+    return $true
+  }
+  return $false
+}
+
+# The four layers, in the resolver's precedence order: user-level, tracked,
+# project-local, environment overlay. Within the three file layers an explicit
+# empty list clears everything earlier, and a nonempty list selects; a file
+# with no key at all leaves the running answer alone. The overlay is additive
+# and so can only turn the answer on. See the bash half for the seed rationale
+# and for the five documented gaps, each of which preserves a file rather than
+# deleting one.
+# True when a line in this file is one the scanner above cannot classify; see
+# the bash half for the four readable shapes and for why file length is not the
+# same question.
+function Test-FileHasUnreadableLine([string]$Path) {
+  if (-not $Path) { return $false }
+  if (-not (Test-Path -LiteralPath $Path)) { return $false }
+  $seenTopLevel = $false
+  foreach ($line in [System.IO.File]::ReadAllLines((Resolve-Path -LiteralPath $Path))) {
+    if ([string]::IsNullOrWhiteSpace($line)) { continue }
+    if ($line -match '^\s*#') { continue }
+    # A continuation needs a line above it; see the bash half.
+    if ($line -match '^\s') {
+      if ($seenTopLevel) { continue }
+      return $true
+    }
+    $seenTopLevel = $true
+    if ($line -match '^\s*-') { continue }
+    $colon = $line.IndexOf(':')
+    if ($colon -lt 0) { return $true }
+    $head = ($line.Substring(0, $colon) -replace '\s', '')
+    if (-not $head -or $head -notmatch '^[A-Za-z0-9_.''"-]+$') { return $true }
+  }
+  return $false
+}
+
 function Test-PassiveRulePackConfigured {
-  $trackedState = Get-RulePacksConfigState 'agent-config.yaml'
-  $localState = Get-RulePacksConfigState 'agent-config.local.yaml'
-  $envCompact = ([string]$env:AGENT_CONFIG_RULE_PACKS) -replace '[\s,]', ''
-  # Layer order matters, and it is not a merge. Probing the real resolver gives
-  # [] for tracked [agent-style] plus local [], so a later empty list clears an
-  # earlier selection rather than adding nothing to it. Treating either layer's
-  # non-emptiness as sufficient marked a deliberate opt-out as an incomplete
-  # bootstrap. The environment variable is additive, so it wins when set.
-  if ($envCompact) { return $true }
-  if ($localState -eq 'nonempty') { return $true }
-  if ($localState -eq 'empty') { return $false }
-  if ($trackedState -eq 'nonempty') { return $true }
-  if ($trackedState -eq 'empty') { return $false }
-  # No signal in either layer: the composer's default selection includes
-  # agent-style, so a passive pack is configured.
-  return $true
+  $configured = $true
+  foreach ($layer in @((Get-UserConfigPath), 'agent-config.yaml', 'agent-config.local.yaml')) {
+    if (-not $layer) { continue }
+    switch (Get-RulePacksConfigState $layer) {
+      'nonempty' { $configured = $true }
+      'empty' { $configured = $false }
+      'none' {
+        # A nonempty later layer this scanner cannot read is uncertainty rather
+        # than absence; see the bash half.
+        if (-not $configured -and (Test-FileHasUnreadableLine $layer)) {
+          $configured = $true
+        }
+      }
+    }
+  }
+  if (Test-EnvPackSelectionAdds) { $configured = $true }
+  return $configured
 }
 
 # Stage beside the destination, then rename over it. Readers therefore see a
@@ -369,24 +566,240 @@ try {
   Add-LedgerStep 'preflight' 'repo' 'ok'
 } catch {}
 
+# JSON depth for settings documents. -Depth silently truncates on Windows
+# PowerShell 5.1 and only warns on 7, so the number is generous rather than
+# tuned to the deepest document seen so far.
+$script:JsonDepth = 64
+
+# Read a JSON file as UTF-8 regardless of the machine's ANSI codepage.
+# Get-Content without -Encoding uses that codepage on Windows PowerShell 5.1,
+# which is cp1252 on a default install, so a UTF-8 settings.json round-tripped
+# through it loses every character outside the codepage. The loss is silent:
+# the result is still valid JSON. A leading BOM is skipped, which heals a copy
+# some earlier `Set-Content -Encoding UTF8` wrote.
+function Read-JsonFileUtf8([string]$Path) {
+  $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $Path))
+  $offset = 0
+  if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
+    $offset = 3
+  }
+  # Strict decoding rather than [System.Text.Encoding]::UTF8, whose shared
+  # instance replaces an invalid byte with U+FFFD and says nothing. The Bash
+  # half decodes with `utf-8-sig`, which raises, so the two entry points
+  # disagreed on exactly the input this release is about: on a file already
+  # damaged by the cp1252 round trip, the `~/.claude.json` heal read the
+  # damage, substituted its own, and wrote the whole file back. That path has
+  # no Python helper in front of it and no other guard.
+  $strict = New-Object System.Text.UTF8Encoding $false, $true
+  $text = $strict.GetString($bytes, $offset, $bytes.Length - $offset)
+  # An unparseable target used to come back as one newline under Windows
+  # PowerShell 5.1 and as `null` under PowerShell 7, with the run reporting
+  # success. A strict decoder does not catch that, because an opening brace on
+  # its own is valid UTF-8. What let it through was a call site with no
+  # try/catch: ConvertFrom-Json raises a statement-terminating error, which
+  # ends the assignment and leaves the variable null while the script carries
+  # on to merge and write. The catch at the call site is the fix; measured on
+  # both editions, the error terminates with or without -ErrorAction Stop. The
+  # switch stays because it also forces the throw when a caller has set
+  # $ErrorActionPreference to SilentlyContinue, where the default Continue
+  # would otherwise swallow it.
+  $data = $text | ConvertFrom-Json -ErrorAction Stop
+  # The helper requires both files to hold a JSON object. Without the same
+  # check, a bare array or string root reaches Merge-Json, which reads its
+  # properties and writes the result back over an object it never merged.
+  #
+  # The full type name, not the [pscustomobject] accelerator, which resolves to
+  # PSObject. Every value is wrapped in one of those, so `'hello' -is
+  # [pscustomobject]` is true on both editions and `[1,2] -is [pscustomobject]`
+  # is true on 5.1. Written that way the check passed everything through, and a
+  # string root came back rewritten.
+  if ($null -eq $data -or $data -isnot [System.Management.Automation.PSCustomObject]) {
+    throw "the JSON root in $Path is not an object"
+  }
+  return $data
+}
+
+# Serialize to the one on-disk form both entry points agree on: LF line endings
+# and a trailing newline. ConvertTo-Json emits CRLF on both editions, so
+# writing its output unchanged would rewrite every line of a file the bash path
+# writes with LF, and the two machines would take turns reformatting it.
+function ConvertTo-CanonicalJson($Object) {
+  $json = $Object | ConvertTo-Json -Depth $script:JsonDepth
+  return (($json -replace "`r`n", "`n") + "`n")
+}
+
+# Write UTF-8 without a BOM. `Set-Content -Encoding UTF8` writes a BOM on
+# Windows PowerShell 5.1 and none on 7, so it cannot be the answer here.
+function Write-JsonFileUtf8([string]$Path, [string]$Text) {
+  [System.IO.File]::WriteAllBytes($Path, (New-Object System.Text.UTF8Encoding $false).GetBytes($Text))
+}
+
+# Merge through the shared Python helper, so both entry points run the same
+# code and produce the same bytes. Returns false when the helper cannot run, in
+# which case the caller falls back to the in-shell merge below. The fallback is
+# byte-compatible in content but not in formatting: ConvertTo-Json indents with
+# four spaces and aligns nested objects on Windows PowerShell 5.1, and with two
+# spaces on PowerShell 7, so neither matches json.dumps. That divergence is the
+# reason the helper exists.
+#
+# Paths are passed as separate arguments. A Windows path cannot contain a
+# double quote and PowerShell quotes embedded spaces correctly, so this is the
+# one invocation shape that is safe under the 5.1 native command-line rebuild
+# that caused anywhere-agents#34.
+# $false means the helper could not run, which is the only state the in-shell
+# fallback is for. A nonzero exit is the helper refusing the input after
+# reading it, and running a second implementation over the same bytes then
+# destroyed them: a target holding `{` came back as one newline under Windows
+# PowerShell 5.1 and as `null` under PowerShell 7, and a target holding an
+# invalid UTF-8 byte came back with U+FFFD, both with the run reporting
+# success. The Bash entry point does not read the exit code at all, so leaving
+# the file alone is also what makes the two agree.
+function Invoke-SettingsMerge([string]$TargetPath, [string]$SharedPath) {
+  $helper = '.agent-config/repo/scripts/merge_settings.py'
+  if (-not $pyCmd) { return $false }
+  if (-not (Test-Path -LiteralPath $helper)) { return $false }
+  try {
+    $global:LASTEXITCODE = $null
+    & $pyCmd.Path $helper $TargetPath $SharedPath
+    if ($LASTEXITCODE -ne 0) {
+      [Console]::Error.WriteLine("warning: the settings merge helper refused $TargetPath; leaving it unchanged")
+    }
+    return $true
+  } catch {
+    return $false
+  }
+}
+
+# Classify a JSON number the way Python does, for the comparison below.
+# Returns @($isExactInteger, $bigIntegerValue, $doubleValue), or $null for
+# anything that is not a number.
+#
+# The two editions do not even agree on the type: `ConvertFrom-Json` reads
+# 9007199254740992.0 as a Double under PowerShell 7 and as a Decimal under
+# Windows PowerShell 5.1, and 1e20 as a Double under both. The invariant string
+# settles the integer case for every one of those, and Truncate settles the
+# rest, so neither the type list nor the edition has to be enumerated.
+function Get-PythonNumericKey($Value) {
+  try {
+    $text = $Value.ToString([System.Globalization.CultureInfo]::InvariantCulture)
+    if ($text -match '^-?\d+$') {
+      return @($true, [System.Numerics.BigInteger]::Parse($text), [double]$Value)
+    }
+    $asDouble = [double]$Value
+    if ([double]::IsNaN($asDouble) -or [double]::IsInfinity($asDouble)) {
+      return @($false, [System.Numerics.BigInteger]::Zero, $asDouble)
+    }
+    if ($asDouble -eq [System.Math]::Truncate($asDouble)) {
+      return @($true, [System.Numerics.BigInteger]$asDouble, $asDouble)
+    }
+    return @($false, [System.Numerics.BigInteger]::Zero, $asDouble)
+  } catch {
+    return $null
+  }
+}
+
+# Scalar equality as Python's dict keys see it, for the array dedup below.
+# Python keys on the value with its type for strings but treats 1, 1.0 and
+# True as one key; .NET boxed equality keeps those three apart.
+function Test-PythonScalarEqual($Left, $Right) {
+  if ($null -eq $Left -or $null -eq $Right) {
+    return ($null -eq $Left -and $null -eq $Right)
+  }
+  if ($Left -is [string] -or $Right -is [string]) {
+    return ($Left -is [string] -and $Right -is [string] -and $Left -ceq $Right)
+  }
+  # Python compares a bool as the integer 1 or 0, so True is 1 and 1.0 but not
+  # 2. LanguagePrimitives converts toward the left operand's type instead, so
+  # `Equals($true, 2)` converts 2 to a bool and answers true while
+  # `Equals(2, $true)` compares numbers and answers false. The result depended
+  # on which side of the merge a value arrived from, and in the order a real
+  # settings file produces it dropped a value the helper keeps.
+  if ($Left -is [bool]) { $Left = [int]$Left }
+  if ($Right -is [bool]) { $Right = [int]$Right }
+  # Python compares an integer and a float exactly. .NET widens the integer to
+  # a double first, so 9007199254740993 equalled 9007199254740992.0 under
+  # PowerShell 7, and 9223372036854775807 equalled its rounded double under
+  # both editions, while dict.fromkeys keeps each pair apart. Compare exact
+  # integers as integers and everything else as doubles.
+  $leftKey = Get-PythonNumericKey $Left
+  $rightKey = Get-PythonNumericKey $Right
+  if ($null -eq $leftKey -or $null -eq $rightKey) {
+    return [System.Management.Automation.LanguagePrimitives]::Equals($Left, $Right)
+  }
+  if ($leftKey[0] -ne $rightKey[0]) { return $false }
+  if ($leftKey[0]) { return ($leftKey[1] -eq $rightKey[1]) }
+  return ($leftKey[2] -eq $rightKey[2])
+}
+
 function Merge-Json($base, $over) {
   foreach ($p in $over.PSObject.Properties) {
-    $b = $base.PSObject.Properties[$p.Name]
+    # The PSObject.Properties indexer matches case-insensitively on both
+    # editions, so asking for `env` returns a property named `Env` and the
+    # merge then writes the shared value under the existing spelling. The
+    # Python path on the bash side keys on the exact string. Scan for a
+    # case-exact match so the two agree.
+    $b = $null
+    foreach ($candidate in $base.PSObject.Properties) {
+      if ($candidate.Name -ceq $p.Name) { $b = $candidate; break }
+    }
     if ($b -and $b.Value -is [PSCustomObject] -and $p.Value -is [PSCustomObject]) {
       Merge-Json $b.Value $p.Value
     } elseif ($b -and $b.Value -is [Array] -and $p.Value -is [Array]) {
-      # Arrays of objects (e.g., hooks): replace. Arrays of strings: dedup.
-      $hasObj = $false; foreach ($el in $p.Value) { if ($el -is [PSCustomObject]) { $hasObj = $true; break } }
-      if ($hasObj) {
-        $base | Add-Member -NotePropertyName $p.Name -NotePropertyValue $p.Value -Force
+      # Arrays of objects (e.g., hooks): replace. Arrays of scalars: dedup.
+      # `merge_settings.py` decides on the incoming list's FIRST element alone,
+      # so a mixed list like ["a", {...}] takes the dedup path there. Scanning
+      # every element for an object sent the same input down the replace path
+      # here, and the two entry points then wrote different files.
+      $firstIsObj = ($p.Value.Count -gt 0 -and $p.Value[0] -is [PSCustomObject])
+      if ($firstIsObj) {
+        $b.Value = $p.Value
       } else {
-        $s = [System.Collections.Generic.HashSet[string]]::new()
-        $m = @(); foreach ($i in $b.Value) { if ($s.Add($i)) { $m += $i } }
-        foreach ($i in $p.Value) { if ($s.Add($i)) { $m += $i } }
-        $base | Add-Member -NotePropertyName $p.Name -NotePropertyValue $m -Force
+        # Deduplicate the way `dict.fromkeys` does in merge_settings.py.
+        # Neither hash set works here. HashSet[string] stringifies, so 1 and
+        # "1" collapse and $true becomes "True". HashSet[object] keeps 1, 1.0
+        # and $true apart because their boxed .NET types differ, while Python
+        # treats all three as one key. Compare pairwise instead: a string only
+        # equals a string, case-sensitively as Python does, and everything else
+        # goes through PowerShell's numeric conversion, which agrees with
+        # Python on 1 == 1.0 == True.
+        $m = @()
+        foreach ($i in (@($b.Value) + @($p.Value))) {
+          $duplicate = $false
+          foreach ($seen in $m) {
+            if (Test-PythonScalarEqual $seen $i) { $duplicate = $true; break }
+          }
+          if (-not $duplicate) { $m += ,$i }
+        }
+        $b.Value = $m
       }
+    } elseif ($b) {
+      # Assign in place rather than through Add-Member -Force, which removes
+      # the property and appends it again. That moved an updated key to the end
+      # of the object on every Windows run while the bash path left it where it
+      # was, so the two entry points reordered the file against each other.
+      $b.Value = $p.Value
     } else {
-      $base | Add-Member -NotePropertyName $p.Name -NotePropertyValue $p.Value -Force
+      # No case-exact match, but a case-different one may still exist, and
+      # `Add-Member -Force` deletes it: base `Env` plus shared `env` would leave
+      # `env` alone, silently dropping whatever `Env` held. A PSCustomObject
+      # cannot carry both spellings at once, so keep the existing key and merge
+      # into it. That loses no data, unlike -Force, though the Python path would
+      # have kept the two apart. Say so, because the spelling then depends on
+      # which entry point ran.
+      $clash = $null
+      foreach ($candidate in $base.PSObject.Properties) {
+        if ($candidate.Name -eq $p.Name) { $clash = $candidate; break }
+      }
+      if ($clash) {
+        Write-Warning ("settings merge: '{0}' and '{1}' differ only in case and PowerShell cannot hold both; merging into '{0}'. Install Python to keep them separate." -f $clash.Name, $p.Name)
+        if ($clash.Value -is [PSCustomObject] -and $p.Value -is [PSCustomObject]) {
+          Merge-Json $clash.Value $p.Value
+        } else {
+          $clash.Value = $p.Value
+        }
+      } else {
+        $base | Add-Member -NotePropertyName $p.Name -NotePropertyValue $p.Value
+      }
     }
   }
 }
@@ -515,8 +928,20 @@ if ($composeOk) {
       Add-LedgerStep 'compose' 'repo' 'ok'
     } catch {}
 } else {
+    $composePreserved = $false
     $passiveRulePackConfigured = Test-PassiveRulePackConfigured
-    if ($passiveRulePackConfigured) {
+    # Gated on a configured selection; see the bash half. An explicit
+    # `rule_packs: []` must still restore the upstream file.
+    if ($passiveRulePackConfigured -and (Test-AgentsMdIsComposed)) {
+      # Composition cannot run, and the AGENTS.md on disk is a composed
+      # artifact. Replacing it with the un-composed upstream copy deletes every
+      # pack block, and where the file is tracked git then records that
+      # deletion as intent. Keep the last good artifact. This check reads the
+      # file rather than the configuration, so it still holds when the
+      # configuration is misread, which is how the pack blocks were lost in the
+      # first place.
+      $composePreserved = $true
+    } elseif ($passiveRulePackConfigured) {
       $fallbackMarker = "<!-- rule-pack composition skipped: $composeSkipReason; run anywhere-agents to compose -->"
       $upstreamAgents = [System.IO.File]::ReadAllText((Resolve-Path -LiteralPath .agent-config/AGENTS.md))
       [System.IO.File]::WriteAllText(
@@ -538,9 +963,30 @@ if ($composeOk) {
     } else {
       Copy-Item .agent-config/AGENTS.md AGENTS.md -Force
     }
+    if ($composePreserved) {
+      [Console]::Error.WriteLine("")
+      [Console]::Error.WriteLine("warning: composition was skipped ($composeSkipReason) and the AGENTS.md on disk is a")
+      [Console]::Error.WriteLine("         composed artifact, so this run left it untouched rather than")
+      [Console]::Error.WriteLine("         replacing it with the un-composed upstream copy.")
+      [Console]::Error.WriteLine("         Its pack blocks are whatever the last successful composition")
+      [Console]::Error.WriteLine("         produced; upstream changes reach this file only once")
+      [Console]::Error.WriteLine("         composition runs again.")
+      if ($composeSkipReason -ne 'no composer script in sparse clone') {
+        $script:LedgerIncomplete = $true
+      }
+    }
+    # Awareness is a different question from selection: `packs: []` is an
+    # opt-out and still means the operator knows about packs. It reads the same
+    # four layers the selection gate does, so a consumer whose only mention is
+    # user-level, or who uses the canonical env var, is not told that packs
+    # were skipped when they were never asked for.
     $trackedState = Get-RulePacksConfigState 'agent-config.yaml'
     $localState = Get-RulePacksConfigState 'agent-config.local.yaml'
-    $rpAware = ($trackedState -ne 'none' -or $localState -ne 'none' -or [bool]$env:AGENT_CONFIG_RULE_PACKS)
+    $userState = Get-RulePacksConfigState (Get-UserConfigPath)
+    $rpAware = ($trackedState -ne 'none' -or $localState -ne 'none' -or $userState -ne 'none' -or [bool]$env:AGENT_CONFIG_PACKS -or [bool]$env:AGENT_CONFIG_RULE_PACKS)
+    # The tip tells the operator the writing rules are absent. When the composed
+    # artifact was preserved they are present, so the tip would be wrong.
+    if ($composePreserved) { $rpAware = $true }
     if (-not $rpAware) {
         [Console]::Error.WriteLine("")
         [Console]::Error.WriteLine("tip: anywhere-agents ships with agent-style writing rules enabled by default,")
@@ -549,7 +995,11 @@ if ($composeOk) {
     }
     try {
       Add-LedgerTarget 'AGENTS.md'
-      Add-LedgerStep 'compose' 'repo' 'skipped' -Reason $composeSkipReason
+      if ($composePreserved) {
+        Add-LedgerStep 'compose' 'repo' 'skipped' -Reason "$composeSkipReason; existing composed AGENTS.md preserved"
+      } else {
+        Add-LedgerStep 'compose' 'repo' 'skipped' -Reason $composeSkipReason
+      }
     } catch {}
 }
 # Generate per-agent config files (CLAUDE.md, agents/codex.md) from AGENTS.md.
@@ -566,10 +1016,23 @@ if (Test-Path .agent-config/repo/.claude/commands) {
 }
 if (Test-Path .agent-config/repo/.claude/settings.json) {
   if (Test-Path .claude/settings.json) {
-    $shared = Get-Content .agent-config/repo/.claude/settings.json -Raw | ConvertFrom-Json
-    $project = Get-Content .claude/settings.json -Raw | ConvertFrom-Json
-    Merge-Json $project $shared
-    $project | ConvertTo-Json -Depth 10 | Set-Content .claude/settings.json
+    if (-not (Invoke-SettingsMerge '.claude/settings.json' '.agent-config/repo/.claude/settings.json')) {
+      # Unreadable input leaves the file alone, which is what the helper does
+      # with the same bytes. Without this the throw would abort the run partway
+      # through, on a machine that has no Python to fall back from.
+      try {
+        $shared = Read-JsonFileUtf8 .agent-config/repo/.claude/settings.json
+        $project = Read-JsonFileUtf8 .claude/settings.json
+        Merge-Json $project $shared
+        # The helper's rule, so both entry points refuse the same result.
+        if (@($project.PSObject.Properties).Count -eq 0) {
+          throw 'refusing to write an empty object'
+        }
+        Write-JsonFileUtf8 (Join-Path (Get-Location).Path '.claude/settings.json') (ConvertTo-CanonicalJson $project)
+      } catch {
+        [Console]::Error.WriteLine("warning: could not merge .claude/settings.json; leaving it unchanged: $($_.Exception.Message)")
+      }
+    }
   } else {
     Copy-Item .agent-config/repo/.claude/settings.json .claude/settings.json -Force
   }
@@ -613,10 +1076,19 @@ if (Test-Path .agent-config/repo/user/settings.json) {
   New-Item -ItemType Directory -Force -Path $userClaude | Out-Null
   $userSettings = Join-Path $userClaude 'settings.json'
   if (Test-Path $userSettings) {
-    $shared = Get-Content .agent-config/repo/user/settings.json -Raw | ConvertFrom-Json
-    $existing = Get-Content $userSettings -Raw | ConvertFrom-Json
-    Merge-Json $existing $shared
-    $existing | ConvertTo-Json -Depth 10 | Set-Content $userSettings
+    if (-not (Invoke-SettingsMerge $userSettings '.agent-config/repo/user/settings.json')) {
+      try {
+        $shared = Read-JsonFileUtf8 .agent-config/repo/user/settings.json
+        $existing = Read-JsonFileUtf8 $userSettings
+        Merge-Json $existing $shared
+        if (@($existing.PSObject.Properties).Count -eq 0) {
+          throw 'refusing to write an empty object'
+        }
+        Write-JsonFileUtf8 $userSettings (ConvertTo-CanonicalJson $existing)
+      } catch {
+        [Console]::Error.WriteLine("warning: could not merge $userSettings; leaving it unchanged: $($_.Exception.Message)")
+      }
+    }
   } else {
     Copy-Item .agent-config/repo/user/settings.json $userSettings -Force
   }
@@ -630,7 +1102,7 @@ if (Test-Path .agent-config/repo/user/settings.json) {
 $claudeJson = Join-Path $env:USERPROFILE '.claude.json'
 if (Test-Path $claudeJson) {
   try {
-    $claudeState = Get-Content $claudeJson -Raw | ConvertFrom-Json
+    $claudeState = Read-JsonFileUtf8 $claudeJson
     if ($claudeState.PSObject.Properties['autoUpdates'] -and $claudeState.autoUpdates -eq $false) {
       $claudeState.autoUpdates = $true
       # Best-effort heal. Atomic replace (staged temp + Move-Item -Force) prevents
@@ -642,7 +1114,7 @@ if (Test-Path $claudeJson) {
       # Code reads by key so this is acceptable. Unique GUID suffix avoids
       # concurrent-bootstrap temp-path collisions.
       $tmp = Join-Path (Split-Path $claudeJson) (".claude.json.{0}.tmp" -f [guid]::NewGuid().ToString("N"))
-      $claudeState | ConvertTo-Json -Depth 20 | Set-Content $tmp
+      Write-JsonFileUtf8 $tmp (ConvertTo-CanonicalJson $claudeState)
       Move-Item -Force $tmp $claudeJson
     }
   } catch {
@@ -664,13 +1136,19 @@ try {
   Add-LedgerStep 'external' 'external' 'ok'
 } catch {}
 
-if (-not (Test-Path .gitignore) -or -not (Select-String -Quiet -Pattern '^\/?\.agent-config/' .gitignore)) {
-  Add-Content -Path .gitignore -Value "`n.agent-config/"
-}
+Add-GitignoreEntry '^\/?\.agent-config/' '.agent-config/'
 # Rule-pack opt-in writes agent-config.local.yaml as a machine-local override
 # that must not be committed. Auto-ignore it idempotently alongside .agent-config/.
-if (-not (Test-Path .gitignore) -or -not (Select-String -Quiet -Pattern '^\/?agent-config\.local\.yaml$' .gitignore)) {
-  Add-Content -Path .gitignore -Value "`nagent-config.local.yaml"
+Add-GitignoreEntry '^\/?agent-config\.local\.yaml$' 'agent-config.local.yaml'
+# See the matching block in bootstrap.sh for why the three generated files are
+# ignored, why an already-tracked one is left alone, and why the entries are
+# anchored and name codex.md rather than the agents/ directory.
+if (-not $env:AGENT_CONFIG_TRACK_GENERATED) {
+  foreach ($generated in @('AGENTS.md', 'CLAUDE.md', 'agents/codex.md')) {
+    if (-not (Test-GitTracks $generated)) {
+      Add-GitignoreEntry ("^/?" + [regex]::Escape($generated) + "$") ("/" + $generated)
+    }
+  }
 }
 # Self-update: copy the latest bootstrap script from the sparse clone over this
 # one. Without this, a consumer that initially fetched an older bootstrap.ps1

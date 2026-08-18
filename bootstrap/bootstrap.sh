@@ -132,45 +132,98 @@ _find_python() {
   return 1
 }
 
-# Read the legacy passive-pack selection from one config layer without Python
-# or PyYAML. The return value is one of: none, empty, nonempty. This mirrors the
-# rule_packs signal semantics used by the composer closely enough to decide
-# whether a skipped composition omitted an effective passive pack.
+# Read the passive-pack selection from one config layer without Python or
+# PyYAML. The return value is one of: none, empty, nonempty.
+#
+# `packs:` is the canonical key and `rule_packs:` the deprecated alias, and
+# within one file the resolver prefers the canonical one. A pre-parser that
+# knew only the alias read a consumer on the canonical key as having no
+# selection at all, which is the answer that both deletes composed pack blocks
+# and freezes opted-out ones. See scripts/packs/config.py.
 _rule_packs_config_state() {
   _rp_state_path=$1
+  [ -f "$_rp_state_path" ] || { printf '%s' none; return 0; }
+  _rp_canonical=$(_rule_packs_key_state "$_rp_state_path" packs)
+  if [ "$_rp_canonical" != none ]; then
+    printf '%s' "$_rp_canonical"
+    return 0
+  fi
+  _rule_packs_key_state "$_rp_state_path" rule_packs
+}
+
+# Print the value that follows a top-level `<key>:` on this line and return 0,
+# for every spelling YAML gives that key: bare, single- or double-quoted, and
+# with whitespace before the colon. Return 1 otherwise.
+#
+# Matching only the bare spelling answered `none` for `"packs": [agent-style]`
+# and `packs : [agent-style]`, which the resolver reads as a selection. After a
+# clear in an earlier layer that answer deleted the block the later layer had
+# just asked for. A leading space means a nested key, which is a different key.
+_rule_packs_key_tail() {
+  _kt_line=$1
+  _kt_key=$2
+  case "$_kt_line" in
+    [[:space:]]*) return 1 ;;
+    *:*) ;;
+    *) return 1 ;;
+  esac
+  _kt_head=${_kt_line%%:*}
+  _kt_head=${_kt_head//[[:space:]]/}
+  case "$_kt_head" in
+    '"'*'"') _kt_head=${_kt_head#\"}; _kt_head=${_kt_head%\"} ;;
+    "'"*"'") _kt_head=${_kt_head#\'}; _kt_head=${_kt_head%\'} ;;
+  esac
+  [ "$_kt_head" = "$_kt_key" ] || return 1
+  printf '%s' "${_kt_line#*:}"
+}
+
+# The single-key scanner behind _rule_packs_config_state.
+_rule_packs_key_state() {
+  _rp_state_path=$1
+  _rp_key=$2
   [ -f "$_rp_state_path" ] || { printf '%s' none; return 0; }
   _rp_state_found=false
   _rp_state_in_list=false
   while IFS= read -r _rp_state_line || [ -n "$_rp_state_line" ]; do
     _rp_state_line=${_rp_state_line%$'\r'}
-    case "$_rp_state_line" in
-      rule_packs:*)
-        _rp_state_found=true
-        _rp_state_in_list=true
-        _rp_state_tail=${_rp_state_line#rule_packs:}
-        _rp_state_tail=${_rp_state_tail%%#*}
-        _rp_state_compact=$(printf '%s' "$_rp_state_tail" | tr -d '[:space:]')
-        case "$_rp_state_compact" in
-          ''|'[]'|[Nn][Uu][Ll][Ll]|'~') ;;
-          *) printf '%s' nonempty; return 0 ;;
-        esac
-        ;;
-      *)
-        if $_rp_state_in_list; then
-          case "$_rp_state_line" in
-            ''|[[:space:]]'#'*) continue ;;
-            [[:space:]]*)
-              _rp_state_compact=$(printf '%s' "$_rp_state_line" | tr -d '[:space:]')
-              case "$_rp_state_compact" in
-                -*) printf '%s' nonempty; return 0 ;;
-              esac
-              continue
-              ;;
-            *) break ;;
-          esac
-        fi
-        ;;
-    esac
+    if _rp_state_tail=$(_rule_packs_key_tail "$_rp_state_line" "$_rp_key"); then
+      _rp_state_found=true
+      _rp_state_in_list=true
+      _rp_state_tail=${_rp_state_tail%%#*}
+      _rp_state_compact=${_rp_state_tail//[[:space:]]/}
+      case "$_rp_state_compact" in
+        ''|'[]'|[Nn][Uu][Ll][Ll]|'~') ;;
+        *) printf '%s' nonempty; return 0 ;;
+      esac
+    elif $_rp_state_in_list; then
+      # A block sequence may sit at the same indentation as its key. That is
+      # what PyYAML's safe_dump emits, and anywhere-agents writes this file
+      # with safe_dump, so the zero-indent shape is the common one rather than
+      # an edge case. Requiring indentation here read every such file as an
+      # empty list, which is the explicit opt-out.
+      _rp_state_compact=${_rp_state_line//[[:space:]]/}
+      case "$_rp_state_compact" in
+        '') continue ;;
+        '#'*) continue ;;
+        -*) printf '%s' nonempty; return 0 ;;
+        # The three spellings of an empty value, which the resolver reads as an
+        # explicit clear wherever they sit. The key line already accepts them;
+        # an indented node has to as well, or the opt-out stops working the
+        # moment it is written on its own line.
+        '[]'|[Nn][Uu][Ll][Ll]|'~') continue ;;
+      esac
+      case "$_rp_state_line" in
+        # An indented node belongs to the key. `[agent-style]` on its own line
+        # is valid YAML and resolves to a nonempty list, and skipping it read
+        # the file as the explicit opt-out and deleted every pack block, under
+        # all three entry points. Anything indented that is not a proven empty
+        # list therefore counts as a selection: this parser runs only when the
+        # real YAML reader is unavailable, so an uncertain answer has to
+        # preserve rather than delete.
+        [[:space:]]*) printf '%s' nonempty; return 0 ;;
+        *) break ;;
+      esac
+    fi
   done < "$_rp_state_path"
   if $_rp_state_found; then
     printf '%s' empty
@@ -180,29 +233,233 @@ _rule_packs_config_state() {
   return 0
 }
 
-_passive_rule_pack_configured() {
-  _rp_tracked_state=$(_rule_packs_config_state agent-config.yaml)
-  _rp_local_state=$(_rule_packs_config_state agent-config.local.yaml)
-  _rp_env_compact=$(printf '%s' "${AGENT_CONFIG_RULE_PACKS:-}" | tr -d '[:space:],')
-  # Layer order matters, and it is not a merge. Probing the real resolver gives
-  # [] for tracked [agent-style] plus local [], so a later empty list clears an
-  # earlier selection rather than adding nothing to it. Treating either layer's
-  # non-emptiness as sufficient marked a deliberate opt-out as an incomplete
-  # bootstrap. The environment variable is additive, so it wins when set.
-  if [ -n "$_rp_env_compact" ]; then
+# Report whether the AGENTS.md already on disk is a composed artifact. The
+# composer stamps `<!-- rule-pack:<name>:begin ... -->` above each pack block,
+# so that marker is the one signal available without re-running composition.
+# The skipped-composition marker reads `rule-pack composition skipped`, with a
+# space rather than a colon after `rule-pack`, so it does not match here.
+_agents_md_is_composed() {
+  [ -f AGENTS.md ] || return 1
+  # A complete marker line, not a prefix. `[^ :]*` rejected a pack name
+  # carrying a space or a colon, which the manifest allows, so an authentic
+  # artifact was discarded and its packs deleted. It also accepted
+  # `:begin-fake` and a truncated `:begin`, which froze a consumer on an
+  # un-composed file. The trailing space class tolerates CRLF.
+  #
+  # The version field is any non-whitespace run. `[A-Za-z0-9._/-]+` was copied
+  # from the legacy raw-URL validator, but the v2 schema accepts any nonempty
+  # `source.ref` and the composer formats it straight into the marker. A ref
+  # carrying SemVer build metadata, `v1.2.3+build.7`, is valid and produced a
+  # marker this predicate called plain, which deletes the pack block it was
+  # written to protect.
+  grep -qE '^<!-- rule-pack:.+:begin version=[^[:space:]]+ sha256=[[:xdigit:]]{64} -->[[:space:]]*$' AGENTS.md 2>/dev/null
+}
+
+# Append one entry to .gitignore, once. A file whose last byte is not a newline
+# gets one first: `echo x >> f` would otherwise glue the entry onto the last
+# existing rule, breaking that rule and leaving the new entry unmatchable.
+_gitignore_add() {
+  _gi_pattern=$1
+  _gi_line=$2
+  if [ -f .gitignore ] && grep -qE "$_gi_pattern" .gitignore; then
     return 0
   fi
-  case "$_rp_local_state" in
-    nonempty) return 0 ;;
-    empty) return 1 ;;
+  if [ -s .gitignore ] && [ -n "$(tail -c 1 .gitignore)" ]; then
+    printf '\n' >> .gitignore
+  fi
+  printf '%s\n' "$_gi_line" >> .gitignore
+}
+
+# Report whether git already tracks a path in this repo.
+_git_tracks() {
+  git ls-files --error-unmatch -- "$1" >/dev/null 2>&1
+}
+
+# Where the user-level config layer lives, mirroring config.user_config_home.
+# That function branches on the platform rather than cascading: Windows reads
+# %APPDATA% and stops, POSIX reads $XDG_CONFIG_HOME then $HOME/.config and
+# never looks at %APPDATA%. A cascade over all three disagreed with it in six
+# of fourteen environment shapes, and pointed this layer at a file the resolver
+# does not read. Git Bash sets both %APPDATA% and $HOME, so the disagreement
+# was reachable on the one platform both entry points share.
+#
+# The branch reads $OSTYPE, which bash sets itself, rather than shelling out to
+# `uname`. A missing PATH entry is exactly how the earlier `tr` defect reached
+# a consumer, and a `uname` that cannot run would drop Windows onto the POSIX
+# branch silently. `msys` is Git Bash, whose Python reports win32. `cygwin` and
+# WSL stay on the POSIX branch, because their Python reports cygwin and linux
+# and the resolver reads $XDG_CONFIG_HOME for both. Prints nothing when nothing
+# resolves, which the caller treats as no layer.
+_user_config_path() {
+  case "${OSTYPE:-}" in
+    msys*|win32*)
+      if [ -n "${APPDATA:-}" ]; then
+        printf '%s' "$APPDATA/anywhere-agents/config.yaml"
+      fi
+      return 0
+      ;;
   esac
-  case "$_rp_tracked_state" in
-    nonempty) return 0 ;;
-    empty) return 1 ;;
-  esac
-  # No signal in either layer: the composer's default selection includes
-  # agent-style, so a passive pack is configured.
-  return 0
+  if [ -n "${XDG_CONFIG_HOME:-}" ]; then
+    printf '%s' "$XDG_CONFIG_HOME/anywhere-agents/config.yaml"
+  elif [ -n "${HOME:-}" ]; then
+    printf '%s' "$HOME/.config/anywhere-agents/config.yaml"
+  fi
+}
+
+# True when the environment overlay names at least one pack to ADD. The overlay
+# grammar is additive with a `-name` subtract form, so a value made only of
+# subtractions adds nothing and must not be read as a selection.
+#
+# config.parse_env_var splits on commas alone and strips each token, while this
+# splits on whitespace too, so `-a b` is one subtraction there and one
+# subtraction plus one addition here. Trimming a token without an external
+# utility is what the `tr` defect was made of, and the difference only ever
+# reads an overlay as adding when the resolver would not, which preserves a
+# file rather than deleting one.
+_env_pack_selection_adds() {
+  _rp_env=${AGENT_CONFIG_PACKS:-}
+  if [ -z "$_rp_env" ]; then
+    _rp_env=${AGENT_CONFIG_RULE_PACKS:-}
+  fi
+  [ -n "$_rp_env" ] || return 1
+  _rp_env=${_rp_env//,/ }
+  for _rp_entry in $_rp_env; do
+    case "$_rp_entry" in
+      # config.parse_env_var rejects a bare `-` and any entry carrying `/`, `@`
+      # or `:`, so with Python present the whole run fails and the artifact is
+      # untouched. Read as a plain subtraction here, the same value cleared the
+      # selection and deleted the artifact instead. An invalid overlay is
+      # uncertainty, and uncertainty preserves.
+      -|-*[/@:]*) return 0 ;;
+      -*)
+        # A whitelist rather than a longer reject list. The resolver strips
+        # each token with Python's str.strip() before validating, so `-\r`
+        # arrives there as a bare `-` and is rejected while reaching this loop
+        # intact. Enumerating separators loses that race every time one is
+        # missed: bash does not split on \r at all, and the two PowerShell
+        # editions disagree about whether `\s` covers U+001C. Anything outside
+        # the characters a pack name is made of counts as uncertainty.
+        _rp_name=${_rp_entry#-}
+        case "$_rp_name" in
+          *[!A-Za-z0-9._-]*) return 0 ;;
+        esac
+        ;;
+      '') ;;
+      *) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+# True when a line in this file is one the scanner above cannot classify. That
+# is what the layer fold means by uncertainty, and file length is not it: a
+# file of comments, or one holding only keys that are not this one, says
+# nothing this scanner misread, and counting those overrode opt-outs the
+# operator meant. Four shapes are readable, and everything else is not:
+#
+#   blank or comment            nothing to read
+#   indented                    a continuation of the line above
+#   zero-indent `- `            a block sequence item
+#   zero-indent `<name>:`       a top-level key, quoted or not
+#
+# The head test is what leaves `{packs: [agent-style]}` unreadable. A root-level
+# flow mapping is a selection to the resolver and not a key to this, so it has
+# to land on the preserving side rather than be waved through as a key line.
+_file_has_unreadable_line() {
+  [ -s "$1" ] || return 1
+  _fu_seen_top_level=false
+  while IFS= read -r _fu_line || [ -n "$_fu_line" ]; do
+    _fu_line=${_fu_line%$'\r'}
+    _fu_compact=${_fu_line//[[:space:]]/}
+    case "$_fu_compact" in
+      ''|'#'*) continue ;;
+    esac
+    case "$_fu_line" in
+      # A continuation of the line above, which needs a line above it. A file
+      # whose first content line is indented is a mapping to YAML and a nested
+      # key to this scanner, so it is unreadable rather than a continuation.
+      [[:space:]]*)
+        if $_fu_seen_top_level; then
+          continue
+        fi
+        return 0
+        ;;
+    esac
+    _fu_seen_top_level=true
+    case "$_fu_compact" in
+      -*) continue ;;
+    esac
+    case "$_fu_line" in
+      *:*) ;;
+      *) return 0 ;;
+    esac
+    _fu_head=${_fu_line%%:*}
+    _fu_head=${_fu_head//[[:space:]]/}
+    case "$_fu_head" in
+      ''|*[!A-Za-z0-9_.\"\'-]*) return 0 ;;
+    esac
+  done < "$1"
+  return 1
+}
+
+# The four layers, in the resolver's precedence order: user-level, tracked,
+# project-local, environment overlay. Within the three file layers an explicit
+# empty list clears everything earlier, and a nonempty list selects; a file
+# with no key at all leaves the running answer alone. The overlay is additive
+# and so can only turn the answer on.
+#
+# The seed is `configured`, because the composer's default selection includes
+# agent-style, so a project that has said nothing still gets a passive pack.
+#
+# This answers "is anything selected", not "which packs are selected". Naming
+# them would mean pulling names out of YAML without a YAML parser, which is the
+# fragility that produced this release; the resolver does that job whenever
+# Python is present, and this runs only when it is not. Four consequences are
+# known, and every one of them keeps a file that the resolver would have
+# replaced, rather than deleting one it would have kept:
+#
+#   1. An overlay made only of subtractions cannot be evaluated without
+#      resolving names, so `AGENT_CONFIG_PACKS=-agent-style` still reads as
+#      configured and preserves a file the operator has opted out of.
+#   2. An overlay whose additions and subtractions cancel, such as
+#      `agent-style,-agent-style`, reads as one addition here and as no
+#      selection in the resolver.
+#   3. Marker names are never compared with selected names, so a cleared base
+#      plus a project-local selection of some other pack preserves a composed
+#      file carrying only the old pack's block.
+#   4. The overlay is split on whitespace as well as commas; see
+#      _env_pack_selection_adds.
+#   5. A later layer this scanner cannot read counts as uncertainty once a
+#      clear is in force, so a file holding only unrelated keys preserves where
+#      the resolver would leave the clear standing. See the `none` arm below.
+_passive_rule_pack_configured() {
+  _rp_configured=true
+  _rp_user_config=$(_user_config_path)
+  for _rp_layer in "$_rp_user_config" agent-config.yaml agent-config.local.yaml; do
+    [ -n "$_rp_layer" ] || continue
+    case "$(_rule_packs_config_state "$_rp_layer")" in
+      nonempty) _rp_configured=true ;;
+      empty) _rp_configured=false ;;
+      none)
+        # `none` means this scanner found no key it recognizes, which is not
+        # the same as the file having no selection. The key match is the
+        # literal `packs:` spelling, and YAML also allows `"packs":` and
+        # `packs :`; both read as `none` here and as a selection in the
+        # resolver. After a proven clear that answer deleted the artifact the
+        # later layer had just asked for. Recognizing every spelling means
+        # writing a YAML parser, so treat a nonempty later layer as uncertainty
+        # instead, and let uncertainty preserve. An absent or empty file is not
+        # uncertain and leaves the clear standing.
+        if ! $_rp_configured && _file_has_unreadable_line "$_rp_layer"; then
+          _rp_configured=true
+        fi
+        ;;
+    esac
+  done
+  if _env_pack_selection_adds; then
+    _rp_configured=true
+  fi
+  $_rp_configured
 }
 
 # Stage beside the destination, then rename over it. Readers therefore see a
@@ -554,7 +811,25 @@ if $_compose_ok; then
   _ledger_target AGENTS.md
   _ledger_step compose repo ok
 else
+  _compose_preserved=false
+  _passive_configured=false
   if _passive_rule_pack_configured; then
+    _passive_configured=true
+  fi
+  # Preservation is gated on a configured selection. Testing the artifact alone
+  # kept the old packs even when the consumer had set `rule_packs: []`, which
+  # contradicts the documented opt-out and could freeze a removed pack forever.
+  # This makes the pre-parser load-bearing again, which is why the `tr`
+  # dependency had to go in the same change.
+  if $_passive_configured && _agents_md_is_composed; then
+    # Composition cannot run, and the AGENTS.md on disk is a composed artifact.
+    # Replacing it with the un-composed upstream copy deletes every pack block,
+    # and where the file is tracked git then records that deletion as intent.
+    # Keep the last good artifact. This check reads the file rather than the
+    # configuration, so it still holds when the configuration is misread, which
+    # is how the pack blocks were lost in the first place.
+    _compose_preserved=true
+  elif $_passive_configured; then
     {
       printf '%s\n' "<!-- rule-pack composition skipped: $_compose_skip_reason; run anywhere-agents to compose -->"
       cat .agent-config/AGENTS.md
@@ -573,14 +848,39 @@ else
   else
     cp -f .agent-config/AGENTS.md AGENTS.md
   fi
+  if $_compose_preserved; then
+    printf '\n' >&2
+    printf 'warning: composition was skipped (%s) and the AGENTS.md on disk is a\n' "$_compose_skip_reason" >&2
+    printf '         composed artifact, so this run left it untouched rather than\n' >&2
+    printf '         replacing it with the un-composed upstream copy.\n' >&2
+    printf '         Its pack blocks are whatever the last successful composition\n' >&2
+    printf '         produced; upstream changes reach this file only once\n' >&2
+    printf '         composition runs again.\n' >&2
+    if [ "$_compose_skip_reason" != "no composer script in sparse clone" ]; then
+      _LEDGER_INCOMPLETE=true
+    fi
+  fi
+  # Awareness is a different question from selection: `packs: []` is an opt-out
+  # and still means the operator knows about packs. It reads the same four
+  # layers the selection gate does, so a consumer whose only mention is
+  # user-level, or who uses the canonical env var, is not told that packs were
+  # skipped when they were never asked for.
   _rp_aware=false
   _rp_tracked_state=$(_rule_packs_config_state agent-config.yaml)
   _rp_local_state=$(_rule_packs_config_state agent-config.local.yaml)
+  _rp_user_state=$(_rule_packs_config_state "$(_user_config_path)")
   if [ "$_rp_tracked_state" != none ]; then
     _rp_aware=true
   elif [ "$_rp_local_state" != none ]; then
     _rp_aware=true
-  elif [ -n "${AGENT_CONFIG_RULE_PACKS:-}" ]; then
+  elif [ "$_rp_user_state" != none ]; then
+    _rp_aware=true
+  elif [ -n "${AGENT_CONFIG_PACKS:-}${AGENT_CONFIG_RULE_PACKS:-}" ]; then
+    _rp_aware=true
+  fi
+  # The tip tells the operator the writing rules are absent. When the composed
+  # artifact was preserved they are present, so the tip would be wrong.
+  if $_compose_preserved; then
     _rp_aware=true
   fi
   if ! $_rp_aware; then
@@ -590,7 +890,11 @@ else
     printf "     install Python + PyYAML to enable, or silence with 'rule_packs: []' in agent-config.yaml.\n" >&2
   fi
   _ledger_target AGENTS.md
-  _ledger_step compose repo skipped null "$_compose_skip_reason"
+  if $_compose_preserved; then
+    _ledger_step compose repo skipped null "$_compose_skip_reason; existing composed AGENTS.md preserved"
+  else
+    _ledger_step compose repo skipped null "$_compose_skip_reason"
+  fi
 fi
 # Generate per-agent config files (CLAUDE.md, agents/codex.md) from AGENTS.md.
 # Generator preserves hand-authored files (no GENERATED header) and warns loudly.
@@ -607,19 +911,13 @@ if [ -d .agent-config/repo/.claude/commands ]; then
 fi
 if [ -f .agent-config/repo/.claude/settings.json ]; then
   if [ -f .claude/settings.json ]; then
-    if [ -n "$_py" ]; then
-      "$_py" -c "
-import json, pathlib as P
-def dm(b,o):
- for k,v in o.items():
-  if k in b and isinstance(b[k],dict) and isinstance(v,dict):dm(b[k],v)
-  elif k in b and isinstance(b[k],list) and isinstance(v,list):b[k]=v if (v and isinstance(v[0],dict)) else list(dict.fromkeys(b[k]+v))
-  else:b[k]=v
-s=json.loads(P.Path('.agent-config/repo/.claude/settings.json').read_text())
-p=json.loads(P.Path('.claude/settings.json').read_text())
-dm(p,s)
-P.Path('.claude/settings.json').write_text(json.dumps(p,indent=2)+'\n')
-"
+    # Both entry points run this one helper, so the merge semantics and the
+    # on-disk format have a single implementation. The guard mirrors the
+    # composer guard above: a sparse clone predating this release does not
+    # carry the file, and that must not fail the run.
+    if [ -n "$_py" ] && [ -f .agent-config/repo/scripts/merge_settings.py ]; then
+      "$_py" .agent-config/repo/scripts/merge_settings.py \
+        .claude/settings.json .agent-config/repo/.claude/settings.json
     fi
   else
     cp -f .agent-config/repo/.claude/settings.json .claude/settings.json
@@ -669,19 +967,9 @@ fi
 if [ -f .agent-config/repo/user/settings.json ]; then
   mkdir -p "$HOME/.claude"
   if [ -f "$HOME/.claude/settings.json" ]; then
-    if [ -n "$_py" ]; then
-      "$_py" -c "
-import json, pathlib as P
-def dm(b,o):
- for k,v in o.items():
-  if k in b and isinstance(b[k],dict) and isinstance(v,dict):dm(b[k],v)
-  elif k in b and isinstance(b[k],list) and isinstance(v,list):b[k]=v if (v and isinstance(v[0],dict)) else list(dict.fromkeys(b[k]+v))
-  else:b[k]=v
-s=json.loads(P.Path('.agent-config/repo/user/settings.json').read_text())
-u=json.loads(P.Path(P.Path.home()/'.claude'/'settings.json').read_text())
-dm(u,s)
-P.Path(P.Path.home()/'.claude'/'settings.json').write_text(json.dumps(u,indent=2)+'\n')
-"
+    if [ -n "$_py" ] && [ -f .agent-config/repo/scripts/merge_settings.py ]; then
+      "$_py" .agent-config/repo/scripts/merge_settings.py \
+        "$HOME/.claude/settings.json" .agent-config/repo/user/settings.json
     fi
   else
     cp -f .agent-config/repo/user/settings.json "$HOME/.claude/settings.json"
@@ -697,7 +985,10 @@ if [ -f "$HOME/.claude.json" ]; then
 import json, os, pathlib as P, tempfile
 p = P.Path.home() / '.claude.json'
 try:
-    d = json.loads(p.read_text())
+    # read_bytes plus an explicit decode: text mode picks the locale codepage
+    # on Windows, which is cp1252 on a default install, and this file carries
+    # non-ASCII. utf-8-sig also heals a copy some earlier writer left with a BOM.
+    d = json.loads(p.read_bytes().decode('utf-8-sig'))
     if d.get('autoUpdates') is False:
         d['autoUpdates'] = True
         # Best-effort heal. Atomic replace (tempfile.mkstemp + os.replace)
@@ -707,8 +998,11 @@ try:
         # reappears on the next session if that happens.
         fd, tmp = tempfile.mkstemp(dir=str(p.parent), prefix='.claude.json.', suffix='.tmp')
         try:
-            with os.fdopen(fd, 'w', encoding='utf-8') as f:
-                f.write(json.dumps(d, indent=2) + '\n')
+            # Binary write: text mode also translates '\n' to '\r\n' on
+            # Windows, which rewrites every line of a 125 KB file that the
+            # other entry point writes with LF.
+            with os.fdopen(fd, 'wb') as f:
+                f.write((json.dumps(d, indent=2, ensure_ascii=False) + '\n').encode('utf-8'))
             os.replace(tmp, str(p))
         except Exception:
             try:
@@ -733,13 +1027,38 @@ maybe_update_codex_cli
 # package would imply an update that may not have happened.
 _ledger_step external external ok
 
-if [ ! -f .gitignore ] || ! grep -qE '^\/?\.agent-config/' .gitignore; then
-  echo '.agent-config/' >> .gitignore
-fi
+_gitignore_add '^\/?\.agent-config/' '.agent-config/'
 # Rule-pack opt-in writes agent-config.local.yaml as a machine-local override
 # that must not be committed. Auto-ignore it idempotently alongside .agent-config/.
-if [ ! -f .gitignore ] || ! grep -qE '^\/?agent-config\.local\.yaml$' .gitignore; then
-  echo 'agent-config.local.yaml' >> .gitignore
+_gitignore_add '^\/?agent-config\.local\.yaml$' 'agent-config.local.yaml'
+# AGENTS.md, CLAUDE.md and agents/codex.md are regenerated on every run. Their
+# bytes depend on which packs this machine resolved and on whether composition
+# ran, so two machines that are both up to date produce different content and
+# each sees the other's as a diff to commit. Worse, a run that degraded the
+# artifact records the loss as an intentional deletion in a tracked file.
+#
+# A path git already tracks cannot be untracked by .gitignore, so adding an
+# entry for one would be inert and misleading. Skip those and leave the repo
+# as it is; moving an already-tracked file out of the index is an operator
+# decision, because the resulting commit removes it for every other clone.
+# Set AGENT_CONFIG_TRACK_GENERATED to keep all three out of .gitignore.
+#
+# The entries are anchored with a leading slash so a monorepo's
+# packages/foo/AGENTS.md is not caught, and codex.md is named rather than the
+# agents/ directory so agents/codex.local.md, the documented per-agent
+# override, stays visible.
+if [ -z "${AGENT_CONFIG_TRACK_GENERATED:-}" ]; then
+  for _gi_generated in AGENTS.md CLAUDE.md agents/codex.md; do
+    if ! _git_tracks "$_gi_generated"; then
+      # Escape the dot for the ERE probe; unescaped it also matches AGENTSxmd.
+      # The leading slash is optional in the probe only: a consumer who already
+      # ignores an unanchored `AGENTS.md` has the broader rule, so appending the
+      # narrower `/AGENTS.md` under it would add a line that changes nothing.
+      # The entry written is still anchored.
+      _gi_escaped=${_gi_generated//./\\.}
+      _gitignore_add "^/?${_gi_escaped}\$" "/${_gi_generated}"
+    fi
+  done
 fi
 # Self-update: copy the latest bootstrap script from the sparse clone over this
 # one. Without this, a consumer that initially fetched an older bootstrap.sh

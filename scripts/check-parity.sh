@@ -102,6 +102,19 @@ if [ ! -d "$AA_ROOT" ]; then
   exit 2
 fi
 
+# The argument names the anywhere-agents clone. Passing the agent-config one
+# instead points both roots at the same tree, and every comparison below then
+# passes for the same reason the swap guard above exists: a self-comparison
+# cannot fail. Two separate runs during the v0.7.15 review reported STRICT
+# clean this way, one of them the reviewer's own verification, so refuse it
+# rather than printing a result that means nothing.
+if [ "$(cd "$AC_ROOT" 2>/dev/null && pwd -P)" = "$(cd "$AA_ROOT" 2>/dev/null && pwd -P)" ]; then
+  printf 'error: both roots resolve to %s\n' "$(cd "$AA_ROOT" && pwd -P)" >&2
+  printf 'the argument is the path to the anywhere-agents clone, not agent-config\n' >&2
+  printf 'usage: %s [/path/to/anywhere-agents]\n' "$0" >&2
+  exit 2
+fi
+
 exit_code=0
 
 fail() {
@@ -118,6 +131,9 @@ strict_files=(
   scripts/statusline.py
   scripts/agent-quota.py
   scripts/generate_agent_configs.py
+  # Both bootstrap entry points execute this, so it is shared runtime code by
+  # the same argument as the helpers above.
+  scripts/merge_settings.py
   scripts/pre-push-smoke.sh
   scripts/remote-smoke.sh
   scripts/check-parity.sh
@@ -154,6 +170,10 @@ done
 # test_check_parity.py); those stay aa-local and ac-local respectively.
 printf '\n== strict shared-contract tests ==\n'
 strict_test_files=(
+  # Not a test: the module every spawning test imports to give its children a
+  # console with no window on Windows. It is shared test infrastructure for
+  # shared tests, so it belongs under the same gate.
+  tests/_quiet_spawn.py
   tests/test_dispatch_codex.py
   tests/test_dispatch_copilot.py
   tests/test_dispatch_claude.py

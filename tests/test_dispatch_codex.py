@@ -26,6 +26,12 @@ import time
 import unittest
 from pathlib import Path
 
+# tests/ is on sys.path under `unittest discover -s tests` but not under
+# `python -m unittest tests.<module>`, which validate.yml uses for the
+# Sentinel redaction smoke. Put it there before the sibling import.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _quiet_spawn  # noqa: E402,F401  installs a windowless spawn default on Windows
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS_DIR = ROOT / "skills" / "implement-review" / "scripts"
@@ -798,8 +804,23 @@ class DispatchInterpreterResolutionContract(unittest.TestCase):
             '"$resolved" -I -c \'import sys; sys.exit(0)\'', sh
         )
 
+        # Single quotes inside, not double. Windows PowerShell 5.1 rebuilds the
+        # native command line without escaping a double quote inside the -c
+        # argument, so the shape below is the only one that reaches Python
+        # intact on both editions. Same defect as anywhere-agents#34.
         self.assertIn(
-            'print("IMPLEMENT_REVIEW_PYTHON="+sys.executable)', ps1
+            "print('IMPLEMENT_REVIEW_PYTHON='+sys.executable)", ps1
+        )
+        probe_line = next(
+            line for line in ps1.splitlines()
+            if "IMPLEMENT_REVIEW_PYTHON=" in line and "print(" in line
+        ).strip()
+        # Exactly two double quotes, the delimiters. Any third one is inside the
+        # argument, which is the failure mode.
+        self.assertEqual(
+            probe_line.count('"'), 2,
+            "the PowerShell probe argument must carry no double quote of its "
+            f"own; Windows PowerShell 5.1 drops the escaping: {probe_line}",
         )
         self.assertIn(
             "$resolvedRealPath -match '(?i)[\\\\/]WindowsApps[\\\\/]'",
