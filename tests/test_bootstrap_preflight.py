@@ -212,14 +212,25 @@ def _stripped_env(stub_dir: Path | None) -> dict[str, str]:
 def powershell_stub_dir(stub_dir: Path) -> Path:
     """The PATH entry a PowerShell entrypoint should use.
 
-    Each entrypoint gets its own directory because the two cannot share one.
-    Git Bash needs an extensionless file, and PowerShell prefers an
+    On Windows each entrypoint gets its own directory because the two cannot
+    share one. Git Bash needs an extensionless file, and PowerShell prefers an
     extensionless file over a `.ps1` of the same name when both are present.
     It then cannot run the shell script, falls back to ShellExecute, and the
     user gets a "How do you want to open this file?" dialog. Keeping the
     PowerShell stubs in a subdirectory of their own leaves each side with only
     the form it can run.
+
+    Everywhere else the split is wrong, and returning it cost a whole CI run.
+    `pwsh` on Linux and macOS runs the extensionless `#!/bin/sh` stub the way
+    it runs any other program, and it never finds a `.ps1` on PATH because
+    PATHEXT is a Windows variable. Every `.ps1` writer here sits behind
+    `os.name == "nt"`, so off Windows this subdirectory is never created.
+    Pointing PATH at it hands pwsh a directory that does not exist: the git
+    preflight then fails, and each test in the family either asserts against a
+    bootstrap that refused to start or reads an AGENTS.md it never wrote.
     """
+    if os.name != "nt":
+        return stub_dir
     return stub_dir / "ps"
 
 
@@ -445,6 +456,16 @@ def _run_bootstrap_ps1_with_ledger(
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def _write_text_lf(path: Path, content: str) -> None:
+    # open(newline=) rather than Path.write_text(newline=), for the reason
+    # _write_executable gives just below. The keyword arrived in 3.10 and this
+    # suite still runs on 3.9, where it raises TypeError rather than writing
+    # the wrong ending. Seven callers wrote shell input the other way and took
+    # every 3.9 job in CI down with them.
+    with open(path, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(content)
+
+
 def _write_executable(path: Path, content: str) -> None:
     # open(newline=) rather than Path.write_text(newline=): the latter kwarg is
     # Python 3.10+, and the CI matrix still covers 3.9. These files are shell
@@ -665,8 +686,13 @@ def _run_no_python_bootstrap_with_ledger(
             # extensionless shell script makes CreateProcess fail on a file
             # that is not a PE image, and the fallback is ShellExecute, which
             # opens the "How do you want to open this file?" dialog and blocks
-            # the run until it is dismissed.
-            override = str(powershell_stub_dir(stub_dir) / "python.ps1")
+            # the run until it is dismissed. Only Windows has that problem and
+            # only Windows has the .ps1; elsewhere the shell script is the one
+            # pwsh can run.
+            if os.name == "nt":
+                override = str(powershell_stub_dir(stub_dir) / "python.ps1")
+            else:
+                override = str(path_wrapper)
             wrapper = tmp / "invoke-bootstrap.ps1"
             bootstrap_literal = str(BOOTSTRAP_PS1).replace("'", "''")
             wrapper.write_text(
@@ -1965,9 +1991,9 @@ class RulePacksConfigStateTests(unittest.TestCase):
         # a helper that was not in it.
         end = text.index("\n}\n", text.index("_rule_packs_key_state() {")) + len("\n}\n")
         driver = work / "state.sh"
-        driver.write_text(
+        _write_text_lf(
+            driver,
             text[start:end] + '\n_rule_packs_config_state "$1"\nprintf "\\n"\n',
-            encoding="utf-8", newline="\n",
         )
         # An EMPTY PATH, deliberately. The function used to shell out to `tr`,
         # and the Git for Windows bash this resolves to does not put its own
@@ -2063,7 +2089,7 @@ class RulePacksConfigStateTests(unittest.TestCase):
             work = Path(tmpdir)
             for label, content, expected in self._cases():
                 path = work / "agent-config.yaml"
-                path.write_text(content, encoding="utf-8", newline="\n")
+                _write_text_lf(path, content)
                 with self.subTest(case=label, entrypoint="bash"):
                     self.assertEqual(self._bash_state(path, work), expected, content)
                 for shell in shells:
@@ -2115,9 +2141,9 @@ class RulePacksConfigStateTests(unittest.TestCase):
                 start = text.index("_rule_packs_config_state() {")
                 end = text.index("\n}\n", text.index("_rule_packs_key_state() {")) + len("\n}\n")
                 sh_driver = work / "emptypath.sh"
-                sh_driver.write_text(
+                _write_text_lf(
+                    sh_driver,
                     text[start:end] + '\n_rule_packs_config_state ""\nprintf "\\n"\n',
-                    encoding="utf-8", newline="\n",
                 )
                 result = subprocess.run(
                     [BASH, str(sh_driver)], capture_output=True, text=True,
@@ -2134,7 +2160,7 @@ class RulePacksConfigStateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             work = Path(tmpdir)
             path = work / "agent-config.yaml"
-            path.write_text("Rule_Packs: []\n", encoding="utf-8", newline="\n")
+            _write_text_lf(path, "Rule_Packs: []\n")
             self.assertEqual(self._bash_state(path, work), "none")
             for shell in shells:
                 with self.subTest(entrypoint=Path(shell).stem):
@@ -2210,10 +2236,10 @@ class ComposedArtifactPredicateTests(unittest.TestCase):
         start = text.index("_agents_md_is_composed() {")
         end = text.index("\n}\n", start) + len("\n}\n")
         driver = work / "composed.sh"
-        driver.write_text(
+        _write_text_lf(
+            driver,
             text[start:end]
             + '\nif _agents_md_is_composed; then printf composed; else printf plain; fi\n',
-            encoding="utf-8", newline="\n",
         )
         env = os.environ.copy()
         env["PATH"] = str(Path(BASH).parent) + os.pathsep + env.get("PATH", "")
@@ -2438,9 +2464,9 @@ class UserConfigLayerPathTests(unittest.TestCase):
             f'export {name}="{value}"\n' for name, value in sorted(environment.items())
         )
         driver = work / "userpath.sh"
-        driver.write_text(
+        _write_text_lf(
+            driver,
             text[start:end] + "\n" + assignments + '_user_config_path\nprintf "\\n"\n',
-            encoding="utf-8", newline="\n",
         )
         # An empty PATH, as in RulePacksConfigStateTests: the branch reads
         # $OSTYPE rather than shelling out, and this fails if that regresses.
@@ -2558,10 +2584,10 @@ class EnvOverlayGrammarTests(unittest.TestCase):
         start = text.index("_env_pack_selection_adds() {")
         end = text.index("\n}\n", start) + len("\n}\n")
         driver = work / "overlay.sh"
-        driver.write_text(
+        _write_text_lf(
+            driver,
             text[start:end]
             + '\nif _env_pack_selection_adds; then printf "yes\\n"; else printf "no\\n"; fi\n',
-            encoding="utf-8", newline="\n",
         )
         env = os.environ.copy()
         empty_path = work / "no-tools"

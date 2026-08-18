@@ -71,6 +71,7 @@
 # Usage:
 #   bash scripts/check-parity.sh                           # default sibling path
 #   bash scripts/check-parity.sh /path/to/anywhere-agents  # explicit
+#   bash scripts/check-parity.sh --aa-internal-only [path] # wheel mirror only
 #
 # Exit 0: STRICT clean and every BY-DESIGN mirror present. By-design
 #         summary shown for eyeball.
@@ -83,12 +84,26 @@ set -uo pipefail
 SCRIPT_DIR="$( cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd )"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 
+# --aa-internal-only runs the wheel-mirror block and nothing else. That block
+# needs one tree where every other block needs two, and CI checks out
+# anywhere-agents on its own. Without the flag such a run has to aim both roots
+# at the same tree, which is the vacuous self-comparison the guard below
+# refuses; the flag says so explicitly instead.
+AA_INTERNAL_ONLY=false
+if [ "${1:-}" = "--aa-internal-only" ]; then
+  AA_INTERNAL_ONLY=true
+  shift
+fi
+
 # When invoked from an anywhere-agents checkout with a sibling agent-config/
 # present, swap roots so the comparison is genuinely cross-repo. Without this
 # guard, AC_ROOT defaulted to the script's own repo and AA_ROOT resolved back
 # to the same path, turning the script into a silent self-comparison that
 # always passes.
-if [ "$(basename "$REPO_ROOT")" = "anywhere-agents" ] && [ -d "$REPO_ROOT/../agent-config" ]; then
+if $AA_INTERNAL_ONLY; then
+  AA_ROOT="${1:-$REPO_ROOT}"
+  AC_ROOT="$AA_ROOT"
+elif [ "$(basename "$REPO_ROOT")" = "anywhere-agents" ] && [ -d "$REPO_ROOT/../agent-config" ]; then
   AC_ROOT="$REPO_ROOT/../agent-config"
   AA_ROOT="${1:-$REPO_ROOT}"
 else
@@ -108,7 +123,8 @@ fi
 # cannot fail. Two separate runs during the v0.7.15 review reported STRICT
 # clean this way, one of them the reviewer's own verification, so refuse it
 # rather than printing a result that means nothing.
-if [ "$(cd "$AC_ROOT" 2>/dev/null && pwd -P)" = "$(cd "$AA_ROOT" 2>/dev/null && pwd -P)" ]; then
+if ! $AA_INTERNAL_ONLY &&
+   [ "$(cd "$AC_ROOT" 2>/dev/null && pwd -P)" = "$(cd "$AA_ROOT" 2>/dev/null && pwd -P)" ]; then
   printf 'error: both roots resolve to %s\n' "$(cd "$AA_ROOT" && pwd -P)" >&2
   printf 'the argument is the path to the anywhere-agents clone, not agent-config\n' >&2
   printf 'usage: %s [/path/to/anywhere-agents]\n' "$0" >&2
@@ -123,7 +139,10 @@ fail() {
 }
 
 # ---- STRICT: byte-identical top-level files ----
-printf '\n== strict byte-identical ==\n'
+# Every cross-repo block below is silenced under --aa-internal-only, where
+# there is only one tree and any answer it produced would be about that tree
+# compared with itself.
+$AA_INTERNAL_ONLY || printf '\n== strict byte-identical ==\n'
 strict_files=(
   scripts/_python
   scripts/guard.py
@@ -144,6 +163,7 @@ strict_files=(
   bootstrap/bootstrap.sh
   bootstrap/bootstrap.ps1
 )
+$AA_INTERNAL_ONLY && strict_files=()
 for f in "${strict_files[@]}"; do
   if [ ! -f "$AC_ROOT/$f" ] || [ ! -f "$AA_ROOT/$f" ]; then
     fail "$f (missing on one side)"
@@ -168,7 +188,7 @@ done
 # same commit. Each repo may still have its own non-shared tests (aa:
 # test_compose_packs.py, test_pack_*.py; ac: test_repo.py,
 # test_check_parity.py); those stay aa-local and ac-local respectively.
-printf '\n== strict shared-contract tests ==\n'
+$AA_INTERNAL_ONLY || printf '\n== strict shared-contract tests ==\n'
 strict_test_files=(
   # Not a test: the module every spawning test imports to give its children a
   # console with no window on Windows. It is shared test infrastructure for
@@ -197,6 +217,7 @@ strict_test_files=(
   # a file whose content is identical.
   tests/test_line_endings.py
 )
+$AA_INTERNAL_ONLY && strict_test_files=()
 for f in "${strict_test_files[@]}"; do
   if [ ! -f "$AC_ROOT/$f" ] || [ ! -f "$AA_ROOT/$f" ]; then
     fail "$f (missing on one side)"
@@ -219,8 +240,10 @@ done
 # docs/anywhere-agents.md mirror-policy table for the updated status.
 
 # ---- STRICT: shared skills (recursive; my-router excluded - BY-DESIGN) ----
-printf '\n== shared skills (recursive byte-identical) ==\n'
-for skill in implement-review ci-mockup-figure readme-polish prun; do
+$AA_INTERNAL_ONLY || printf '\n== shared skills (recursive byte-identical) ==\n'
+cross_repo_skills="implement-review ci-mockup-figure readme-polish prun"
+$AA_INTERNAL_ONLY && cross_repo_skills=""
+for skill in $cross_repo_skills; do
   if [ ! -d "$AC_ROOT/skills/$skill" ] || [ ! -d "$AA_ROOT/skills/$skill" ]; then
     fail "skills/$skill/ (missing on one side)"
     continue
@@ -306,11 +329,12 @@ if [ -d "$AA_ROOT/packages/pypi/anywhere_agents/composer" ]; then
 fi
 
 # ---- BY-DESIGN: files expected to differ (summary only; not blocking unless missing) ----
-printf '\n== expected to differ by design (summary; eyeball if delta is unusual) ==\n'
+$AA_INTERNAL_ONLY || printf '\n== expected to differ by design (summary; eyeball if delta is unusual) ==\n'
 by_design_files=(
   AGENTS.md
   user/settings.json
 )
+$AA_INTERNAL_ONLY && by_design_files=()
 for f in "${by_design_files[@]}"; do
   if [ ! -f "$AC_ROOT/$f" ] || [ ! -f "$AA_ROOT/$f" ]; then
     fail "$f (missing on one side; expected sanitized mirror)"
@@ -329,7 +353,9 @@ for f in "${by_design_files[@]}"; do
 done
 
 # skills/my-router as a recursive tree
-if [ ! -d "$AC_ROOT/skills/my-router" ] || [ ! -d "$AA_ROOT/skills/my-router" ]; then
+if $AA_INTERNAL_ONLY; then
+  :
+elif [ ! -d "$AC_ROOT/skills/my-router" ] || [ ! -d "$AA_ROOT/skills/my-router" ]; then
   fail "skills/my-router/ (missing on one side; expected sanitized mirror)"
 else
   my_router_diff=$(diff -rq "$AC_ROOT/skills/my-router" "$AA_ROOT/skills/my-router" 2>&1)
@@ -342,7 +368,9 @@ else
 fi
 
 # ---- Summary ----
-if [ "$exit_code" -eq 0 ]; then
+if [ "$exit_code" -eq 0 ] && $AA_INTERNAL_ONLY; then
+  printf '\n== check-parity: aa-internal mirror clean (cross-repo blocks not run). ==\n'
+elif [ "$exit_code" -eq 0 ]; then
   printf '\n== check-parity: STRICT clean + BY-DESIGN mirrors present. ==\n'
 else
   printf '\n== check-parity: DRIFT or MISSING MIRROR (fix before tagging) ==\n'

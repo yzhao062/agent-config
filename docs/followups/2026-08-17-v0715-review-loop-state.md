@@ -84,6 +84,36 @@ trivial edit. It was left out here because the release was already closed to cod
 and because Linux CI spawns bash natively and does not approach the limit. It belongs in the
 next release.
 
+## The first release push failed CI on four defects
+
+Both repos were pushed at the release commit and every one of the eighteen Repo
+Validation jobs failed. Nothing had shipped, because no tag was cut. The four
+causes, all fixed in a follow-up commit:
+
+1. `powershell_stub_dir` returned `stub_dir/"ps"` on every platform, and every
+   `.ps1` writer sits behind `os.name == "nt"`. Off Windows the directory is
+   never created, so `pwsh` got a PATH entry that does not exist, the git
+   preflight failed, and forty-six tests asserted against a bootstrap that
+   never started. Every ubuntu and macos job.
+2. Seven callers passed `newline=` to `Path.write_text`, which gained the
+   keyword in 3.10 while this suite still supports 3.9. The file already
+   carried a comment saying so, above `_write_executable`. Every 3.9 job.
+3. `_user_config_path` chose the Windows branch from `$OSTYPE` alone. Bash sets
+   that variable with `set_if_not`, so an exported value survives; measured,
+   Git Bash handed `OSTYPE=linux-gnu` reports `linux-gnu`. The runner exports
+   one that is not `msys`. Every windows job, and a real defect off CI as well.
+4. The self-comparison guard added in this release refused the one legitimate
+   coincidence: the wheel-mirror block needs a single tree, and CI checks
+   `anywhere-agents` out with no sibling to compare against. `--aa-internal-only`
+   is now that mode.
+
+Two lessons worth keeping. A test-only change is still a change that CI runs on
+five Python versions and three platforms, and this release's test additions
+broke more jobs than its shipped code did. And a guard added late in a release
+needs the same survey of its callers as any other change; this one was written
+against the accident it had just seen and never checked against the script's own
+test.
+
 ## The one thing to do before shipping
 
 Round 6's findings are unread. Everything else is done. If its findings are confined to

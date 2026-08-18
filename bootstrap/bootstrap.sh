@@ -291,14 +291,27 @@ _git_tracks() {
 # and the resolver reads $XDG_CONFIG_HOME for both. Prints nothing when nothing
 # resolves, which the caller treats as no layer.
 _user_config_path() {
+  # Windows when the shell is an MSYS, MinGW or Cygwin build, or when the
+  # process carries the environment Windows installs. $OSTYPE alone is not
+  # enough: bash sets it with set_if_not, so an OSTYPE already exported in the
+  # environment survives, and one of GitHub's Windows runners exports a value
+  # that is not msys, which sent every case of the layer-path test down the
+  # POSIX branch. $SYSTEMROOT and $WINDIR come from Windows rather than from
+  # the shell, and neither is set on Linux, on macOS, or under WSL, where the
+  # POSIX answer is the correct one anyway.
+  _ucp_windows=false
   case "${OSTYPE:-}" in
-    msys*|win32*)
-      if [ -n "${APPDATA:-}" ]; then
-        printf '%s' "$APPDATA/anywhere-agents/config.yaml"
-      fi
-      return 0
-      ;;
+    msys*|mingw*|cygwin*|win32*) _ucp_windows=true ;;
   esac
+  if [ -n "${SYSTEMROOT:-}" ] || [ -n "${WINDIR:-}" ]; then
+    _ucp_windows=true
+  fi
+  if $_ucp_windows; then
+    if [ -n "${APPDATA:-}" ]; then
+      printf '%s' "$APPDATA/anywhere-agents/config.yaml"
+    fi
+    return 0
+  fi
   if [ -n "${XDG_CONFIG_HOME:-}" ]; then
     printf '%s' "$XDG_CONFIG_HOME/anywhere-agents/config.yaml"
   elif [ -n "${HOME:-}" ]; then

@@ -270,6 +270,27 @@ class CheckParityBehavior(unittest.TestCase):
             self.assertEqual(rc, 2, f"expected 2, got {rc}; output:\n{out}")
             self.assertIn("both roots resolve to", out)
 
+    def test_the_aa_internal_flag_accepts_one_tree(self):
+        # The wheel-mirror block needs one tree where every other block needs
+        # two, and CI checks anywhere-agents out on its own. --aa-internal-only
+        # is how that run says so; without it the run has to name the same tree
+        # twice and gets refused, which is what took the release CI down.
+        with tempfile.TemporaryDirectory() as d:
+            _ac, aa = _build_fake_tree(pathlib.Path(d))
+            result = subprocess.run(
+                [BASH, str(aa / "scripts/check-parity.sh"),
+                 "--aa-internal-only", str(aa)],
+                capture_output=True,
+                text=True,
+            )
+            out = result.stdout + result.stderr
+            self.assertNotIn("both roots resolve to", out, out)
+            self.assertEqual(result.returncode, 0, out)
+            # The cross-repo headers must not appear: their answer would be
+            # about one tree compared with itself.
+            self.assertNotIn("strict byte-identical", out, out)
+            self.assertNotIn("expected to differ by design", out, out)
+
     def test_a_symlink_to_the_same_tree_exits_2(self):
         # `pwd -P` rather than a string compare: two spellings of one directory
         # are the same self-comparison.
