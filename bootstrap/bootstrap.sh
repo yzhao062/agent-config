@@ -1116,8 +1116,15 @@ if [ -z "${AGENT_CONFIG_NO_TODO_DROPBOX:-}" ]; then
     # exactly that state once the exclusion is appended below it, so append one
     # canonical negation underneath when that has happened. A second run finds
     # the order already valid and writes nothing.
-    _gi_last_exclude=$(grep -nE '^/?todo/\*$' .gitignore 2>/dev/null | tail -1 | cut -d: -f1)
-    _gi_last_negate=$(grep -nE '^!/?todo/README\.md$' .gitignore 2>/dev/null | tail -1 | cut -d: -f1)
+    # The line number is taken with parameter expansion rather than `cut`.
+    # Nothing else in this script needs cut, and a shell that has grep and tail
+    # but not cut is exactly what the hermetic test fixture builds; there the
+    # pipeline yielded an empty string, the guards below skipped the repair,
+    # and the run still exited 0.
+    _gi_last_exclude=$(grep -nE '^/?todo/\*$' .gitignore 2>/dev/null | tail -1)
+    _gi_last_exclude=${_gi_last_exclude%%:*}
+    _gi_last_negate=$(grep -nE '^!/?todo/README\.md$' .gitignore 2>/dev/null | tail -1)
+    _gi_last_negate=${_gi_last_negate%%:*}
     if [ -n "$_gi_last_exclude" ] && [ -n "$_gi_last_negate" ] &&
        [ "$_gi_last_negate" -lt "$_gi_last_exclude" ]; then
       _gitignore_append '!todo/README.md'
