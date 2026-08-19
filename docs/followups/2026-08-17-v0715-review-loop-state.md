@@ -79,10 +79,11 @@ An earlier run of the same suite also produced one failure in `tests/test_stall_
 (`first stall should be logged after 2s threshold`). That module run alone gives 20 tests and
 `OK`, so it is the same class of load-induced timing failure.
 
-The cap appears at nine call sites in the preflight test, so raising it is a small but not
-trivial edit. It was left out here because the release was already closed to code changes,
-and because Linux CI spawns bash natively and does not approach the limit. It belongs in the
-next release.
+The cap appears at nine call sites in the preflight test. It was left out of v0.7.15
+because that release was already closed to code changes. It was fixed in v0.7.16 after
+biting a third time, during a reviewer's own verification pass: the nine sites now share
+`SUBPROCESS_TIMEOUT`, 90 seconds by default and overridable through
+`AGENT_CONFIG_TEST_TIMEOUT`.
 
 ## The first release push failed CI on four defects
 

@@ -87,6 +87,7 @@ def _build_fake_tree(base: pathlib.Path):
         ".github/workflows/validate.yml": "name: validate\non: push\njobs:\n  repo-validation: {}\n",
         "bootstrap/bootstrap.sh": "# bootstrap stub\n",
         "bootstrap/bootstrap.ps1": "# bootstrap ps1 stub\n",
+        "bootstrap/todo-readme.md": "# todo drop-box stub\n",
     }
     for rel, content in strict_files.items():
         (ac / rel).write_text(content)

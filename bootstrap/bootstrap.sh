@@ -258,16 +258,20 @@ _agents_md_is_composed() {
 # Append one entry to .gitignore, once. A file whose last byte is not a newline
 # gets one first: `echo x >> f` would otherwise glue the entry onto the last
 # existing rule, breaking that rule and leaving the new entry unmatchable.
+_gitignore_append() {
+  if [ -s .gitignore ] && [ -n "$(tail -c 1 .gitignore)" ]; then
+    printf '\n' >> .gitignore
+  fi
+  printf '%s\n' "$1" >> .gitignore
+}
+
 _gitignore_add() {
   _gi_pattern=$1
   _gi_line=$2
   if [ -f .gitignore ] && grep -qE "$_gi_pattern" .gitignore; then
     return 0
   fi
-  if [ -s .gitignore ] && [ -n "$(tail -c 1 .gitignore)" ]; then
-    printf '\n' >> .gitignore
-  fi
-  printf '%s\n' "$_gi_line" >> .gitignore
+  _gitignore_append "$_gi_line"
 }
 
 # Report whether git already tracks a path in this repo.
@@ -1073,6 +1077,55 @@ if [ -z "${AGENT_CONFIG_TRACK_GENERATED:-}" ]; then
     fi
   done
 fi
+# The todo/ drop box. A person copies a file in, points an agent at it, and the
+# agent files it where it belongs or deletes it; the resting state is empty. The
+# convention spread by hand-copying until now, which is why it reached neither a
+# new repo nor two of the existing ones.
+#
+# Seeded only when absent. An existing README is never rewritten: one consumer
+# carries a version written around its own filing rules, and replacing that with
+# the upstream copy is the failure this release series exists to remove.
+#
+# `todo/*` rather than `todo/`, because git cannot re-include a file whose parent
+# directory is excluded: the directory form silently drops the README and the
+# folder then disappears from fresh clones.
+#
+# A linked todo belongs to whoever linked it. Seeding through the link writes
+# the README into a directory outside this repo, which is not a place a session
+# start has any business creating files, and the ignore rules would then name a
+# path git does not index here anyway. Measured on a Windows junction, which
+# Git Bash also reports as -L, so one predicate covers both link kinds.
+if [ -z "${AGENT_CONFIG_NO_TODO_DROPBOX:-}" ]; then
+  if [ ! -L todo ] &&
+     [ ! -e todo/README.md ] &&
+     [ -f .agent-config/repo/bootstrap/todo-readme.md ]; then
+    mkdir -p todo
+    cp -f .agent-config/repo/bootstrap/todo-readme.md todo/README.md || \
+      printf '%s\n' 'warning: could not seed todo/README.md' >&2
+  fi
+  # Gated on the README rather than on the directory. A path named todo that
+  # is not a directory, or a seed that failed, must not leave this run claiming
+  # an ignore rule and a ledger target for a file that is not there. The link
+  # test repeats here so a pre-existing README behind a link is left alone too.
+  # The PowerShell half gates on the same postcondition.
+  if [ ! -L todo ] && [ -f todo/README.md ]; then
+    _gitignore_add '^/?todo/\*$' 'todo/*'
+    _gitignore_add '^!/?todo/README\.md$' '!todo/README.md'
+    # git applies the last matching rule, so a negation above its exclusion
+    # does nothing. A .gitignore that already carried a lone negation lands in
+    # exactly that state once the exclusion is appended below it, so append one
+    # canonical negation underneath when that has happened. A second run finds
+    # the order already valid and writes nothing.
+    _gi_last_exclude=$(grep -nE '^/?todo/\*$' .gitignore 2>/dev/null | tail -1 | cut -d: -f1)
+    _gi_last_negate=$(grep -nE '^!/?todo/README\.md$' .gitignore 2>/dev/null | tail -1 | cut -d: -f1)
+    if [ -n "$_gi_last_exclude" ] && [ -n "$_gi_last_negate" ] &&
+       [ "$_gi_last_negate" -lt "$_gi_last_exclude" ]; then
+      _gitignore_append '!todo/README.md'
+    fi
+    _ledger_target todo/README.md
+  fi
+fi
+
 # Self-update: copy the latest bootstrap script from the sparse clone over this
 # one. Without this, a consumer that initially fetched an older bootstrap.sh
 # stays on that version forever; future bootstrap improvements added upstream

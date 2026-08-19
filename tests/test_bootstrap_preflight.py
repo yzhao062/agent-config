@@ -45,6 +45,21 @@ BOOTSTRAP_PS1 = ROOT / "bootstrap" / "bootstrap.ps1"
 EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
 
+# One bootstrap run costs about 17 seconds on this Windows machine when it is
+# idle, because every fixture starts Git Bash or a PowerShell edition and the
+# script itself spawns more. The cap was 30 seconds, under 2x that, so any
+# competing load turned a healthy run into `TimeoutExpired` and the failure read
+# like a regression in whatever was being changed at the time. It did that three
+# times across two releases: a CI job, a local full run, and a reviewer's own
+# verification pass, which cost more to diagnose each time than the cap ever
+# saved. Linux spawns these in about a second and never approaches either value.
+#
+# 90 seconds keeps roughly 5x headroom while still bounding a genuine hang.
+# AGENT_CONFIG_TEST_TIMEOUT overrides it for a machine that needs more, or for a
+# CI job that would rather fail fast.
+SUBPROCESS_TIMEOUT = int(os.environ.get("AGENT_CONFIG_TEST_TIMEOUT", "90"))
+
+
 def _resolve_bash() -> str | None:
     """Find a real bash binary, avoiding the Windows WSL launcher stub.
 
@@ -344,7 +359,7 @@ def _run_bootstrap_sh(version_line: str | None, *, scenario: str = "fresh") -> s
             env=env,
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=SUBPROCESS_TIMEOUT,
         )
         return result
     finally:
@@ -391,7 +406,7 @@ def _run_bootstrap_sh_with_ledger(
             env=env,
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=SUBPROCESS_TIMEOUT,
         )
         ledger_path = work / ".agent-config" / "last-run.json"
         ledger = (
@@ -443,7 +458,7 @@ def _run_bootstrap_ps1_with_ledger(
             env=env,
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=SUBPROCESS_TIMEOUT,
         )
         ledger_path = work / ".agent-config" / "last-run.json"
         ledger = (
@@ -476,17 +491,28 @@ def _write_executable(path: Path, content: str) -> None:
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
+TODO_README_BODY = "# The `todo/` Folder\n\nupstream drop-box copy\n"
+
+
 def _prepare_full_bootstrap_fixture(
     tmp: Path,
     *,
     composer_rc: int | None,
     generator_rc: int | None,
     yaml_available: bool = True,
+    todo_readme: bool = True,
 ) -> tuple[Path, Path, Path]:
     work = tmp / "work"
     scripts = work / ".agent-config" / "repo" / "scripts"
     (work / ".agent-config" / "repo" / ".git").mkdir(parents=True)
     scripts.mkdir(parents=True)
+    if todo_readme:
+        # The seeding step copies from the sparse clone rather than carrying the
+        # text in both entry points, so the fixture has to supply it the same
+        # way the real clone does.
+        upstream_bootstrap = work / ".agent-config" / "repo" / "bootstrap"
+        upstream_bootstrap.mkdir(parents=True, exist_ok=True)
+        _write_text_lf(upstream_bootstrap / "todo-readme.md", TODO_README_BODY)
     (work / ".agent-config" / "AGENTS.md").write_text("fetched rules\n", encoding="utf-8")
     if composer_rc is not None:
         (scripts / "compose_packs.py").write_text(
@@ -583,7 +609,7 @@ def _run_full_bootstrap_with_ledger(
             env=env,
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=SUBPROCESS_TIMEOUT,
         )
         ledger_path = work / ".agent-config" / "last-run.json"
         if not ledger_path.is_file():
@@ -601,6 +627,29 @@ def _run_full_bootstrap_with_ledger(
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def _link_directory(link: Path, target: Path) -> bool:
+    """Link `link` to the directory `target`, or report that neither form works.
+
+    A POSIX symlink is refused on an unelevated Windows token (WinError 1314),
+    but `mklink /J` builds a directory junction there without elevation, and
+    that is the form a Windows consumer would end up with. Both are reparse
+    points and both are what the bootstrap containment check has to reject.
+    """
+    target.mkdir(parents=True, exist_ok=True)
+    try:
+        os.symlink(target, link, target_is_directory=True)
+        return True
+    except (OSError, NotImplementedError, AttributeError):
+        pass
+    if os.name != "nt":
+        return False
+    completed = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+        capture_output=True, text=True, timeout=SUBPROCESS_TIMEOUT,
+    )
+    return completed.returncode == 0 and link.exists()
+
+
 def _run_no_python_bootstrap_with_ledger(
     entrypoint: str,
     *,
@@ -613,6 +662,13 @@ def _run_no_python_bootstrap_with_ledger(
     tracked: tuple[str, ...] = (),
     env_extra: dict | None = None,
     capture_into: dict | None = None,
+    capture_exists_into: dict | None = None,
+    existing_todo_readme: str | None = None,
+    existing_todo_file: str | None = None,
+    existing_todo_readme_dir: bool = False,
+    linked_todo: bool = False,
+    linked_todo_readme: str | None = None,
+    todo_readme: bool = True,
 ) -> tuple[subprocess.CompletedProcess, dict, str, bytes, bytes]:
     """Run a full bootstrap where every discoverable Python wrapper is broken.
 
@@ -633,7 +689,30 @@ def _run_no_python_bootstrap_with_ledger(
             tmp,
             composer_rc=0,
             generator_rc=0,
+            todo_readme=todo_readme,
         )
+        if existing_todo_readme is not None:
+            (work / "todo").mkdir(parents=True, exist_ok=True)
+            (work / "todo" / "README.md").write_bytes(
+                existing_todo_readme.encode("utf-8"))
+        if existing_todo_file is not None:
+            # A plain file where the drop box would go. `Test-Path 'todo'` is
+            # true for it while `[ -d todo ]` is false, which is how the two
+            # entry points came to disagree.
+            (work / "todo").write_bytes(existing_todo_file.encode("utf-8"))
+        if existing_todo_readme_dir:
+            (work / "todo" / "README.md").mkdir(parents=True, exist_ok=True)
+        if linked_todo:
+            # The target sits under tmp beside work, so it is outside the
+            # consumer repo but still inside what the finally block removes.
+            link_target = tmp / "outside-the-repo"
+            if linked_todo_readme is not None:
+                link_target.mkdir(parents=True, exist_ok=True)
+                (link_target / "README.md").write_bytes(
+                    linked_todo_readme.encode("utf-8"))
+            if not _link_directory(work / "todo", link_target):
+                raise unittest.SkipTest(
+                    "no directory symlink or junction could be created here")
         if config_text is not None:
             (work / "agent-config.yaml").write_text(config_text, encoding="utf-8")
         if local_config_text is not None:
@@ -728,12 +807,19 @@ def _run_no_python_bootstrap_with_ledger(
             env=env,
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=SUBPROCESS_TIMEOUT,
         )
         if capture_into is not None:
             for relative in list(capture_into):
                 captured = work / relative
                 capture_into[relative] = captured.read_bytes() if captured.is_file() else None
+        if capture_exists_into is not None:
+            # Separate from capture_into on purpose. That one reports bytes and
+            # maps both an absent path and a directory to None, so a test that
+            # asserts "no README" cannot tell a clean skip from an empty todo/
+            # left behind. Existence is the question those tests actually ask.
+            for relative in list(capture_exists_into):
+                capture_exists_into[relative] = (work / relative).exists()
         ledger_path = work / ".agent-config" / "last-run.json"
         if not ledger_path.is_file():
             raise AssertionError(
@@ -874,7 +960,7 @@ def _run_atomic_helper_deployment(
             time.sleep(0.005)
         running_when_observed = signal.is_file() and process.poll() is None
         observed = target.read_bytes()
-        stdout, stderr = process.communicate(timeout=30)
+        stdout, stderr = process.communicate(timeout=SUBPROCESS_TIMEOUT)
         result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
         return result, observed, target.read_bytes(), new_content, running_when_observed
     finally:
@@ -899,7 +985,9 @@ def _run_bash_self_update() -> tuple[subprocess.CompletedProcess, bytes, bytes, 
 
         replacement = b"#!/bin/sh\n# shorter self-update fixture\nexit 0\n"
         upstream = work / ".agent-config" / "repo" / "bootstrap" / "bootstrap.sh"
-        upstream.parent.mkdir(parents=True)
+        # exist_ok: the shared fixture already puts todo-readme.md in this
+        # directory, so this is no longer the first writer into it.
+        upstream.parent.mkdir(parents=True, exist_ok=True)
         upstream.write_bytes(replacement)
         upstream.chmod(upstream.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
@@ -925,7 +1013,7 @@ def _run_bash_self_update() -> tuple[subprocess.CompletedProcess, bytes, bytes, 
             env=env,
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=SUBPROCESS_TIMEOUT,
         )
         ledger = json.loads(
             (work / ".agent-config" / "last-run.json").read_text(encoding="utf-8-sig")
@@ -1013,7 +1101,7 @@ class GitPreflightBashTests(unittest.TestCase):
                 env=env,
                 capture_output=True,
                 text=True,
-                timeout=30,
+                timeout=SUBPROCESS_TIMEOUT,
             )
             self.assertEqual(result.returncode, 0, msg=result.stderr)
             self.assertIn("could not parse git version", result.stderr)
@@ -1048,7 +1136,7 @@ class GitPreflightBashTests(unittest.TestCase):
                 env=env,
                 capture_output=True,
                 text=True,
-                timeout=30,
+                timeout=SUBPROCESS_TIMEOUT,
             )
             self.assertEqual(result.returncode, 0, msg=result.stderr)
             self.assertNotIn("too old", result.stderr)
@@ -1705,6 +1793,200 @@ class _BootstrapLedgerContract:
             self._phase(composer_ledger, "compose")["reason"],
             "no composer script in sparse clone",
         )
+
+    def test_the_todo_dropbox_is_seeded_when_absent(self):
+        # The convention spread by hand-copying, so it reached neither a new
+        # repo nor two of the existing ones. Bootstrap seeds it instead.
+        captured = {".gitignore": None, "todo/README.md": None}
+        result, _, _, _, _ = _run_no_python_bootstrap_with_ledger(
+            self.entrypoint, shell=self.shell, capture_into=captured,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIsNotNone(captured["todo/README.md"], "todo/README.md not created")
+        self.assertEqual(
+            captured["todo/README.md"].decode("utf-8"), TODO_README_BODY)
+        lines = captured[".gitignore"].decode("utf-8").splitlines()
+        self.assertIn("todo/*", lines)
+        self.assertIn("!todo/README.md", lines)
+
+    def test_the_negation_lands_after_the_exclusion(self):
+        # Order is the whole mechanism. A negation above its exclusion is
+        # overridden by it, the README stops being tracked, and the folder
+        # disappears from fresh clones, which is what the directory form of the
+        # pattern does on its own.
+        captured = {".gitignore": None}
+        result, _, _, _, _ = _run_no_python_bootstrap_with_ledger(
+            self.entrypoint, shell=self.shell, capture_into=captured,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        lines = captured[".gitignore"].decode("utf-8").splitlines()
+        self.assertLess(lines.index("todo/*"), lines.index("!todo/README.md"))
+
+    def test_an_existing_todo_readme_is_never_rewritten(self):
+        # One consumer carries a README written around its own filing rules.
+        # Replacing it with the upstream copy is the failure this release
+        # series exists to remove, in a smaller file.
+        local = "# todo/ - the inbox\n\nrules specific to this repo\n"
+        captured = {"todo/README.md": None}
+        result, _, _, _, _ = _run_no_python_bootstrap_with_ledger(
+            self.entrypoint, shell=self.shell, capture_into=captured,
+            existing_todo_readme=local,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertEqual(captured["todo/README.md"].decode("utf-8"), local)
+
+    def test_an_absent_upstream_readme_creates_nothing(self):
+        # A clone without the file must not leave an empty folder behind: an
+        # empty todo/ with no README is the shape that vanishes on the next
+        # clone, which is worse than not having one.
+        #
+        # The directory is asserted through capture_exists_into rather than
+        # through the absent README. An earlier version of this test checked
+        # only the README bytes, which a mutation that moved the mkdir above
+        # the source check survived in all three entry points: the capture
+        # helper reports an absent file and a directory identically.
+        captured = {".gitignore": None, "todo/README.md": None}
+        exists = {"todo": True}
+        result, ledger, _, _, _ = _run_no_python_bootstrap_with_ledger(
+            self.entrypoint, shell=self.shell, capture_into=captured,
+            capture_exists_into=exists, todo_readme=False,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIsNone(captured["todo/README.md"])
+        self.assertFalse(exists["todo"], "bootstrap left an empty todo/ behind")
+        self.assertNotIn("todo/*", captured[".gitignore"].decode("utf-8"))
+        self.assertNotIn("todo/README.md",
+                         self._phase(ledger, "finalize")["targets"])
+
+    def test_a_lone_negation_is_repaired(self):
+        # git applies the last matching rule, so a negation above its exclusion
+        # does nothing. A .gitignore carrying only the negation lands in exactly
+        # that state once the exclusion is appended below it, and the README
+        # then stops being tracked and the folder leaves fresh clones.
+        captured = {".gitignore": None}
+        result, _, _, _, _ = _run_no_python_bootstrap_with_ledger(
+            self.entrypoint, shell=self.shell, capture_into=captured,
+            existing_gitignore="!todo/README.md\n",
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        lines = captured[".gitignore"].decode("utf-8").splitlines()
+        last_exclude = max(i for i, ln in enumerate(lines) if ln == "todo/*")
+        last_negate = max(i for i, ln in enumerate(lines) if ln == "!todo/README.md")
+        self.assertGreater(last_negate, last_exclude, lines)
+        self.assertEqual(lines.count("todo/*"), 1, lines)
+        self.assertEqual(lines.count("!todo/README.md"), 2, lines)
+
+    def test_a_repaired_order_is_not_repaired_again(self):
+        # The shape the previous test produces, fed back in. A run that keeps
+        # appending a negation on every pass would grow .gitignore forever.
+        captured = {".gitignore": None}
+        result, _, _, _, _ = _run_no_python_bootstrap_with_ledger(
+            self.entrypoint, shell=self.shell, capture_into=captured,
+            existing_gitignore="!todo/README.md\ntodo/*\n!todo/README.md\n",
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        lines = captured[".gitignore"].decode("utf-8").splitlines()
+        self.assertEqual(lines.count("todo/*"), 1, lines)
+        self.assertEqual(lines.count("!todo/README.md"), 2, lines)
+
+    def test_a_plain_file_named_todo_is_left_alone(self):
+        # Both entry points must agree here. `Test-Path 'todo'` is true for a
+        # plain file while `[ -d todo ]` is false, and PowerShell used to record
+        # ignore rules and a ledger target for a README that was never written.
+        captured = {".gitignore": None, "todo": None}
+        result, ledger, _, _, _ = _run_no_python_bootstrap_with_ledger(
+            self.entrypoint, shell=self.shell, capture_into=captured,
+            existing_todo_file="not a directory\n",
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertEqual(captured["todo"], b"not a directory\n")
+        gitignore = (captured[".gitignore"] or b"").decode("utf-8")
+        self.assertNotIn("todo/*", gitignore)
+        self.assertNotIn("!todo/README.md", gitignore)
+        self.assertNotIn("todo/README.md",
+                         self._phase(ledger, "finalize")["targets"])
+
+    def test_a_linked_todo_is_never_written_through(self):
+        # Containment. With todo linked elsewhere, todo/README.md resolves to a
+        # path outside the repo, so asserting it does not exist is exactly the
+        # assertion that no external file was created. A session start has no
+        # business writing there, and git would not index it through the link
+        # even if it did, so the ignore rules and the ledger target must stay
+        # out too. Bash tests -L; PowerShell tests the ReparsePoint attribute.
+        captured = {".gitignore": None}
+        exists = {"todo": False, "todo/README.md": True}
+        result, ledger, _, _, _ = _run_no_python_bootstrap_with_ledger(
+            self.entrypoint, shell=self.shell, capture_into=captured,
+            capture_exists_into=exists, linked_todo=True,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertFalse(exists["todo/README.md"],
+                         "bootstrap wrote through the link, outside the repo")
+        self.assertTrue(exists["todo"], "bootstrap removed the link")
+        gitignore = (captured[".gitignore"] or b"").decode("utf-8")
+        self.assertNotIn("todo/*", gitignore)
+        self.assertNotIn("!todo/README.md", gitignore)
+        self.assertNotIn("todo/README.md",
+                         self._phase(ledger, "finalize")["targets"])
+
+    def test_a_linked_todo_with_a_readme_claims_nothing(self):
+        # The other link predicate. Here the README already exists behind the
+        # link, so absence alone would skip the seed and the postcondition gate
+        # is the only thing standing between this run and ignore rules plus a
+        # ledger target naming a file that lives outside the repo.
+        captured = {".gitignore": None, "todo/README.md": None}
+        result, ledger, _, _, _ = _run_no_python_bootstrap_with_ledger(
+            self.entrypoint, shell=self.shell, capture_into=captured,
+            linked_todo=True, linked_todo_readme="filed elsewhere\n",
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertEqual(captured["todo/README.md"], b"filed elsewhere\n")
+        gitignore = (captured[".gitignore"] or b"").decode("utf-8")
+        self.assertNotIn("todo/*", gitignore)
+        self.assertNotIn("!todo/README.md", gitignore)
+        self.assertNotIn("todo/README.md",
+                         self._phase(ledger, "finalize")["targets"])
+
+    def test_a_directory_named_readme_is_left_alone(self):
+        # The other half of the leaf gate. -e and Test-Path are both true for a
+        # directory at todo/README.md, so the seed is skipped; -f and
+        # -PathType Leaf are both false, so nothing may be claimed for it.
+        captured = {".gitignore": None, "todo/README.md": None}
+        exists = {"todo/README.md": False}
+        result, ledger, _, _, _ = _run_no_python_bootstrap_with_ledger(
+            self.entrypoint, shell=self.shell, capture_into=captured,
+            capture_exists_into=exists, existing_todo_readme_dir=True,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertTrue(exists["todo/README.md"])
+        self.assertIsNone(captured["todo/README.md"],
+                          "the directory was replaced by a file")
+        gitignore = (captured[".gitignore"] or b"").decode("utf-8")
+        self.assertNotIn("todo/*", gitignore)
+        self.assertNotIn("!todo/README.md", gitignore)
+        self.assertNotIn("todo/README.md",
+                         self._phase(ledger, "finalize")["targets"])
+
+    def test_the_dropbox_can_be_turned_off(self):
+        captured = {"todo/README.md": None, ".gitignore": None}
+        result, _, _, _, _ = _run_no_python_bootstrap_with_ledger(
+            self.entrypoint, shell=self.shell, capture_into=captured,
+            env_extra={"AGENT_CONFIG_NO_TODO_DROPBOX": "1"},
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIsNone(captured["todo/README.md"])
+        self.assertNotIn("todo/*", captured[".gitignore"].decode("utf-8"))
+
+    def test_the_dropbox_entries_are_not_duplicated(self):
+        captured = {".gitignore": None}
+        result, _, _, _, _ = _run_no_python_bootstrap_with_ledger(
+            self.entrypoint, shell=self.shell, capture_into=captured,
+            existing_gitignore="todo/*\n!todo/README.md\n",
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        lines = captured[".gitignore"].decode("utf-8").splitlines()
+        self.assertEqual(lines.count("todo/*"), 1, lines)
+        self.assertEqual(lines.count("!todo/README.md"), 1, lines)
 
     GENERATED = ("/AGENTS.md", "/CLAUDE.md", "/agents/codex.md")
 

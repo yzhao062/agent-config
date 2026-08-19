@@ -169,6 +169,22 @@ function Test-AgentsMdIsComposed {
 # already ended in one, and a leading blank line when it created the file.
 # Probe the last byte instead, and write without the BOM Add-Content adds on
 # some editions.
+function Add-GitignoreLine([string]$Line) {
+  $path = Join-Path (Get-Location).Path '.gitignore'
+  $prefix = ''
+  if (Test-Path -LiteralPath $path) {
+    $bytes = [System.IO.File]::ReadAllBytes($path)
+    if ($bytes.Length -gt 0 -and $bytes[$bytes.Length - 1] -ne 0x0A) { $prefix = "`n" }
+  }
+  $encoding = New-Object System.Text.UTF8Encoding $false
+  $existing = if (Test-Path -LiteralPath $path) { [System.IO.File]::ReadAllBytes($path) } else { [byte[]]@() }
+  $addition = $encoding.GetBytes($prefix + $Line + "`n")
+  $combined = New-Object byte[] ($existing.Length + $addition.Length)
+  [System.Array]::Copy($existing, 0, $combined, 0, $existing.Length)
+  [System.Array]::Copy($addition, 0, $combined, $existing.Length, $addition.Length)
+  [System.IO.File]::WriteAllBytes($path, $combined)
+}
+
 function Add-GitignoreEntry([string]$Pattern, [string]$Line) {
   # -CaseSensitive, because Select-String is case-insensitive by default while
   # the bash half's `grep -qE` is not. With an existing `/AGENTS.MD`, the two
@@ -1150,6 +1166,62 @@ if (-not $env:AGENT_CONFIG_TRACK_GENERATED) {
     }
   }
 }
+# The todo/ drop box. Same contract as the Bash entry point: seed when absent,
+# never rewrite an existing README, and pair `todo/*` with the negation so the
+# folder survives a fresh clone. See the block above the matching code in
+# bootstrap.sh for why the directory form of the pattern cannot be used.
+if (-not $env:AGENT_CONFIG_NO_TODO_DROPBOX) {
+  $todoRoot = Join-Path (Get-Location).Path 'todo'
+  $todoReadme = Join-Path $todoRoot 'README.md'
+  $todoSource = '.agent-config/repo/bootstrap/todo-readme.md'
+  # A linked todo belongs to whoever linked it; see the matching block in
+  # bootstrap.sh. Get-Item needs -Force because a link can carry Hidden, and
+  # ReparsePoint is the attribute both PowerShell editions report for a
+  # symbolic link and for a directory junction.
+  $todoItem = Get-Item -LiteralPath $todoRoot -Force -ErrorAction SilentlyContinue
+  $todoIsLink = ($null -ne $todoItem -and
+    (($todoItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0))
+  # -PathType Leaf and -ErrorAction Stop both matter. Without the first, a
+  # directory named like the template would pass the probe; without the second
+  # these cmdlets report a non-terminating error, skip the catch, and let the
+  # run continue as though the seed had worked.
+  if ((-not $todoIsLink) -and
+      (-not (Test-Path -LiteralPath $todoReadme)) -and
+      (Test-Path -LiteralPath $todoSource -PathType Leaf)) {
+    try {
+      New-Item -ItemType Directory -Force -Path 'todo' -ErrorAction Stop | Out-Null
+      Copy-Item -LiteralPath $todoSource -Destination $todoReadme -Force -ErrorAction Stop
+    } catch {
+      [Console]::Error.WriteLine('warning: could not seed todo/README.md')
+    }
+  }
+  # The README, not the directory: `Test-Path 'todo'` is true for a plain file
+  # of that name, where the Bash half's `[ -d todo ]` is false, and the two
+  # entry points then disagreed about whether to write ignore rules and a
+  # ledger target for a README that does not exist.
+  if ((-not $todoIsLink) -and
+      (Test-Path -LiteralPath $todoReadme -PathType Leaf)) {
+    Add-GitignoreEntry '^/?todo/\*$' 'todo/*'
+    Add-GitignoreEntry '^!/?todo/README\.md$' '!todo/README.md'
+    # git applies the last matching rule, so a negation above its exclusion
+    # does nothing. See the matching block in bootstrap.sh.
+    $gi = Join-Path (Get-Location).Path '.gitignore'
+    if (Test-Path -LiteralPath $gi) {
+      $giLines = [System.IO.File]::ReadAllLines($gi)
+      $lastExclude = -1
+      $lastNegate = -1
+      for ($i = 0; $i -lt $giLines.Length; $i++) {
+        if ($giLines[$i] -cmatch '^/?todo/\*$') { $lastExclude = $i }
+        if ($giLines[$i] -cmatch '^!/?todo/README\.md$') { $lastNegate = $i }
+      }
+      if ($lastExclude -ge 0 -and $lastNegate -ge 0 -and $lastNegate -lt $lastExclude) {
+        Add-GitignoreLine '!todo/README.md'
+      }
+    }
+    Add-LedgerTarget 'todo/README.md'
+  }
+}
+
 # Self-update: copy the latest bootstrap script from the sparse clone over this
 # one. Without this, a consumer that initially fetched an older bootstrap.ps1
 # stays on that version forever; future bootstrap improvements added upstream

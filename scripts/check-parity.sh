@@ -162,6 +162,9 @@ strict_files=(
   .github/workflows/validate.yml
   bootstrap/bootstrap.sh
   bootstrap/bootstrap.ps1
+  # Seeded into every consumer's todo/ by both entry points, so the two
+  # copies have to agree the way the entry points themselves do.
+  bootstrap/todo-readme.md
 )
 for f in "${strict_files[@]}"; do
   # break rather than an emptied array: macOS ships bash 3.2, where
