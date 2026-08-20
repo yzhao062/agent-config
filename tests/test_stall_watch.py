@@ -94,7 +94,18 @@ while True:
 """
 
 
-def _wait_for(predicate, message: str, timeout: float = 12.0) -> None:
+# A wait sized on an idle machine has failed under load three times in two
+# releases, most recently on this file in both repositories on one push,
+# green again on a rerun with no change. A deadline is only spent when the
+# event never arrives, so the budget is generous and a passing run does not
+# pay for it. Raise it on a slow or heavily loaded runner.
+STALL_WAIT_TIMEOUT_SECONDS = float(
+    os.environ.get("STALL_WAIT_TIMEOUT_SECONDS", "30")
+)
+
+
+def _wait_for(predicate, message: str,
+              timeout: float = STALL_WAIT_TIMEOUT_SECONDS) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if predicate():
@@ -222,10 +233,9 @@ class _StallContractMixin:
             try:
                 watch = self._spawn_watch(state_dir, parent.pid,
                                           threshold=2, interval=1)
-                time.sleep(5)
                 warn_file = state_dir / "stall-warning"
-                self.assertTrue(
-                    warn_file.exists(),
+                _wait_for(
+                    warn_file.exists,
                     "stall-warning file should be created after 2s threshold elapses",
                 )
                 content = warn_file.read_text(encoding="utf-8")
@@ -317,9 +327,26 @@ class _StallContractMixin:
                 middle = [error_line, "tokens used", "123"]
                 middle.extend(f'{{"type":"progress","step":{i}}}' for i in range(6))
                 middle.extend(["tokens used", "456"])
+                warn_file = state_dir / "stall-warning"
+                stalls_before = warn_file.read_text(encoding="utf-8").count("STALL")
                 with tail.open("a", encoding="utf-8") as stream:
                     stream.write("\n".join(middle) + "\n")
-                time.sleep(2.5)
+                # A second STALL line proves the watcher observed growth and
+                # that the suffix check returned no match. Both implementations
+                # test that suffix at the top of the growth branch and exit
+                # there on a match, so the latch reset that allows a second
+                # STALL is reachable only past the check. It does not prove a
+                # successful read: both classifiers report no match when their
+                # own read fails. A sleep proves less again, letting a watcher
+                # that never polled the mid-transcript state satisfy the
+                # negative below without the classifier being asked at all.
+                _wait_for(
+                    lambda: warn_file.read_text(encoding="utf-8").count("STALL")
+                    > stalls_before
+                    or (state_dir / "stream-death").exists(),
+                    "stall-watch never polled the mid-transcript tail, so the "
+                    "assertions below would not have exercised the classifier",
+                )
 
                 self.assertFalse(
                     (state_dir / "stream-death").exists(),
@@ -459,21 +486,20 @@ class _StallContractMixin:
                 watch = self._spawn_watch(state_dir, parent.pid,
                                           threshold=2, interval=1)
                 # First stall window
-                time.sleep(4)
                 warn_file = state_dir / "stall-warning"
-                self.assertTrue(warn_file.exists(),
-                                "first stall should be logged after 2s threshold")
+                _wait_for(warn_file.exists,
+                          "first stall should be logged after 2s threshold")
                 first_count = warn_file.read_text(encoding="utf-8").count("STALL")
                 self.assertGreaterEqual(first_count, 1)
 
                 # Grow the tail; stall-watch must observe and reset
                 tail.write_text("initial\nmore content here\n", encoding="utf-8")
-                # Give stall-watch time to observe growth then re-stall
-                time.sleep(6)
-                second_count = warn_file.read_text(encoding="utf-8").count("STALL")
-                self.assertGreater(
-                    second_count, first_count,
-                    "second stall period after growth burst should add a new STALL line",
+                # Wait for stall-watch to observe the growth and re-stall.
+                _wait_for(
+                    lambda: warn_file.read_text(encoding="utf-8").count("STALL")
+                    > first_count,
+                    "second stall period after growth burst should add a new "
+                    f"STALL line; first_count={first_count}",
                 )
             finally:
                 _safe_kill(watch)

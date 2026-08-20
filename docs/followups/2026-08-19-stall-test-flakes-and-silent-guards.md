@@ -1,7 +1,7 @@
 # Two flaky stall tests, and two guards that failed silently
 
 **Date:** 2026-08-19
-**Status:** open, nothing changed yet
+**Status:** Part 1 fixed 2026-08-19; Part 2 still open
 **Found during:** the v0.7.16 release
 **Scope:** `tests/test_stall_watch.py`, `tests/test_dispatch_codex.py`, and a pattern in `bootstrap/bootstrap.sh`
 
@@ -19,7 +19,7 @@ Both tests wait a fixed five seconds for a background watcher to write
 says anything about the product; both say the wait was tuned while nothing else
 was running.
 
-### `tests/test_stall_watch.py:215` `test_stall_logged_after_threshold`
+### `tests/test_stall_watch.py` `test_stall_logged_after_threshold`
 
 The more fragile of the two. It spawns the watcher with `threshold=2, interval=1`,
 calls `time.sleep(5)`, then asserts once. There is no retry, so a watcher that has
@@ -29,7 +29,7 @@ Observed on this machine during the v0.7.16 work, on `anywhere-agents`, while tw
 other full suites were running against the same disk. The same test passed on a
 later run with less competing load.
 
-### `tests/test_dispatch_codex.py:1139` `test_stall_warning_survives_dispatch_completion`
+### `tests/test_dispatch_codex.py` `test_stall_warning_survives_dispatch_completion`
 
 Better shaped but capped the same. It polls for the file ten times at half-second
 intervals, which is again five seconds, waiting for the watcher's
@@ -55,6 +55,64 @@ without paying for it on every green run.
 This is the third distinct place where a wait sized on an idle machine has failed
 under load in two releases, after the nine bootstrap subprocess call sites. It is
 worth one sweep for the remaining ones rather than a fourth visit.
+
+### What was done, 2026-08-19
+
+The fourth visit arrived the same day. Both repositories failed
+`test_stall_warning_survives_dispatch_completion` on the same push, on
+`windows-latest . py3.12` only, and both went green on a rerun of that single job
+with no code change. A later local run then produced a third member of the family,
+`test_growth_resets_stall_period_and_relogs`, which this note had not named. So the
+sweep covered both files rather than only the test that happened to be red.
+
+Neither file needed a new idiom. `tests/test_stall_watch.py` already had
+`_wait_for(predicate, message, timeout)` and used it at eight call sites; three
+waits had never adopted it. `tests/test_dispatch_codex.py` already had an inline
+deadline loop for its mock reviewer; one wait had not. No second helper was added.
+The default is now `STALL_WAIT_TIMEOUT_SECONDS`, 30 seconds, carrying the same name
+in both files so one environment variable covers the family.
+
+Five waits were converted: in `test_stall_watch.py` the threshold test this note
+opened with, the first stall window, the second stall window after a growth burst,
+and the mid-transcript disconnect check; in `test_dispatch_codex.py` the ten-poll
+loop.
+
+The mid-transcript one was not on the original list and is the more interesting
+repair. It slept, then asserted that no `stream-death` file had appeared. That
+reads as a settle window for a negative, which is why the first pass left it
+alone, and Codex Round 1 pointed out that it is also a false green: a watcher that
+never polled during the window would satisfy the assertion without the classifier
+ever being asked. The replacement waits for a second `STALL` line instead. Both
+implementations test the stream-death suffix at the top of the growth branch and
+exit there on a match, so the latch reset that permits a second `STALL` is
+reachable only past that check (`stall-watch.ps1` lines 309-341, `stall-watch.sh`
+lines 281-301). Stated precisely, a second `STALL` proves the watcher observed
+growth and that the suffix check returned no match. It does not prove a successful
+read, because both classifiers report no match when their own read fails. That is
+still more than the sleep established, which was nothing at all.
+
+Three sleeps remain in these two files, and they are not one category. One is a
+deliberate watcher-survival interval, `assertIsNone(watch.poll())` after two
+seconds. One sets the mock's stderr-progress cadence and is workload rather than a
+wait. The third, the post-dispatch check that no `stall-warning` was written under
+continuous progress, is the same shape as the mid-transcript case and has the same
+false-green exposure, but closing it needs a completion signal the dispatcher does
+not currently expose. It stays as timing debt for the repository-wide sweep this
+note keeps deferring. Raising its sleep would not fix it.
+
+That sweep now has a shape, which it did not before. Classify each wait as a
+positive event wait, a negative observation window, or workload cadence. Positive
+waits become deadline waits. Negative windows need an observable acknowledgment
+from the thing being watched, since a longer sleep buys nothing there. Cadence
+stays as it is. The mid-transcript repair above is a worked example of the middle
+case, and the post-dispatch check is the next one waiting for it.
+
+Green runs got faster, because a deadline loop leaves when the event arrives while
+a sleep always pays in full. Measured here: the threshold test went from 5.0s to
+3.9s and the growth test from 10.0s to 6.3s. Each converted test still fails, and
+fails inside its budget, when the watcher is pointed at a file name nothing reads.
+That was checked on the PowerShell lane on Windows and on the bash lane on ARM64
+Linux, since Windows skips the bash class by design.
 
 ## Part 2: both v0.7.16 defects failed closed and silent
 

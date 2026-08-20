@@ -42,6 +42,15 @@ DISPATCH_PS1 = Path(os.environ.get(
     "TEST_DISPATCH_CODEX_PS1", SCRIPTS_DIR / "dispatch-codex.ps1"
 ))
 
+# A wait sized on an idle machine has failed under load three times in two
+# releases, most recently on this file in both repositories on one push,
+# green again on a rerun with no change. A deadline is only spent when the
+# event never arrives, so the budget is generous and a passing run does not
+# pay for it. Raise it on a slow or heavily loaded runner.
+STALL_WAIT_TIMEOUT_SECONDS = float(
+    os.environ.get("STALL_WAIT_TIMEOUT_SECONDS", "30")
+)
+
 
 def _temp_dir():
     """tempfile.TemporaryDirectory with ignore_cleanup_errors on Py3.10+.
@@ -1183,13 +1192,12 @@ class DispatchStallIntegrationTests(unittest.TestCase):
             )
             state_dir = _parse_state_dir(result.stdout)
 
-            # stall-watch may still be doing its final-on-parent-dead poll;
-            # give it a short window to flush stall-warning.
+            # stall-watch may still be doing its final-on-parent-dead poll,
+            # so wait for the flush rather than assuming it already happened.
             stall_warning = state_dir / "stall-warning"
-            for _ in range(10):
-                if stall_warning.exists():
-                    break
-                time.sleep(0.5)
+            deadline = time.monotonic() + STALL_WAIT_TIMEOUT_SECONDS
+            while time.monotonic() < deadline and not stall_warning.exists():
+                time.sleep(0.25)
             self.assertTrue(
                 stall_warning.exists(),
                 f"stall-warning must persist after dispatch when threshold "
