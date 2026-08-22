@@ -9,7 +9,8 @@
 # automatic retry adds one visible AUTO-REDISPATCH line between them:
 #   WATCH-START round=<N> reviewers=<csv> timeout=<seconds>s
 #   AUTO-REDISPATCH attempt=<N>/<total> reason=codex-response-stream-disconnected state-dir=<abs-path>
-#   DONE <abs-path> | TIMEOUT | STREAM-DEAD <state-dir> | STALL <state-dir>
+#   DONE <abs-path> | TIMEOUT | REAP-UNKNOWN <state-dir>
+#     | STREAM-DEAD <state-dir> | STALL <state-dir>
 #
 # Usage:
 #   pwsh auto-watch.ps1 <FileGlob> <Round> <Reviewers>
@@ -17,13 +18,23 @@
 #
 # Env:
 #   AGENT_CONFIG_AUTO_WATCH_TIMEOUT  override timeout in seconds (tests).
+#   AGENT_CONFIG_AUTO_WATCH_POLL     override poll interval in seconds (tests).
+#   IMPLEMENT_REVIEW_STATE_DIR       absolute path to the state directory the
+#                                    dispatcher already printed. When set and
+#                                    present, it is watched directly and the
+#                                    age-based discovery below is skipped, so
+#                                    the two processes agree by handoff rather
+#                                    than by clock. Discovery remains the
+#                                    fallback for a caller that has no path.
 #   IMPLEMENT_REVIEW_STREAM_RETRY_LIMIT
 #                                    maximum automatic redispatches after a
 #                                    confirmed stream death (default 1; 0
 #                                    disables). The dispatcher records the
 #                                    effective value in the state directory.
 #
-# Exit codes: 0 = DONE, 2 = TIMEOUT, 3 = dispatch failure/stall surfaced.
+# Exit codes: 0 = DONE, 2 = TIMEOUT or REAP-UNKNOWN, 3 = dispatch failure/stall
+# surfaced. Both exit-2 lines are checkpoints for the orchestrating agent, which
+# resolves the round with await-review.py rather than declaring a failure.
 # A retry keeps the original state directory so the dispatcher's single
 # STATE-DIR line stays valid. Failed-attempt files are archived under
 # <state-dir>/attempt-N before the same logical dispatch starts again.
@@ -88,8 +99,12 @@ Remove-Item Env:IMPLEMENT_REVIEW_AUTO_WATCH_SOURCE_DIR -ErrorAction SilentlyCont
 $timeout = if ($env:AGENT_CONFIG_AUTO_WATCH_TIMEOUT) {
     [int]$env:AGENT_CONFIG_AUTO_WATCH_TIMEOUT
 } else { 3600 }
-$pollSeconds  = 5
+$pollSeconds = if ($env:AGENT_CONFIG_AUTO_WATCH_POLL) {
+    [int]$env:AGENT_CONFIG_AUTO_WATCH_POLL
+} else { 5 }
 $stableWindow = 10
+# Grace for the dispatcher's stream-death handoff, shared with await-review.
+$reapGrace = 30
 
 $expected = $Reviewers -split ','
 
@@ -125,36 +140,44 @@ foreach ($f in @(Get-ChildItem -Path $FileGlob -File -ErrorAction SilentlyContin
 $startEpoch = Get-EpochSeconds
 
 # Auto-terminal dispatch creates its state directory immediately before this
-# watcher starts. Capture only same-repo/same-round directories started within
-# 30 seconds, so stale rounds and work in other repositories cannot signal.
-$cwdBytes = [System.Text.Encoding]::UTF8.GetBytes((Get-Location).Path)
-$sha = [System.Security.Cryptography.SHA256]::Create()
-try {
-    $hashBytes = $sha.ComputeHash($cwdBytes)
-    $repoHash = ([System.BitConverter]::ToString($hashBytes)).Replace('-', '').Substring(0, 8).ToLower()
-} finally {
-    $sha.Dispose()
-}
-$tmpBase = $env:TMPDIR
-if (-not $tmpBase) { $tmpBase = $env:TEMP }
-if (-not $tmpBase) { $tmpBase = $env:TMP }
-if (-not $tmpBase) { $tmpBase = [System.IO.Path]::GetTempPath() }
+# watcher starts. The dispatcher prints that path, so a caller that has it can
+# hand it over directly and both processes agree without consulting a clock.
 $activeStateDirs = @()
 $retryNotified = @{}
-foreach ($stateDir in @(Get-ChildItem -LiteralPath $tmpBase -Directory `
-        -Filter "implement-review-*-$repoHash-round$Round-*" `
-        -ErrorAction SilentlyContinue)) {
-    $timestampPath = Join-Path $stateDir.FullName 'timestamp'
-    if (-not (Test-Path -LiteralPath $timestampPath -PathType Leaf)) { continue }
-    $stateStart = 0L
+if ($env:IMPLEMENT_REVIEW_STATE_DIR -and
+    (Test-Path -LiteralPath $env:IMPLEMENT_REVIEW_STATE_DIR -PathType Container)) {
+    $activeStateDirs += (Resolve-Path -LiteralPath $env:IMPLEMENT_REVIEW_STATE_DIR).Path
+} else {
+    # Otherwise discover it: capture only same-repo/same-round directories
+    # started within 30 seconds, so stale rounds and work in other repositories
+    # cannot signal.
+    $cwdBytes = [System.Text.Encoding]::UTF8.GetBytes((Get-Location).Path)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
     try {
-        $rawStart = (Get-Content -LiteralPath $timestampPath -TotalCount 1 -ErrorAction Stop).Trim()
-    } catch {
-        continue
+        $hashBytes = $sha.ComputeHash($cwdBytes)
+        $repoHash = ([System.BitConverter]::ToString($hashBytes)).Replace('-', '').Substring(0, 8).ToLower()
+    } finally {
+        $sha.Dispose()
     }
-    if (-not [long]::TryParse($rawStart, [ref]$stateStart)) { continue }
-    if ($stateStart -ge ($startEpoch - 30) -and $stateStart -le ($startEpoch + 5)) {
-        $activeStateDirs += $stateDir.FullName
+    $tmpBase = $env:TMPDIR
+    if (-not $tmpBase) { $tmpBase = $env:TEMP }
+    if (-not $tmpBase) { $tmpBase = $env:TMP }
+    if (-not $tmpBase) { $tmpBase = [System.IO.Path]::GetTempPath() }
+    foreach ($stateDir in @(Get-ChildItem -LiteralPath $tmpBase -Directory `
+            -Filter "implement-review-*-$repoHash-round$Round-*" `
+            -ErrorAction SilentlyContinue)) {
+        $timestampPath = Join-Path $stateDir.FullName 'timestamp'
+        if (-not (Test-Path -LiteralPath $timestampPath -PathType Leaf)) { continue }
+        $stateStart = 0L
+        try {
+            $rawStart = (Get-Content -LiteralPath $timestampPath -TotalCount 1 -ErrorAction Stop).Trim()
+        } catch {
+            continue
+        }
+        if (-not [long]::TryParse($rawStart, [ref]$stateStart)) { continue }
+        if ($stateStart -ge ($startEpoch - 30) -and $stateStart -le ($startEpoch + 5)) {
+            $activeStateDirs += $stateDir.FullName
+        }
     }
 }
 
@@ -202,7 +225,13 @@ while ($true) {
                 )
             }
         }
-        if (Test-Path -LiteralPath (Join-Path $stateDir 'stream-death') -PathType Leaf) {
+        $deathMarker = Join-Path $stateDir 'stream-death'
+        if (Test-Path -LiteralPath $deathMarker -PathType Leaf) {
+            # A retry-capable dispatcher archives the failed attempt and clears
+            # the request before incrementing stream-retry-count. Give that
+            # handoff $reapGrace seconds; while it runs, neither branch below
+            # has anything final to say. await-review.py suppresses the same
+            # two states.
             $retryRequest = Join-Path $stateDir 'stream-retry-request'
             if ((Test-Path -LiteralPath $retryRequest -PathType Leaf) -and
                 $null -ne $retryLimit -and $null -ne $retryCount -and
@@ -212,9 +241,33 @@ while ($true) {
                         (Get-Item -LiteralPath $retryRequest -ErrorAction Stop).LastWriteTimeUtc
                     ).TotalSeconds
                 } catch {
-                    $requestAge = 30
+                    $requestAge = $reapGrace
                 }
-                if ($requestAge -lt 30) { continue }
+                if ($requestAge -lt $reapGrace) { continue }
+            }
+            # The death marker is written before the reap runs, so on its own it
+            # does not say the worker tree is gone. Phase 2 turns STREAM-DEAD
+            # into a runtime failure and a sticky downgrade, which is too heavy
+            # a consequence to hang on a half-finished handshake.
+            if (-not (Test-Path -LiteralPath `
+                    (Join-Path $stateDir 'stream-reap-complete') -PathType Leaf)) {
+                # The stall watcher can lose that write and never retry it.
+                # Waiting on a marker that is no longer coming would hold the
+                # round to its full timeout, so report what is known and let
+                # the agent resolve the round.
+                $deathAge = -1
+                try {
+                    $deathAge = ([datetime]::UtcNow -
+                        (Get-Item -LiteralPath $deathMarker -ErrorAction Stop).LastWriteTimeUtc
+                    ).TotalSeconds
+                } catch {
+                    $deathAge = -1
+                }
+                if ($deathAge -gt $reapGrace) {
+                    [Console]::Out.WriteLine("REAP-UNKNOWN $stateDir")
+                    exit 2
+                }
+                continue
             }
             [Console]::Out.WriteLine("STREAM-DEAD $stateDir")
             exit 3

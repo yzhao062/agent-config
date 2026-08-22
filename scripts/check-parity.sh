@@ -222,6 +222,18 @@ strict_test_files=(
   # copy makes this script's own `diff -q` report drift on every line of
   # a file whose content is identical.
   tests/test_line_endings.py
+  # Both pin SKILL.md and the scripts beside it, which are STRICT-shared, so
+  # the rule above applies to them: a copy that lives on one side only guards
+  # one repo. test_skill_md_contract.py shipped without being registered here
+  # and was identical on both sides by hand until this line took over.
+  tests/test_skill_md_contract.py
+  tests/test_await_review.py
+  # auto-watch and stall-watch are the producer and the consumer of the
+  # stream-death handshake that ends a round. Both scripts are recursively
+  # STRICT; their tests were not gated, and the auto-watch emission had no test
+  # on either side until the handshake was tightened.
+  tests/test_auto_watch.py
+  tests/test_stall_watch.py
 )
 for f in "${strict_test_files[@]}"; do
   $AA_INTERNAL_ONLY && break

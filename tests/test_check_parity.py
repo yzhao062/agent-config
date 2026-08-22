@@ -28,6 +28,78 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 SCRIPT = REPO_ROOT / "scripts" / "check-parity.sh"
 
 
+def _strict_test_files() -> tuple[str, ...]:
+    """Read the gated test list out of the script instead of restating it.
+
+    The fixture has to seed every path the script gates, so a hand-copied list
+    here turns any addition to the script into two failures in tests that have
+    nothing to do with the change. That is drift of exactly the kind the gated
+    list exists to prevent, one level up.
+    """
+    text = SCRIPT.read_text(encoding="utf-8")
+    _, _, after = text.partition("strict_test_files=(")
+    body, closed, _ = after.partition("\n)")
+    assert closed, "check-parity.sh: unterminated strict_test_files array"
+    files = []
+    for raw in body.splitlines():
+        line = raw.strip()
+        if line and not line.startswith("#"):
+            files.append(line)
+    assert "tests/test_health_check.py" in files, (
+        f"parsed strict_test_files looks wrong: {files}")
+    return tuple(files)
+
+
+# Reading the list out of the script keeps the fixture from drifting, but it
+# also lets the file under test define its own oracle: delete a row and the
+# fixture simply seeds one fewer file while every parity test stays green.
+# These names govern code both repositories run from the same bytes, so their
+# membership is asserted here instead of inferred.
+STRICT_MEMBERSHIP_FLOOR = (
+    "tests/_quiet_spawn.py",
+    "tests/test_dispatch_codex.py",
+    "tests/test_dispatch_copilot.py",
+    "tests/test_dispatch_claude.py",
+    "tests/test_dispatch_task.py",
+    "tests/test_health_check.py",
+    "tests/test_guard.py",
+    "tests/test_session_bootstrap.py",
+    "tests/test_pointer_files.py",
+    "tests/test_prompt_byte_parity.py",
+    "tests/test_bootstrap_preflight.py",
+    "tests/test_dispatch_path_resolution.py",
+    "tests/test_codex_usage.py",
+    "tests/test_line_endings.py",
+    "tests/test_skill_md_contract.py",
+    "tests/test_await_review.py",
+    "tests/test_auto_watch.py",
+    "tests/test_stall_watch.py",
+)
+
+
+class StrictMembershipTests(unittest.TestCase):
+    def test_every_current_member_stays_in_the_strict_list(self):
+        """A snapshot, so dropping any row is a deliberate edit in two files."""
+        listed = _strict_test_files()
+        for name in STRICT_MEMBERSHIP_FLOOR:
+            with self.subTest(name):
+                self.assertIn(
+                    name, listed,
+                    f"{name} governs shared code and must stay gated by "
+                    "scripts/check-parity.sh",
+                )
+
+    def test_new_members_are_added_to_the_floor(self):
+        """The snapshot has to grow with the list, or it stops being one."""
+        listed = set(_strict_test_files())
+        missing = listed - set(STRICT_MEMBERSHIP_FLOOR)
+        self.assertEqual(
+            missing, set(),
+            "scripts/check-parity.sh gained entries that STRICT_MEMBERSHIP_FLOOR "
+            "does not name; add them here so a later deletion is caught",
+        )
+
+
 def _find_bash() -> str | None:
     """Return a real bash executable path, avoiding the WSL relay on Windows.
 
@@ -97,26 +169,7 @@ def _build_fake_tree(base: pathlib.Path):
     # the tests/ drift that broke aa CI on every shared-skill change).
     # test_bootstrap_preflight.py joined the list in v0.7.0 alongside
     # bootstrap.sh/.ps1's git-preflight helper, which is shared STRICT.
-    strict_test_files = (
-        "tests/test_dispatch_codex.py",
-        "tests/test_dispatch_copilot.py",
-        "tests/test_dispatch_claude.py",
-        "tests/test_dispatch_task.py",
-        "tests/test_health_check.py",
-        "tests/test_guard.py",
-        "tests/test_session_bootstrap.py",
-        "tests/test_pointer_files.py",
-        "tests/test_prompt_byte_parity.py",
-        "tests/test_bootstrap_preflight.py",
-        # v0.7.10: both test STRICT-shared code (dispatch-codex.{sh,ps1} and
-        # scripts/statusline.py) but were ac-local, so aa CI never ran them.
-        "tests/test_dispatch_path_resolution.py",
-        "tests/test_codex_usage.py",
-        "tests/test_line_endings.py",
-        # Not a test: shared test infrastructure gated alongside the tests that
-        # import it.
-        "tests/_quiet_spawn.py",
-    )
+    strict_test_files = _strict_test_files()
     for repo in (ac, aa):
         (repo / "tests").mkdir(exist_ok=True)
     for rel in strict_test_files:
@@ -205,6 +258,22 @@ class CheckParityBehavior(unittest.TestCase):
             rc, out = _run(ac, aa)
             self.assertEqual(rc, 1, f"expected 1, got {rc}; output:\n{out}")
             self.assertIn("scripts/guard.py", out)
+            self.assertIn("DRIFT", out)
+
+    def test_shared_test_drift_exits_1(self):
+        """The gated-test loop has to be exercised, not just populated.
+
+        Every other case here drifts a file from a different list. With no case
+        that drifts a gated test, a one-line edit emptying that loop leaves the
+        membership assertions parsing happily and the whole suite green while
+        the gate stops comparing anything.
+        """
+        with tempfile.TemporaryDirectory() as d:
+            ac, aa = _build_fake_tree(pathlib.Path(d))
+            (aa / "tests/test_dispatch_codex.py").write_text("drifted\n")
+            rc, out = _run(ac, aa)
+            self.assertEqual(rc, 1, f"expected 1, got {rc}; output:\n{out}")
+            self.assertIn("tests/test_dispatch_codex.py", out)
             self.assertIn("DRIFT", out)
 
     def test_shipped_pointer_drift_ignored_after_v040(self):

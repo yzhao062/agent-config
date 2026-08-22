@@ -525,5 +525,158 @@ class MutationTableTests(unittest.TestCase):
                 run_all_checks(mutate(self.text))
 
 
+class StoppedTaskRuleTests(unittest.TestCase):
+    """The rule that a stopped background task is not a failed review.
+
+    A dispatched reviewer runs detached and outlives its harness wrapper, so a
+    `killed` task notification carries no information about it. Six measured
+    notifications on 2026-08-21 all arrived while the reviewer was still
+    writing, and one session turned two of them into a sticky downgrade while
+    the review it wanted was still being written. These assertions keep the
+    replacement judgement, and the script it depends on, from being edited away
+    one clause at a time.
+    """
+
+    def setUp(self) -> None:
+        self.text = _skill_text()
+        self.masked, _ = _markdown_regions(self.text)
+
+    def test_the_script_the_rule_names_is_shipped(self):
+        self.assertIn("await-review.py", self.text)
+        script = SKILL_MD.parent / "scripts" / "await-review.py"
+        self.assertTrue(script.is_file(), f"SKILL.md names a missing {script}")
+
+    def test_the_rule_denies_the_notification_any_authority(self):
+        self.assertIn("was stopped", self.text)
+        self.assertIn("not evidence about the reviewer", self.text)
+
+    def test_all_three_verdicts_are_documented(self):
+        for verdict in ("REVIEW-READY", "ALIVE", "DEAD"):
+            with self.subTest(verdict):
+                self.assertIn(verdict, self.text)
+
+    def test_only_dead_may_set_sticky_downgrade(self):
+        index = _unique_unfenced_index(
+            self.masked, "A harness notification that the background task")
+        sentence = self.text[index:index + 400]
+        self.assertIn("not one of these triggers", sentence)
+        self.assertIn("`DEAD`", sentence)
+
+    def test_the_required_script_probe_names_the_resolver(self):
+        """Auto-terminal may not be selected without the recovery script.
+
+        The probe gates on dispatch, health-check and stall-watch. If the
+        resolver is absent from that list, a round can be dispatched into a
+        channel that cannot tell a live reviewer from a dead one.
+        """
+        line = _unique_line_containing(self.text, "Required scripts are")
+        self.assertIn("await-review.py", line)
+
+    def test_the_invocation_goes_through_an_interpreter(self):
+        """The file is not executable and has no .sh or .ps1 wrapper.
+
+        Telling a reader to run it by filename fails with permission denied on
+        POSIX and is not a reliable invocation on Windows.
+        """
+        index = _unique_unfenced_index(self.masked, "Resolve the round from state-dir evidence")
+        para = self.text[index:index + 700]
+        self.assertIn("<python>", para)
+        self.assertNotIn("Run `await-review.py", para)
+
+    def test_the_procedure_carries_the_backend_review_filename(self):
+        """The rule claims to be reviewer-agnostic; the command has to be too.
+
+        A hard-coded Review-Codex.md sends a stopped Copilot or Claude round to
+        watch a file its reviewer never writes.
+        """
+        index = _unique_unfenced_index(self.masked, "Resolve the round from state-dir evidence")
+        para = self.text[index:index + 700]
+        self.assertIn("Review-<Reviewer>.md", para)
+        for name in ("Review-Codex.md", "Review-GitHub-Copilot.md",
+                     "Review-Claude-Code.md"):
+            with self.subTest(name):
+                self.assertIn(name, para)
+
+    def test_the_alive_loop_has_an_owner_and_an_exit(self):
+        """Without an absolute deadline the documented wait never terminates.
+
+        The stop takes the wrapper that held the dispatch timeout and usually
+        the watcher's timer with it, and each await-review call starts a fresh
+        budget, so `run it again` on its own is an unbounded loop. The bound
+        lives in the state directory because the agent holding it can be
+        compacted, handed over, or stopped in turn.
+        """
+        index = _unique_unfenced_index(
+            self.masked, "The round's deadline outlives the session")
+        para = self.text[index:index + 1200]
+        self.assertIn("60 minutes", para)
+        self.assertIn("--timeout", para)
+        self.assertIn("round-deadline", para)
+        self.assertIn("never rewritten", para)
+        # The dispatcher archives attempt 1 and rewrites the root timestamp, so
+        # a first call that lands after a retry would otherwise stamp a later
+        # origin and hand the round the time attempt 1 already spent.
+        self.assertIn("attempt-N/timestamp", para)
+
+    def test_the_two_checkpoints_are_documented_and_never_sticky(self):
+        """Exit 2 is the way out of the loop, and it is not a failure.
+
+        Reading either line as a runtime failure reintroduces the defect this
+        change removed, with a downgrade that sticks for the session.
+        """
+        for line in ("- `TIMEOUT <state-dir> round-deadline=<epoch>` (exit 2)",
+                     "- `REAP-UNKNOWN <state-dir> tail-idle=<s>` (exit 2)"):
+            with self.subTest(line):
+                self.assertIn(line, self.text)
+        index = _unique_unfenced_index(self.masked, "Neither exit-2 line may set")
+        self.assertIn("sticky downgrade", self.text[index:index + 200])
+
+    def test_the_watcher_reports_a_reap_it_cannot_confirm(self):
+        """Waiting for a marker that is never coming is its own failure.
+
+        Both stall watchers swallow a failed completion write, so the gate that
+        stops a premature STREAM-DEAD has to have an exit of its own.
+        """
+        line = _unique_line_containing(self.text, "When the watcher emits `REAP-UNKNOWN")
+        self.assertIn("stream-reap-complete", line)
+        self.assertIn("checkpoint", line)
+        self.assertIn("not set sticky downgrade", line)
+
+    def test_the_watcher_is_handed_the_state_directory(self):
+        """Discovery is a 30-second window against a contended process launch.
+
+        The dispatcher already printed the path, so the launch instruction has
+        to pass it rather than leave the watcher to find it again.
+        """
+        line = _unique_line_containing(self.text, "IMPLEMENT_REVIEW_STATE_DIR")
+        self.assertIn("STATE-DIR", line)
+
+    def test_the_probe_requires_an_interpreter_for_the_resolver(self):
+        """A Python-only resolver needs Python before the channel is chosen."""
+        line = _unique_line_containing(self.text, "Required scripts are")
+        self.assertIn("python-interpreter", line)
+        self.assertIn("without** setting sticky downgrade", line)
+
+    def test_stream_dead_certifies_the_completed_reap(self):
+        line = _unique_line_containing(self.text, "When the watcher emits `STREAM-DEAD")
+        self.assertIn("stream-reap-complete", line)
+
+    def test_silence_is_documented_as_non_terminal(self):
+        index = _unique_unfenced_index(self.masked, "Silence is never terminal here")
+        para = self.text[index:index + 900]
+        self.assertIn("stream-reap-complete", para)
+        self.assertIn("round's own timeout", para)
+
+    def test_silent_advance_accepts_a_resolved_stop(self):
+        """Item 2 gates on the dispatch exit code, which a stop never yields.
+
+        Without the second clause the rule above admits the round and this list
+        still refuses it, which is the same stall in a different place.
+        """
+        item = _unique_line_containing(self.text, "The dispatch subprocess exited 0")
+        self.assertIn("await-review", item)
+        self.assertIn("REVIEW-READY", item)
+
+
 if __name__ == "__main__":
     unittest.main()

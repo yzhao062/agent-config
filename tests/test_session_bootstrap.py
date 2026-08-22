@@ -27,6 +27,12 @@ import _quiet_spawn  # noqa: E402,F401  installs a windowless spawn default on W
 ROOT = Path(__file__).resolve().parents[1]
 SESSION_BOOTSTRAP = ROOT / "scripts" / "session_bootstrap.py"
 
+# These 16 tests take about 3 seconds together, and the cap they used to carry
+# was 60 seconds. It aligns with the sibling file v0.7.16 fixed and exposes the
+# same override, which is worth having, but the timeouts that prompted the
+# change were not slowness. See run_session_bootstrap below.
+SUBPROCESS_TIMEOUT = int(os.environ.get("AGENT_CONFIG_TEST_TIMEOUT", "90"))
+
 
 def _make_fresh_cache(hooks_dir: Path) -> None:
     """Pre-populate version-cache.json so update_version_cache short-circuits."""
@@ -42,7 +48,20 @@ def _make_fresh_cache(hooks_dir: Path) -> None:
     )
 
 
-def run_session_bootstrap(cwd: str, env_overrides: dict | None = None, timeout: int = 60):
+def run_session_bootstrap(cwd: str, env_overrides: dict | None = None,
+                          timeout: int = SUBPROCESS_TIMEOUT):
+    """Run the hook with no SessionStart payload attached.
+
+    `stdin=DEVNULL` is what makes "no payload" mean anything. The hook reads
+    stdin to find the payload's `source`, and without this the child inherits
+    whatever stdin the test process has. From a terminal, or from any detached
+    launch whose stdin handle never reaches EOF, that read blocks until the
+    timeout above. Measured 2026-08-21: this module alone, launched detached,
+    took 634 seconds and reported all 7 non-stdin tests as TimeoutExpired,
+    which is 7 x 90s and no slowness at all. Interactively the same module
+    finished in 2.2 seconds, because that stdin was already at EOF. The cost
+    was two rounds of reading a deterministic hang as machine contention.
+    """
     env = dict(os.environ)
     if env_overrides:
         env.update(env_overrides)
@@ -52,6 +71,7 @@ def run_session_bootstrap(cwd: str, env_overrides: dict | None = None, timeout: 
         text=True,
         env=env,
         cwd=cwd,
+        stdin=subprocess.DEVNULL,
         timeout=timeout,
     )
     return result.returncode, result.stdout, result.stderr
@@ -61,7 +81,7 @@ def run_session_bootstrap_with_stdin(
     cwd: str,
     stdin_input: str = "",
     env_overrides: dict | None = None,
-    timeout: int = 60,
+    timeout: int = SUBPROCESS_TIMEOUT,
 ):
     """Like ``run_session_bootstrap`` but feeds ``stdin_input`` to the hook.
 

@@ -374,6 +374,19 @@ class _StallContractMixin:
                     marker,
                     r"^STREAM-DEATH \S+ codex-response-stream-disconnected$",
                 )
+                # The completion marker is the only proof a consumer gets that
+                # the reap ran. auto-watch refuses to emit STREAM-DEAD without
+                # it and await-review refuses to return DEAD, so deleting this
+                # write would make a real terminal failure unreachable on this
+                # platform while every synthetic fixture stayed green.
+                _wait_for(
+                    lambda: (state_dir / "stream-reap-complete").exists(),
+                    "stream-reap-complete was not written after the reap",
+                )
+                self.assertRegex(
+                    (state_dir / "stream-reap-complete").read_text(encoding="utf-8"),
+                    r"^STREAM-REAP-COMPLETE \S+",
+                )
                 self.assertEqual(
                     (state_dir / "reap-reason").read_text(encoding="utf-8").strip(),
                     "stream-death",
