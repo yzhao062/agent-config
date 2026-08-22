@@ -177,3 +177,32 @@ whose run completed.
   the locked commit (`65ef8c79`) and never matches. Every consumer pinned to an
   annotated tag shows `1 pack(s) have updates available` that no command can
   clear.
+
+## 4. A stall watcher that fails to start is indistinguishable from a quiet round (open)
+
+Found while releasing v0.7.17. `test_stall_warning_survives_dispatch_completion`
+failed on `windows-latest . py3.13` in CI, with an empty dispatch stderr and no
+`stall-warning` file after a 30-second wait, on a commit whose only changes were
+elsewhere. The same test failed the same way on py3.12 one release earlier and
+went green on a rerun with no code change, which is the fifth visit to this
+family.
+
+`dispatch-codex.ps1:437` launches the watcher with `Start-Process ...
+-ErrorAction SilentlyContinue -PassThru`. When that launch fails, and Windows
+process creation on a loaded runner does fail (`0xC0000142`, recorded in aa#40
+and again in section 1 above), `$stallProc` is null and the dispatch continues
+with no watcher. Nothing is written to stderr and the exit code stays 0.
+
+This is the shape the rest of this note is about, one layer down. A round with
+no watcher and a round with a healthy quiet reviewer produce identical
+evidence, and Phase 2.0 Check 9 reports `PASS no-stall-warning` for both. The
+test is the only thing that currently notices, and it notices as a flake.
+
+Proposed shape: have `Start-StallWatch` check its own result and record the
+outcome in the state directory, `stall-watch-started` on success and a reason
+on failure, then have Check 9 read that marker rather than inferring silence
+from an absent warning. The Bash variant needs the same treatment. Retrying the
+launch once is worth considering, since the failure mode is transient, but the
+marker is the part that closes the ambiguity. The test can then wait for the
+start marker before asserting on the warning, which distinguishes a real
+regression from a launch that never happened.
