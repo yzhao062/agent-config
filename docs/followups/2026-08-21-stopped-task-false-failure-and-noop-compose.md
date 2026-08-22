@@ -187,22 +187,59 @@ elsewhere. The same test failed the same way on py3.12 one release earlier and
 went green on a rerun with no code change, which is the fifth visit to this
 family.
 
-`dispatch-codex.ps1:437` launches the watcher with `Start-Process ...
--ErrorAction SilentlyContinue -PassThru`. When that launch fails, and Windows
-process creation on a loaded runner does fail (`0xC0000142`, recorded in aa#40
-and again in section 1 above), `$stallProc` is null and the dispatch continues
-with no watcher. Nothing is written to stderr and the exit code stays 0.
+It then failed a third time, on `agent-config`'s `windows-latest . py3.12`, on a
+commit whose only change was this file. A rerun of that same job passed with no
+code change. Three failures, two repositories, both Python lanes, and one of
+them on a docs-only commit: whatever this is, it is not a regression.
+
+There are **three** silent-abort paths, and the one recorded first here is the
+least likely of them. Any of them produces the same evidence: dispatch exit 0,
+empty stderr, no `stall-warning`, ever.
+
+1. `stall-watch.ps1:121-126` resolves the parent's start ticks with
+   `Get-Process` followed by `.StartTime`. That property throws on Windows when
+   the process cannot be opened for query, and the handler is a bare `exit 0`.
+   The dispatcher's `Start-Process -PassThru` has already returned by then, so
+   `$stallProc` is non-null and nothing indicates the watcher is already gone.
+2. `stall-watch.ps1:36-49` creates its re-exec directory as
+   `implement-review-stall-watch-reexec-$PID` and exits 2 if `New-Item` throws.
+   The name is keyed on a PID, the cleanup is a `finally` that a killed process
+   never runs, and CI runners recycle PIDs inside one suite. A leftover
+   directory from an earlier test therefore aborts a later watcher. The message
+   goes to stderr, and the watcher is launched `-WindowStyle Hidden` with no
+   redirection, so nobody reads it.
+3. `dispatch-codex.ps1:437` launches the watcher with `Start-Process ...
+   -ErrorAction SilentlyContinue -PassThru`. A failed launch leaves `$stallProc`
+   null and the dispatch continues. This is the path recorded first, and it is
+   the only one of the three that leaves any in-process trace.
 
 This is the shape the rest of this note is about, one layer down. A round with
 no watcher and a round with a healthy quiet reviewer produce identical
 evidence, and Phase 2.0 Check 9 reports `PASS no-stall-warning` for both. The
 test is the only thing that currently notices, and it notices as a flake.
 
-Proposed shape: have `Start-StallWatch` check its own result and record the
-outcome in the state directory, `stall-watch-started` on success and a reason
-on failure, then have Check 9 read that marker rather than inferring silence
-from an absent warning. The Bash variant needs the same treatment. Retrying the
-launch once is worth considering, since the failure mode is transient, but the
-marker is the part that closes the ambiguity. The test can then wait for the
-start marker before asserting on the warning, which distinguishes a real
-regression from a launch that never happened.
+Proposed shape. Do not try to pick the guilty path first, because all three are
+worth closing and none of them is currently observable. Make startup observable
+instead, and the next occurrence names itself:
+
+- The watcher writes `<state-dir>/stall-watch-started` once it is past every
+  abort path and about to poll, and writes `<state-dir>/stall-watch-error` with
+  a one-line reason on each abort. The re-exec block runs before arguments are
+  parsed, so it has to scan `$args` for `--state-dir` to know where to write.
+- Check 9 reads those markers. A round whose watcher never started must not
+  report a clean `no-stall-warning`, which is the production half of this: today
+  a round with no watcher and a round with a healthy quiet reviewer are
+  indistinguishable to Phase 2.
+- `test_stall_warning_survives_dispatch_completion` waits for the start marker
+  before asserting on the warning, and reports the error marker's contents when
+  it is absent. That turns this flake into either a green run or a red one that
+  says which path fired.
+- The Bash variant needs the same treatment, and path 2 argues for a re-exec
+  directory name that does not collide, `mkdtemp`-style rather than PID-keyed.
+
+Retrying a failed launch is worth considering separately, since the failure mode
+looks transient, but the markers are what close the ambiguity. Note that
+resolving path 1 by simply not exiting would be wrong: `$parentStartTicks` is
+what `Test-ParentAlive` uses to detect parent death, so a watcher that continues
+without it cannot tell when to stop, and this machine has already produced one
+process that sat for nine hours.
