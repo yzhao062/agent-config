@@ -519,14 +519,23 @@ class RepoValidationTests(unittest.TestCase):
         self.assertIn("../assets/reference-bank/", archetypes)
         self.assertNotIn("../../../figure-references/", archetypes)
 
-    def test_pointer_files_match_skill_directories(self) -> None:
+    def test_every_skill_directory_has_a_canonical_pointer(self) -> None:
+        """Every skill is reachable by its own name.
+
+        This used to be set equality, which also forbade a second pointer for
+        the same skill. Alias pointers are now allowed, so the rule is that a
+        canonical pointer exists rather than that nothing else does;
+        tests/test_pointer_files.py validates what the extra ones resolve to.
+        """
         skill_names = {path.name for path in self.skills}
         pointer_names = {path.stem for path in POINTER_DIR.glob("*.md")}
-        self.assertEqual(skill_names, pointer_names)
+        for skill_name in sorted(skill_names):
+            self.assertIn(skill_name, pointer_names, skill_name)
 
-    def test_pointer_files_reference_matching_skill(self) -> None:
-        for pointer_file in POINTER_DIR.glob("*.md"):
-            skill_name = pointer_file.stem
+    def test_canonical_pointer_files_reference_matching_skill(self) -> None:
+        for skill_dir in self.skills:
+            skill_name = skill_dir.name
+            pointer_file = POINTER_DIR / f"{skill_name}.md"
             pointer_text = read_text(pointer_file)
             local_path = f"skills/{skill_name}/SKILL.md"
             fallback_path = f".agent-config/repo/skills/{skill_name}/SKILL.md"

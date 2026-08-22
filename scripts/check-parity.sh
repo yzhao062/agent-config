@@ -53,8 +53,9 @@
 #               generate_agent_configs.py, bootstrap/packs.yaml,
 #               scripts/packs/ recursive (excluding __pycache__/),
 #               skills/{implement-review,my-router,ci-mockup-figure,
-#               readme-polish,prun}/ recursive, and the five shipped
-#               .claude/commands/*.md pointers. v0.6.0 promotes this
+#               readme-polish,prun}/ recursive, the five shipped
+#               .claude/commands/*.md pointers, and the vet.md alias
+#               pointer for implement-review. v0.6.0 promotes this
 #               from the v0.5.x manual diff -rq gate to a release gate.
 #
 #   BY-DESIGN   expected to differ (sanitized mirror). Must still exist
@@ -301,6 +302,7 @@ if [ -d "$AA_ROOT/packages/pypi/anywhere_agents/composer" ]; then
     scripts/generate_agent_configs.py
     bootstrap/packs.yaml
     .claude/commands/implement-review.md
+    .claude/commands/vet.md
     .claude/commands/my-router.md
     .claude/commands/ci-mockup-figure.md
     .claude/commands/readme-polish.md
