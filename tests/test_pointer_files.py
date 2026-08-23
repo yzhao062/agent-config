@@ -9,6 +9,7 @@ rather than against the file stem, because the whole point of an alias is that
 the two differ. `alias-of` must name a skill that exists, so a rename cannot
 leave an alias resolving nothing.
 """
+from __future__ import annotations
 
 import pathlib
 import re
