@@ -1,0 +1,521 @@
+"""Tests for skills/implement-review/scripts/style-audit.py.
+
+The audit is advisory by construction, and "by construction" is a claim a
+test has to hold up. Most of what follows checks that the script cannot fail,
+because a step that can fail is a step that can hold the review loop open.
+"""
+from __future__ import annotations
+
+import contextlib
+import io
+import importlib.util
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import unittest
+import unittest.mock
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _quiet_spawn  # noqa: E402,F401  installs a windowless spawn default on Windows
+
+# Loading the audit through SourceFileLoader caches bytecode beside it, and
+# a __pycache__ inside a shipped skill directory shows up as parity drift
+# between the two repos. Nothing here needs the cache.
+sys.dont_write_bytecode = True
+
+ROOT = Path(__file__).resolve().parent.parent
+AUDIT = ROOT / "skills" / "implement-review" / "scripts" / "style-audit.py"
+GUARD = ROOT / "scripts" / "guard.py"
+
+_DIRTY = (
+    "This result was pivotal for the team.\n\n"
+    "A sentence that goes on and on and on and on and on and on and on and "
+    "on and on and on and on and on and on and on and on and on and on for "
+    "far too long indeed truly.\n"
+)
+
+
+def load_module(path, name):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def run_audit(args, env=None):
+    """Run the script as the review loop would, and return (rc, stdout)."""
+    merged = dict(os.environ)
+    if env:
+        merged.update(env)
+    proc = subprocess.run(
+        [sys.executable, str(AUDIT)] + args,
+        capture_output=True, text=True, timeout=180, env=merged,
+    )
+    return proc.returncode, proc.stdout
+
+
+class AlwaysExitsZeroTests(unittest.TestCase):
+    """The contract, stated four ways.
+
+    Each case is one way the audit could plausibly fail a pipeline step: it
+    found something, the package is gone, the file is unreadable, nothing was
+    staged. A non-zero exit in any of them is the block the design rules out.
+    """
+
+    def test_findings_still_exit_zero(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            probe = Path(tmp) / "probe.md"
+            probe.write_text(_DIRTY, encoding="utf-8")
+            rc, out = run_audit(["--repo", tmp, str(probe)])
+        self.assertEqual(rc, 0, "findings must not fail the step")
+        self.assertIn("Style status: FINDINGS:", out)
+
+    def test_missing_agent_style_still_exits_zero(self) -> None:
+        """A consumer without the package gets a reported skip, not a failure.
+
+        Shadowing the package on PYTHONPATH is what makes this real. Asserting
+        the absent-import branch by reading the source would agree with a
+        version that had stopped catching the exception.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            shadow = Path(tmp) / "shadow"
+            shadow.mkdir()
+            (shadow / "agent_style.py").write_text(
+                "raise ImportError('shadowed for test')\n", encoding="utf-8")
+            probe = Path(tmp) / "probe.md"
+            probe.write_text(_DIRTY, encoding="utf-8")
+            rc, out = run_audit(
+                ["--repo", tmp, str(probe)],
+                env={"PYTHONPATH": str(shadow)},
+            )
+        self.assertEqual(rc, 0)
+        self.assertIn("Style status: SKIPPED:", out)
+        self.assertIn("agent_style", out)
+
+    def test_a_missing_file_still_exits_zero(self) -> None:
+        """Named for what it does. The permission-failure case it used to
+        claim is covered by FileLevelProblemTests, which patches the detector
+        rather than relying on a chmod fixture that Windows ignores."""
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "does-not-exist.md"
+            rc, out = run_audit(["--repo", tmp, str(missing)])
+        self.assertEqual(rc, 0)
+        self.assertIn("Style status:", out)
+
+    def test_nothing_staged_still_exits_zero(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            rc, out = run_audit(["--repo", tmp])
+        self.assertEqual(rc, 0)
+        self.assertIn("Style status: SKIPPED:", out)
+
+
+class ScopeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.mod = load_module(AUDIT, "_style_audit")
+
+    def test_carried_text_is_out_of_scope(self) -> None:
+        self.assertFalse(self.mod.is_prose_target("/tmp/x/agent-io/round1.md"))
+        self.assertFalse(self.mod.is_prose_target("/tmp/x/agent-io/prompt.txt"))
+
+    def test_the_sibling_is_still_in_scope(self) -> None:
+        self.assertTrue(self.mod.is_prose_target("/tmp/x/round1.md"))
+
+    def test_code_is_out_of_scope(self) -> None:
+        self.assertFalse(self.mod.is_prose_target("/tmp/x/main.py"))
+
+    def test_fallback_constants_match_guard(self) -> None:
+        """The script carries its own copy for the pack-deployed case.
+
+        It prefers guard.py when it can find one, so the copy is reached only
+        where the repo is not. Drift there would be invisible at runtime, and
+        this is the only place it can be caught.
+        """
+        guard = load_module(GUARD, "_guard_for_audit")
+        self.assertEqual(
+            set(self.mod._FALLBACK_PROSE_EXTENSIONS), set(guard.PROSE_EXTENSIONS))
+        self.assertEqual(
+            self.mod._FALLBACK_AGENT_IO_SEGMENT, guard.AGENT_IO_SEGMENT)
+
+
+def git(repo, *args):
+    """Run git in repo, raising on failure so a broken fixture is loud."""
+    return subprocess.run(["git", "-C", str(repo)] + list(args),
+                          capture_output=True, text=True, check=True)
+
+
+def make_repo(tmp):
+    """An initialised repo with identity set, so commits and diffs work."""
+    subprocess.run(["git", "init", "-q", str(tmp)], check=True,
+                   capture_output=True)
+    git(tmp, "config", "user.email", "probe@example.invalid")
+    git(tmp, "config", "user.name", "probe")
+    return Path(tmp)
+
+
+def stage(repo, name, content):
+    path = Path(repo) / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    git(repo, "add", name)
+    return path
+
+
+def run_main(mod, argv):
+    """Call main() in-process and return (rc, stdout)."""
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = mod.main(argv)
+    return rc, buf.getvalue()
+
+
+class StagedContentTests(unittest.TestCase):
+    """The audit must read what is staged, not what is on disk.
+
+    A staged file with further unstaged edits holds different bytes in each
+    place. Auditing the working tree while filtering by staged line numbers
+    reports on neither, so a staged violation can print CLEAN.
+    """
+
+    def setUp(self) -> None:
+        self.mod = load_module(AUDIT, "_style_audit_staged")
+        self._require_agent_style()
+
+    def _require_agent_style(self) -> None:
+        try:
+            import agent_style.review  # noqa: F401
+        except Exception as exc:
+            if os.environ.get("CI"):
+                self.fail(f"agent_style must be importable in CI: {exc!r}")
+            self.skipTest("agent_style not importable in this environment")
+
+    def test_a_staged_violation_survives_a_clean_working_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = make_repo(tmp)
+            stage(repo, "notes.md", "This result was pivotal.\n")
+            # The working tree is then cleaned without restaging, which is
+            # exactly the state that used to report CLEAN.
+            (repo / "notes.md").write_text("Short and clean.\n",
+                                           encoding="utf-8")
+            rc, out = run_main(self.mod, ["--repo", str(repo), "--json"])
+        self.assertEqual(rc, 0)
+        payload = json.loads(out)
+        self.assertEqual(payload["audited_from"], "index")
+        rules = {f["rule"] for f in payload["findings"]}
+        self.assertIn("RULE-06", rules,
+                      "the staged banned word must still be reported")
+
+    def test_an_unstaged_violation_is_not_attributed_to_the_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = make_repo(tmp)
+            stage(repo, "notes.md", "Short and clean.\n")
+            (repo / "notes.md").write_text("This result was pivotal.\n",
+                                           encoding="utf-8")
+            rc, out = run_main(self.mod, ["--repo", str(repo), "--json"])
+        self.assertEqual(rc, 0)
+        payload = json.loads(out)
+        self.assertEqual(
+            [f for f in payload["findings"] if f["rule"] == "RULE-06"], [],
+            "an edit that is not staged is not part of this change",
+        )
+
+
+class FileLevelProblemTests(unittest.TestCase):
+    """A finding about a file has no line, and must not be filtered by line.
+
+    An AUDIT finding sits at line 0. Line 0 is in no changed-line set, so
+    before this it was counted as pre-existing and dropped, and a file the
+    audit could not read printed CLEAN.
+    """
+
+    def setUp(self) -> None:
+        self.mod = load_module(AUDIT, "_style_audit_problem")
+
+    def test_an_unreadable_blob_is_reported_not_filtered_away(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = make_repo(tmp)
+            stage(repo, "notes.md", "Short and clean.\n")
+            with unittest.mock.patch.object(
+                    self.mod, "_materialize_index_blob", return_value=None):
+                rc, out = run_main(self.mod, ["--repo", str(repo), "--json"])
+        self.assertEqual(rc, 0)
+        payload = json.loads(out)
+        self.assertTrue(payload["status"].startswith("FINDINGS:"),
+                        f"expected FINDINGS, got {payload['status']!r}")
+        self.assertEqual([f["rule"] for f in payload["findings"]], ["AUDIT"])
+
+    def test_a_detector_that_raises_is_reported_in_staged_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = make_repo(tmp)
+            stage(repo, "notes.md", "Short and clean.\n")
+
+            def boom(*a, **k):
+                raise PermissionError("denied")
+
+            # Patch the detector the module imports lazily.
+            import agent_style.review as review
+            with unittest.mock.patch.object(review, "audit", boom):
+                rc, out = run_main(self.mod, ["--repo", str(repo), "--json"])
+        self.assertEqual(rc, 0)
+        payload = json.loads(out)
+        self.assertEqual([f["rule"] for f in payload["findings"]], ["AUDIT"])
+        self.assertIn("PermissionError", payload["findings"][0]["detail"])
+
+
+class ChangedLinesTests(unittest.TestCase):
+    """The hunk parser, and what it does when it cannot trust its answer."""
+
+    def setUp(self) -> None:
+        self.mod = load_module(AUDIT, "_style_audit_lines")
+
+    def test_a_new_file_marks_every_line(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = make_repo(tmp)
+            stage(repo, "a.md", "one\ntwo\nthree\n")
+            self.assertEqual(self.mod.changed_lines(str(repo), "a.md"),
+                             {1, 2, 3})
+
+    def test_a_single_line_hunk_has_no_comma(self) -> None:
+        """git emits `+7` rather than `+7,1` for a one-line hunk."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = make_repo(tmp)
+            stage(repo, "a.md", "".join(f"line{i}\n" for i in range(1, 10)))
+            git(repo, "commit", "-qm", "base")
+            path = Path(repo) / "a.md"
+            body = path.read_text(encoding="utf-8").splitlines()
+            body[6] = "CHANGED"
+            path.write_text("\n".join(body) + "\n", encoding="utf-8")
+            git(repo, "add", "a.md")
+            self.assertEqual(self.mod.changed_lines(str(repo), "a.md"), {7})
+
+    def test_a_pure_deletion_marks_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = make_repo(tmp)
+            stage(repo, "a.md", "one\ntwo\nthree\n")
+            git(repo, "commit", "-qm", "base")
+            (Path(repo) / "a.md").write_text("one\nthree\n", encoding="utf-8")
+            git(repo, "add", "a.md")
+            self.assertEqual(self.mod.changed_lines(str(repo), "a.md"), set())
+
+    def test_multiple_hunks_are_unioned(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = make_repo(tmp)
+            stage(repo, "a.md", "".join(f"line{i}\n" for i in range(1, 21)))
+            git(repo, "commit", "-qm", "base")
+            path = Path(repo) / "a.md"
+            body = path.read_text(encoding="utf-8").splitlines()
+            body[1] = "EDIT-A"
+            body[15] = "EDIT-B"
+            path.write_text("\n".join(body) + "\n", encoding="utf-8")
+            git(repo, "add", "a.md")
+            self.assertEqual(self.mod.changed_lines(str(repo), "a.md"), {2, 16})
+
+    def test_an_unparseable_header_falls_back_rather_than_skipping(self) -> None:
+        """Skipping a header it cannot read would leave every finding inside
+        that hunk looking pre-existing, which prints CLEAN. None means report
+        everything, which the caller then says out loud."""
+        fake = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="@@ -1 +nonsense @@\n", stderr="")
+        with unittest.mock.patch.object(self.mod, "_git", return_value=fake):
+            self.assertIsNone(self.mod.changed_lines("/repo", "a.md"))
+
+    def test_a_binary_attribute_does_not_suppress_the_patch(self) -> None:
+        """`.gitattributes` can mark a prose path binary, and git would then
+        emit no hunk header at all. `--text` overrides that, so scoping keeps
+        working rather than falling back."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = make_repo(tmp)
+            stage(repo, ".gitattributes", "*.md binary\n")
+            stage(repo, "a.md", "one\ntwo\n")
+            self.assertEqual(self.mod.changed_lines(str(repo), "a.md"), {1, 2})
+
+    def test_a_patch_with_no_hunk_header_falls_back(self) -> None:
+        """The remaining guard. A file in the staged list changed, so a patch
+        carrying no hunk header means git suppressed it by some route
+        `--text` does not cover. An empty set there would drop every finding
+        as pre-existing and print CLEAN.
+        """
+        fake = subprocess.CompletedProcess(
+            args=[], returncode=0,
+            stdout="diff --git a/a.md b/a.md\nBinary files differ\n", stderr="")
+        with unittest.mock.patch.object(self.mod, "_git", return_value=fake):
+            self.assertIsNone(self.mod.changed_lines("/repo", "a.md"))
+
+    def test_git_failure_falls_back(self) -> None:
+        with unittest.mock.patch.object(self.mod, "_git", return_value=None):
+            self.assertIsNone(self.mod.changed_lines("/repo", "a.md"))
+
+    def test_the_fallback_is_announced(self) -> None:
+        findings = [{"file": "a.md", "line": 5, "column": 1, "rule": "RULE-12",
+                     "detail": "d", "excerpt": ""}]
+        with unittest.mock.patch.object(self.mod, "changed_lines",
+                                        return_value=None):
+            kept, dropped, fell_back = self.mod.scope_to_changed_lines(
+                findings, "/repo")
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(dropped, 0)
+        self.assertEqual(fell_back, ["a.md"])
+
+    def test_git_is_asked_once_per_file_not_once_per_finding(self) -> None:
+        """359 whole-file findings would otherwise launch 359 git processes,
+        each with a 60-second timeout. An audit that cannot hold the loop
+        open must not be able to spend hours before returning 0."""
+        findings = [{"file": "a.md", "line": i, "column": 1,
+                     "rule": "RULE-12", "detail": "d", "excerpt": ""}
+                    for i in range(1, 200)]
+        findings += [{"file": "b.md", "line": i, "column": 1,
+                      "rule": "RULE-12", "detail": "d", "excerpt": ""}
+                     for i in range(1, 200)]
+        with unittest.mock.patch.object(
+                self.mod, "changed_lines", return_value={1}) as spy:
+            self.mod.scope_to_changed_lines(findings, "/repo")
+        self.assertEqual(spy.call_count, 2,
+                         "one git query per file, regardless of finding count")
+
+
+class InvocationSurfaceTests(unittest.TestCase):
+    """The remaining ways a caller can invoke it, all of which exit 0."""
+
+    def setUp(self) -> None:
+        self.mod = load_module(AUDIT, "_style_audit_surface")
+
+    def test_an_empty_index_in_a_real_repo_is_a_skip(self) -> None:
+        """Distinct from a non-git directory, which the earlier test used."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = make_repo(tmp)
+            rc, out = run_main(self.mod, ["--repo", str(repo)])
+        self.assertEqual(rc, 0)
+        self.assertIn("Style status: SKIPPED:", out)
+
+    def test_a_directory_passed_as_a_file_exits_zero(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            sub = Path(tmp) / "adir.md"
+            sub.mkdir()
+            rc, out = run_main(self.mod, ["--repo", tmp, str(sub)])
+        self.assertEqual(rc, 0)
+        self.assertIn("Style status:", out)
+
+    def test_zero_limit_lists_nothing_and_exits_zero(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            probe = Path(tmp) / "probe.md"
+            probe.write_text(_DIRTY, encoding="utf-8")
+            rc, out = run_main(self.mod,
+                               ["--repo", tmp, "--limit", "0", str(probe)])
+        self.assertEqual(rc, 0)
+        self.assertIn("more not listed", out)
+
+    def test_an_unexpected_exception_becomes_a_reported_failure(self) -> None:
+        """The boundary around the run. Without it an unforeseen error is a
+        failed step in someone's review rather than a reported outcome."""
+        with unittest.mock.patch.object(
+                self.mod, "_run", side_effect=RuntimeError("boom")):
+            rc, out = run_main(self.mod, ["--repo", "."])
+        self.assertEqual(rc, 0)
+        self.assertIn("Style status: FAILED:", out)
+        self.assertIn("RuntimeError", out)
+
+    def test_a_usage_error_still_exits_two(self) -> None:
+        """Deliberately outside the contract: a malformed command line is a
+        caller defect, and no review-loop invocation produces one."""
+        with self.assertRaises(SystemExit) as ctx:
+            self.mod.main(["--no-such-flag"])
+        self.assertEqual(ctx.exception.code, 2)
+
+
+class GuardLookupTests(unittest.TestCase):
+    """The script prefers guard.py's definitions and must refuse a partial one.
+
+    Every consumer runs an older ~/.claude/hooks/guard.py until it bootstraps
+    again, and that hook carries PROSE_EXTENSIONS without AGENT_IO_SEGMENT.
+    Adopting the half it offers would scope by extension with no marker, which
+    is the behaviour this change replaces. Observed live against dgx-spark,
+    whose deployed hook predates the constant.
+    """
+
+    def setUp(self) -> None:
+        self.mod = load_module(AUDIT, "_style_audit_lookup")
+
+    @staticmethod
+    def _guard_stub(tmp, body):
+        path = Path(tmp) / "guard.py"
+        path.write_text(body, encoding="utf-8")
+        return str(path)
+
+    def _assert_fell_back(self, exts, seg):
+        self.assertEqual(set(exts), set(self.mod._FALLBACK_PROSE_EXTENSIONS))
+        self.assertEqual(seg, self.mod._FALLBACK_AGENT_IO_SEGMENT)
+
+    def test_a_complete_guard_is_adopted(self) -> None:
+        body = 'PROSE_EXTENSIONS = frozenset([".zz"])\nAGENT_IO_SEGMENT = "carried"\n'
+        with tempfile.TemporaryDirectory() as tmp:
+            exts, seg = self.mod._load_scope_predicates([self._guard_stub(tmp, body)])
+        self.assertEqual(set(exts), {".zz"})
+        self.assertEqual(seg, "carried")
+
+    def test_an_older_guard_without_the_marker_falls_back(self) -> None:
+        body = 'PROSE_EXTENSIONS = frozenset([".zz"])\n'
+        with tempfile.TemporaryDirectory() as tmp:
+            exts, seg = self.mod._load_scope_predicates([self._guard_stub(tmp, body)])
+        self._assert_fell_back(exts, seg)
+
+    def test_a_guard_that_raises_falls_back(self) -> None:
+        body = "raise RuntimeError('broken')\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            exts, seg = self.mod._load_scope_predicates([self._guard_stub(tmp, body)])
+        self._assert_fell_back(exts, seg)
+
+    def test_no_candidate_at_all_falls_back(self) -> None:
+        exts, seg = self.mod._load_scope_predicates([])
+        self._assert_fell_back(exts, seg)
+
+
+class CoverageReportTests(unittest.TestCase):
+    """A partial audit must not read like a complete one."""
+
+    def _require_agent_style(self) -> None:
+        try:
+            import agent_style.review  # noqa: F401
+        except Exception as exc:
+            if os.environ.get("CI"):
+                self.fail(f"agent_style must be importable in CI: {exc!r}")
+            self.skipTest("agent_style not importable in this environment")
+
+    def test_partial_and_uncovered_are_reported_apart(self) -> None:
+        """RULE-06 runs mechanically and its semantic half does not, so
+        listing it beside a rule no detector reaches would misstate both."""
+        self._require_agent_style()
+        with tempfile.TemporaryDirectory() as tmp:
+            probe = Path(tmp) / "probe.md"
+            probe.write_text(_DIRTY, encoding="utf-8")
+            rc, out = run_audit(["--repo", tmp, "--json", str(probe)])
+        self.assertEqual(rc, 0)
+        payload = json.loads(out)
+        coverage = payload["coverage"]
+        self.assertIn("RULE-06", coverage["partial"])
+        self.assertIn("RULE-07", coverage["uncovered"])
+        self.assertNotIn("RULE-06", coverage["uncovered"])
+        self.assertFalse(set(coverage["covered"]) & set(coverage["uncovered"]))
+
+    def test_rule_g_is_opt_in(self) -> None:
+        """Measured at 40% of all findings on this corpus, and it flags the
+        sentence-case headings written on purpose. On by default it would
+        bury the findings worth acting on."""
+        self._require_agent_style()
+        with tempfile.TemporaryDirectory() as tmp:
+            probe = Path(tmp) / "probe.md"
+            probe.write_text("## a lowercase heading\n\nShort and clean.\n",
+                             encoding="utf-8")
+            rc_default, out_default = run_audit(["--repo", tmp, "--json", str(probe)])
+            rc_optin, out_optin = run_audit(
+                ["--repo", tmp, "--json", "--include-rule-g", str(probe)])
+        self.assertEqual((rc_default, rc_optin), (0, 0))
+        default_rules = {f["rule"] for f in json.loads(out_default)["findings"]}
+        optin_rules = {f["rule"] for f in json.loads(out_optin)["findings"]}
+        self.assertNotIn("RULE-G", default_rules)
+        self.assertIn("RULE-G", optin_rules)
+
+
+if __name__ == "__main__":
+    unittest.main()

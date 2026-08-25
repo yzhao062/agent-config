@@ -13,7 +13,9 @@ Dispatches by tool_name. Shared checks:
    deny-style gates only; a permission allow is always safe to honor.
 1. Writing-style gate — Write/Edit/MultiEdit on prose files (.md/.tex/.rst/.txt)
    is denied when the outgoing content contains a banned AI-tell word from
-   AGENTS.md Writing Defaults. Skips code files.
+   AGENTS.md Writing Defaults. Skips code files, and skips a path a caller
+   marked as agent I/O when that path is under a temp root (see
+   AGENT_IO_SEGMENT). The advisory in 1b honors the same marker anywhere.
 1b. agent-style advisory — the same writes are additionally scanned by the
    agent-style package's mechanical detectors when it is importable, and any
    findings are reported to both the model and the user while the write
@@ -63,6 +65,7 @@ import random
 import re
 import shlex
 import sys
+import tempfile
 
 
 def make_response(decision, reason):
@@ -290,6 +293,115 @@ BANNED_WORDS = frozenset([
 
 # Prose-content file extensions subject to writing-style enforcement.
 PROSE_EXTENSIONS = frozenset([".md", ".tex", ".rst", ".txt"])
+
+# Path segment a caller uses to declare that a file holds text it is carrying
+# rather than prose it is writing: a prompt assembled for another agent, or
+# that agent's captured output. Both writing-style guards skip such a path.
+#
+# The declaration has to come from the writer, because nothing in the tool
+# call reveals it. Measured across 34 local session transcripts, 23% of
+# prose-extension writes land in a scratch directory, and that directory
+# holds `prompt.md` beside a draft proposal section, so neither the extension
+# nor the file name separates the two. Findings on carried text are
+# unactionable in two different ways. A dispatch prompt is an instruction to
+# another agent, so rewriting it changes what was asked. A captured round
+# output is another agent's words, so rewriting it falsifies the record. An
+# advisory that mostly fires on those is one the reader learns to skip, which
+# is the reason RULE-G is already left out of the advisory's rule set.
+#
+# A directory rather than a file-name suffix, so a caller declares the
+# location once and everything written there is covered. An unmarked path is
+# still scanned, so forgetting the marker costs noise rather than silence.
+AGENT_IO_SEGMENT = "agent-io"
+
+
+def is_agent_io_path(file_path):
+    """True when any directory along file_path is the agent-io marker."""
+    parts = str(file_path).replace("\\", "/").lower().split("/")
+    return AGENT_IO_SEGMENT in parts
+
+
+def _inside_git_worktree(path):
+    """True when any ancestor directory of `path` holds a `.git` entry.
+
+    A repository is repository content wherever it happens to sit. CI
+    routinely checks one out below the system temp directory, and without
+    this the marker would be trusted there.
+    """
+    current = os.path.dirname(path)
+    seen = set()
+    while current and current not in seen:
+        seen.add(current)
+        try:
+            if os.path.exists(os.path.join(current, ".git")):
+                return True
+        except OSError:
+            return False
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    return False
+
+
+def is_scratch_path(file_path):
+    """True when file_path is carried text's home: a temp root, outside any
+    repository.
+
+    Two conditions, because a temp root alone is not a trust boundary. A
+    repository checked out below one is still a repository, so the walk for
+    an enclosing `.git` runs first. Symlinks and Windows junctions are
+    resolved before either test, since a lexical prefix check on an
+    unresolved path can be satisfied by a link that lands anywhere.
+    """
+    try:
+        target = os.path.realpath(str(file_path))
+    except (OSError, ValueError):
+        return False
+    if _inside_git_worktree(target):
+        return False
+    target = os.path.normcase(target)
+    roots = [tempfile.gettempdir(), "/tmp"]
+    roots.extend(v for v in (os.environ.get("TMPDIR"),
+                             os.environ.get("TEMP"),
+                             os.environ.get("TMP")) if v)
+    for candidate in roots:
+        try:
+            base = os.path.normcase(os.path.realpath(candidate))
+        except (OSError, ValueError):
+            continue
+        if target == base or target.startswith(base + os.sep):
+            return True
+        if target.startswith(base + "/"):
+            return True
+    return False
+
+
+def prose_extension(file_path, agent_io_requires_scratch=False):
+    """Return the extension the writing-style guards should scan, or None.
+
+    Both guards ask this one question, so the extension test lives in exactly
+    one place and their scope cannot drift apart. They differ in how far they
+    trust the agent-io marker, and that difference is the argument of this
+    function rather than a second copy of the logic.
+
+    The advisory trusts the marker anywhere. It reports, so a wrong exemption
+    costs a message nobody needed.
+
+    The deny gate trusts it only under a temp root that encloses no
+    repository. It blocks, so a marker honored anywhere would be a one-token
+    bypass: an agent could write `repo/agent-io/proposal.md` and skip the
+    banned-word check on real prose. Carried text belongs in the session
+    scratch directory anyway, which is where both `implement-review` and
+    `prun` are documented to put it.
+    """
+    _, ext = os.path.splitext(str(file_path).lower())
+    if ext not in PROSE_EXTENSIONS:
+        return None
+    if is_agent_io_path(file_path):
+        if not agent_io_requires_scratch or is_scratch_path(file_path):
+            return None
+    return ext
 
 # Tools exempt from the banner gate. Intent: block user-visible work (Bash,
 # Write, Edit, MultiEdit, NotebookEdit, KillShell, MCP write-style tools)
@@ -545,8 +657,8 @@ def check_writing_style(tool_name, tool_input):
         return None
 
     file_path = tool_input.get("file_path", "")
-    _, ext = os.path.splitext(file_path.lower())
-    if ext not in PROSE_EXTENSIONS:
+    ext = prose_extension(file_path, agent_io_requires_scratch=True)
+    if ext is None:
         return None
 
     content = _content_for_write(tool_name, tool_input)
@@ -643,8 +755,8 @@ def advise_writing_style(tool_name, tool_input):
         return None
 
     file_path = tool_input.get("file_path", "")
-    _, ext = os.path.splitext(file_path.lower())
-    if ext not in PROSE_EXTENSIONS:
+    ext = prose_extension(file_path)
+    if ext is None:
         return None
 
     rules = _agent_style_mechanical()

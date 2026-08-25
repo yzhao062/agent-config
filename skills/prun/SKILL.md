@@ -242,6 +242,8 @@ Keep a simple run ledger (a file in a scratch area) recording each unit: id, exe
 file, state-dir / clone-dir, result file, status (dispatched / done / failed), start/end. Use it to
 report progress and to relaunch only units whose result is missing or fails validation.
 
+**Where a unit's own files go**: four kinds of file belong under an `agent-io` directory inside the scratch area. They are the per-unit prompt, the result file, the shared-context file every worker reads, and the run ledger. The directory name tells the writing-style hook to skip them, because none of that text is the coordinator's prose to rewrite. A unit prompt is an instruction to a worker, and a result file holds what the worker sent back. Anything the fan-out produces for a human reader stays outside `agent-io`.
+
 ## Web access
 
 Both executors reach the web by different paths, each with its own strengths, so assign per unit.

@@ -995,6 +995,187 @@ class AgentStyleAdvisoryTests(unittest.TestCase):
         )
 
 
+def load_guard_module():
+    """Import guard.py for the predicates that are cheaper to test directly."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("_guard_direct", GUARD)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class AgentIoScopeTests(unittest.TestCase):
+    """A caller can declare that a file holds text it is carrying.
+
+    The writing-style guards pick their scope by extension, and extension
+    does not separate prose an agent is writing from text an agent is moving.
+    A scratch directory holds a dispatch prompt beside a draft proposal
+    section. Measured across 34 local session transcripts, 23% of
+    prose-extension writes landed in a scratch directory, and the most
+    frequent names there were the review loop's own `ir-prompt-r1.txt` and
+    `ir-round1.txt`. Findings on those cannot be acted on. A prompt is an
+    instruction to another agent, so rewriting it changes what was asked, and
+    a captured round output is another agent's words.
+
+    So the writer declares it, by putting the file under an `agent-io`
+    directory. The two guards then trust that marker to different depths, and
+    the split is the point of this class. The advisory honors it anywhere,
+    because a wrong exemption there costs one message. The deny gate honors
+    it only under a temp root, because a marker trusted anywhere would be a
+    one-token bypass of the banned-word check on real prose.
+
+    Every exemption is paired with a case that must stay covered, since a
+    marker that swallowed its neighbours would otherwise pass.
+    """
+
+    @staticmethod
+    def _scratch(*parts):
+        """A path under the real temp root, which is the trust boundary."""
+        return os.path.join(tempfile.gettempdir(), "ir-probe", *parts)
+
+    @staticmethod
+    def _decision(resp):
+        if not resp:
+            return None
+        return resp.get("hookSpecificOutput", {}).get("permissionDecision")
+
+    def _write(self, path, content="This result was pivotal."):
+        return run_guard_with_payload({
+            "tool_name": "Write",
+            "tool_input": {"file_path": path, "content": content},
+        })
+
+    def test_the_deny_gate_skips_a_declared_scratch_path(self) -> None:
+        resp = self._write(self._scratch("agent-io", "round1.md"))
+        self.assertIsNone(resp)
+
+    def test_the_deny_gate_still_covers_a_declared_repo_path(self) -> None:
+        """The bypass this closes.
+
+        Without the temp-root condition an agent could route any prose
+        through `repo/agent-io/` and skip the banned-word denial entirely.
+        The marker is a declaration about carried text, and carried text does
+        not live in the repository.
+        """
+        resp = self._write("/repo/agent-io/proposal.md")
+        self.assertEqual(self._decision(resp), "deny")
+
+    def test_the_deny_gate_still_covers_the_scratch_sibling(self) -> None:
+        resp = self._write(self._scratch("round1.md"))
+        self.assertEqual(self._decision(resp), "deny",
+                         "only the declared directory is exempt")
+
+    def test_the_advisory_skips_a_declared_path_anywhere(self) -> None:
+        """The advisory is the guard the noise complaint was about, so its
+        exemption stays broad. It reports rather than blocks, so a wrong
+        exemption costs a message rather than a write."""
+        AgentStyleAdvisoryTests._require_agent_style(self)
+        resp = self._write("/repo/agent-io/round1.md", _LONG_SENTENCE)
+        self.assertIsNone(resp)
+
+    def test_the_advisory_skips_a_declared_scratch_path(self) -> None:
+        AgentStyleAdvisoryTests._require_agent_style(self)
+        resp = self._write(self._scratch("agent-io", "ir-round1.txt"),
+                           _LONG_SENTENCE)
+        self.assertIsNone(resp)
+
+    def test_the_advisory_still_covers_the_sibling(self) -> None:
+        AgentStyleAdvisoryTests._require_agent_style(self)
+        resp = self._write(self._scratch("ir-round1.txt"), _LONG_SENTENCE)
+        self.assertIn("[agent-style]", AgentStyleAdvisoryTests._advice(resp))
+
+    def test_the_marker_is_a_directory_not_a_file_name(self) -> None:
+        """`agent-io.md` is a document about the convention rather than one
+        covered by it. A substring match would exempt the documentation."""
+        resp = self._write("/repo/docs/agent-io.md")
+        self.assertEqual(self._decision(resp), "deny")
+
+    def test_backslash_separators_and_case_are_recognised(self) -> None:
+        """Two separate claims, tested separately.
+
+        The earlier version built a native path and called `.replace("/",
+        os.sep)`, which is a no-op on POSIX, so it only ever exercised
+        backslashes on the platform that already used them. The marker split
+        is checked here against a literal backslash string on every platform;
+        scratch-root recognition is checked by the cases above using a native
+        path.
+        """
+        guard = load_guard_module()
+        self.assertTrue(guard.is_agent_io_path(r"C:\Users\x\Temp\Agent-IO\r.md"))
+        self.assertTrue(guard.is_agent_io_path("/var/tmp/AGENT-IO/r.md"))
+        self.assertFalse(guard.is_agent_io_path(r"C:\Users\x\Temp\agentio\r.md"))
+
+    def test_a_repository_below_a_temp_root_is_not_scratch(self) -> None:
+        """The Round 2 reopen.
+
+        CI routinely checks a repository out below the system temp
+        directory. A lexical prefix test would trust `agent-io` there and
+        hand any prose a bypass of the deny gate.
+        """
+        guard = load_guard_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = os.path.join(tmp, "ci-checkout")
+            os.makedirs(os.path.join(repo, "agent-io"))
+            subprocess.run(["git", "init", "-q", repo], capture_output=True)
+            target = os.path.join(repo, "agent-io", "proposal.md")
+            self.assertFalse(guard.is_scratch_path(target))
+            self.assertEqual(
+                guard.prose_extension(target, agent_io_requires_scratch=True),
+                ".md", "the deny gate must still cover repository prose")
+            # The same tree without a .git is ordinary scratch.
+            plain = os.path.join(tmp, "agent-io", "round1.md")
+            os.makedirs(os.path.dirname(plain), exist_ok=True)
+            self.assertTrue(guard.is_scratch_path(plain))
+
+    def test_a_symlink_out_of_temp_is_not_scratch(self) -> None:
+        """`abspath` does not resolve links, so a lexical check can be
+        satisfied by a link that lands inside a repository."""
+        guard = load_guard_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = os.path.join(tmp, "outside-repo")
+            os.makedirs(os.path.join(repo, "agent-io"))
+            subprocess.run(["git", "init", "-q", repo], capture_output=True)
+            real = os.path.join(repo, "agent-io", "proposal.md")
+            with open(real, "w", encoding="utf-8") as fh:
+                fh.write("x\n")
+            link_dir = os.path.join(tempfile.gettempdir(), "ir-link-probe")
+            link = os.path.join(link_dir, "agent-io", "proposal.md")
+            os.makedirs(os.path.dirname(link), exist_ok=True)
+            if os.path.lexists(link):
+                os.remove(link)
+            try:
+                os.symlink(real, link)
+            except (OSError, NotImplementedError):
+                self.skipTest("symlinks unavailable to this account")
+            try:
+                self.assertFalse(guard.is_scratch_path(link))
+            finally:
+                os.remove(link)
+
+    def test_both_guards_read_the_same_predicate(self) -> None:
+        """AGENTS.md says the two guards share a gate because they scan the
+        same writes. They now differ in how far they trust the marker, and
+        that difference belongs in an argument rather than in a second copy
+        of the extension test, which is what this scans for.
+        """
+        source = GUARD.read_text(encoding="utf-8")
+        self.assertEqual(
+            source.count("not in PROSE_EXTENSIONS"), 1,
+            "the membership test belongs to prose_extension() alone; a second "
+            "copy lets the deny gate and the advisory drift apart",
+        )
+        self.assertEqual(
+            source.count("ext = prose_extension(file_path"), 2,
+            "both guards should reach scope through the shared predicate",
+        )
+        self.assertEqual(
+            source.count("agent_io_requires_scratch=True"), 1,
+            "exactly one caller should take the narrower trust, and it is "
+            "the guard that denies",
+        )
+
+
 class HookReachabilityTests(unittest.TestCase):
     """Every tool guard.py gates must be wired to it in `user/settings.json`.
 
