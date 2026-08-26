@@ -235,6 +235,15 @@ strict_test_files=(
   # on either side until the handshake was tightened.
   tests/test_auto_watch.py
   tests/test_stall_watch.py
+  # Both cover skills/prun/scripts/prun_state.py, which is STRICT-shared under
+  # the recursive prun tree, so the rule above reaches them: a copy living on
+  # one side only guards one repo. The POSIX permission cases skip on Windows,
+  # so the ubuntu and macos legs of both matrices are where they run at all.
+  tests/test_prun_report.py
+  tests/test_prun_snapshot.py
+  # style-audit.py sits under the STRICT-shared implement-review tree and had
+  # no entry here, so its test was kept identical by hand. Same rule, same fix.
+  tests/test_style_audit.py
 )
 for f in "${strict_test_files[@]}"; do
   $AA_INTERNAL_ONLY && break
@@ -259,6 +268,12 @@ done
 # docs/anywhere-agents.md mirror-policy table for the updated status.
 
 # ---- STRICT: shared skills (recursive; my-router excluded - BY-DESIGN) ----
+# __pycache__/ is excluded for the same reason it is under scripts/packs/:
+# bytecode is environment-specific, and a cache directory appears whenever an
+# agent or a test imports a helper module out of a skill tree. Six Python
+# helpers already ship under skills/, three of them beside this script's own
+# implement-review scripts, so the gap was reachable well before prun added
+# one; it simply went unnoticed until a verification run left a cache here.
 $AA_INTERNAL_ONLY || printf '\n== shared skills (recursive byte-identical) ==\n'
 cross_repo_skills="implement-review ci-mockup-figure readme-polish prun"
 $AA_INTERNAL_ONLY && cross_repo_skills=""
@@ -267,9 +282,9 @@ for skill in $cross_repo_skills; do
     fail "skills/$skill/ (missing on one side)"
     continue
   fi
-  if ! diff -rq "$AC_ROOT/skills/$skill" "$AA_ROOT/skills/$skill" >/dev/null 2>&1; then
+  if ! diff -rq --exclude=__pycache__ "$AC_ROOT/skills/$skill" "$AA_ROOT/skills/$skill" >/dev/null 2>&1; then
     fail "skills/$skill/"
-    diff -rq "$AC_ROOT/skills/$skill" "$AA_ROOT/skills/$skill" 2>&1 | sed 's/^/    /'
+    diff -rq --exclude=__pycache__ "$AC_ROOT/skills/$skill" "$AA_ROOT/skills/$skill" 2>&1 | sed 's/^/    /'
   fi
 done
 
@@ -341,9 +356,9 @@ if [ -d "$AA_ROOT/packages/pypi/anywhere_agents/composer" ]; then
       fail "skills/$skill/ (missing on one side: aa source vs wheel mirror)"
       continue
     fi
-    if ! diff -rq "$AA_ROOT/skills/$skill" "$AA_MIRROR/skills/$skill" >/dev/null 2>&1; then
+    if ! diff -rq --exclude=__pycache__ "$AA_ROOT/skills/$skill" "$AA_MIRROR/skills/$skill" >/dev/null 2>&1; then
       fail "skills/$skill/ (aa source vs wheel mirror)"
-      diff -rq "$AA_ROOT/skills/$skill" "$AA_MIRROR/skills/$skill" 2>&1 | sed 's/^/    /'
+      diff -rq --exclude=__pycache__ "$AA_ROOT/skills/$skill" "$AA_MIRROR/skills/$skill" 2>&1 | sed 's/^/    /'
     fi
   done
 fi
@@ -378,7 +393,7 @@ if $AA_INTERNAL_ONLY; then
 elif [ ! -d "$AC_ROOT/skills/my-router" ] || [ ! -d "$AA_ROOT/skills/my-router" ]; then
   fail "skills/my-router/ (missing on one side; expected sanitized mirror)"
 else
-  my_router_diff=$(diff -rq "$AC_ROOT/skills/my-router" "$AA_ROOT/skills/my-router" 2>&1)
+  my_router_diff=$(diff -rq --exclude=__pycache__ "$AC_ROOT/skills/my-router" "$AA_ROOT/skills/my-router" 2>&1)
   if [ -z "$my_router_diff" ]; then
     printf '  WARN: skills/my-router/ matches byte-for-byte (expected to differ; sanitization may have been skipped)\n'
   else

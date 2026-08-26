@@ -74,6 +74,9 @@ STRICT_MEMBERSHIP_FLOOR = (
     "tests/test_await_review.py",
     "tests/test_auto_watch.py",
     "tests/test_stall_watch.py",
+    "tests/test_prun_report.py",
+    "tests/test_prun_snapshot.py",
+    "tests/test_style_audit.py",
 )
 
 
@@ -244,6 +247,35 @@ class CheckParityScriptExists(unittest.TestCase):
 
 @unittest.skipUnless(BASH, "bash not found")
 class CheckParityBehavior(unittest.TestCase):
+    def _tree_with_differing_caches(self, d):
+        ac, aa = _build_fake_tree(pathlib.Path(d))
+        for root, marker in ((ac, b"ac bytecode"), (aa, b"aa bytecode")):
+            cache = root / "skills/prun/__pycache__"
+            cache.mkdir(parents=True)
+            (cache / "prun_state.cpython-312.pyc").write_bytes(marker)
+        return ac, aa
+
+    def test_bytecode_caches_do_not_count_as_drift(self):
+        """Round 1 review, Low 7: every recursive diff gained
+        --exclude=__pycache__, and nothing exercised it. Bytecode is
+        environment-specific and appears whenever an agent or a test imports a
+        helper out of a skill tree, which six shipped Python helpers under
+        skills/ already allow."""
+        with tempfile.TemporaryDirectory() as d:
+            ac, aa = self._tree_with_differing_caches(d)
+            rc, out = _run(ac, aa)
+            self.assertEqual(rc, 0, out)
+            self.assertNotIn("__pycache__", out)
+
+    def test_a_real_skill_difference_beside_a_cache_still_fails(self):
+        """The exclusion must not blind the gate to the drift it exists for."""
+        with tempfile.TemporaryDirectory() as d:
+            ac, aa = self._tree_with_differing_caches(d)
+            (aa / "skills/prun/SKILL.md").write_text("# drifted" + chr(10))
+            rc, out = _run(ac, aa)
+            self.assertEqual(rc, 1, out)
+            self.assertIn("skills/prun/", out)
+
     def test_clean_run_exits_0(self):
         with tempfile.TemporaryDirectory() as d:
             ac, aa = _build_fake_tree(pathlib.Path(d))

@@ -220,7 +220,7 @@ def audit_files(paths, repo, noisy_rules=NOISY_RULES, from_index=False):
 
     With `from_index`, each file is audited as it is STAGED rather than as it
     sits in the working tree. Returns (findings, coverage, error). `coverage`
-    splits the rule set three ways, because a rule can carry more than one
+    splits the rule set four ways, because a rule can carry more than one
     detector and they do not all run. RULE-06 has a mechanical detector that
     catches the banned-word list and a semantic one that is skipped, so
     calling it covered overstates the audit and calling it uncovered
@@ -277,10 +277,18 @@ def audit_files(paths, repo, noisy_rules=NOISY_RULES, from_index=False):
                     })
 
     findings.sort(key=lambda f: (f["file"], f["line"], f["column"]))
+    # A suppressed rule ran and had its findings discarded, so it belongs in
+    # neither `covered` nor `uncovered`. Reporting it as covered was the exact
+    # failure this four-way split exists to prevent: the reader would count a
+    # rule as audited while every one of its findings was dropped on the floor.
+    suppressed = sorted(r for r in ran_detectors if r in noisy_rules)
     coverage = {
-        "covered": sorted(r for r in ran_detectors if r not in skipped_detectors),
-        "partial": sorted(r for r in ran_detectors if r in skipped_detectors),
+        "covered": sorted(r for r in ran_detectors
+                          if r not in skipped_detectors and r not in noisy_rules),
+        "partial": sorted(r for r in ran_detectors
+                          if r in skipped_detectors and r not in noisy_rules),
         "uncovered": sorted(r for r in skipped_detectors if r not in ran_detectors),
+        "suppressed": suppressed,
     }
     return findings, coverage, None
 
@@ -402,6 +410,11 @@ def _run(args):
         print(f"Partially covered ({len(coverage['partial'])}): "
               f"{', '.join(coverage['partial'])}")
         print("  The mechanical half ran; the semantic half did not.")
+    if coverage.get("suppressed"):
+        print(f"Suppressed by policy ({len(coverage['suppressed'])}): "
+              f"{', '.join(coverage['suppressed'])}")
+        print("  The detector ran and its findings were discarded; pass "
+              "--include-rule-g to see them.")
     if coverage.get("uncovered"):
         print(f"Not covered ({len(coverage['uncovered'])}): "
               f"{', '.join(coverage['uncovered'])}")

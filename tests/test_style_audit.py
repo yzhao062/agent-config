@@ -517,5 +517,42 @@ class CoverageReportTests(unittest.TestCase):
         self.assertIn("RULE-G", optin_rules)
 
 
+    def test_a_suppressed_rule_is_not_counted_as_covered(self) -> None:
+        """RULE-G's detector runs, so `ran_detectors` holds it even while
+        every finding is discarded. Leaving it in `covered` made the report
+        claim an audit it did not perform, which is the failure the
+        four-way split exists to prevent."""
+        self._require_agent_style()
+        with tempfile.TemporaryDirectory() as tmp:
+            probe = Path(tmp) / "probe.md"
+            probe.write_text('## a lowercase heading\n\nShort and clean.\n',
+                             encoding="utf-8")
+            rc_default, out_default = run_audit(["--repo", tmp, "--json",
+                                                str(probe)])
+            rc_optin, out_optin = run_audit(
+                ["--repo", tmp, "--json", "--include-rule-g", str(probe)])
+        self.assertEqual((rc_default, rc_optin), (0, 0))
+        default_cov = json.loads(out_default)["coverage"]
+        self.assertIn("RULE-G", default_cov["suppressed"])
+        for bucket in ("covered", "uncovered", "partial"):
+            self.assertNotIn("RULE-G", default_cov[bucket], bucket)
+
+        optin_cov = json.loads(out_optin)["coverage"]
+        self.assertEqual(optin_cov["suppressed"], [],
+                         "opting in must empty the suppressed bucket")
+        self.assertIn("RULE-G", optin_cov["covered"])
+
+    def test_the_suppressed_bucket_is_named_in_the_text_report(self) -> None:
+        """A JSON-only signal would not reach the reader of the pre-flight."""
+        self._require_agent_style()
+        with tempfile.TemporaryDirectory() as tmp:
+            probe = Path(tmp) / "probe.md"
+            probe.write_text('## a lowercase heading\n\nShort and clean.\n',
+                             encoding="utf-8")
+            rc, out = run_audit(["--repo", tmp, str(probe)])
+        self.assertEqual(rc, 0)
+        self.assertIn("Suppressed by policy", out)
+        self.assertIn("--include-rule-g", out)
+
 if __name__ == "__main__":
     unittest.main()
