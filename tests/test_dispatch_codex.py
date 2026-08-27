@@ -1169,9 +1169,12 @@ class DispatchStallIntegrationTests(unittest.TestCase):
             env["TEMP"] = str(tmpdir)
             env["TMP"] = str(tmpdir)
             # Tiny window so the test runs fast: codex stays silent for 5s,
-            # threshold trips at 2s, polled every 1s.
+            # polled every 1s. The threshold is 1 rather than 2 so the
+            # warning needs two polls instead of three. A loaded CI runner
+            # flaked this test three times at 2 (anywhere-agents#46). Do
+            # not raise it back without widening MOCK_CODEX_SLEEP first.
             env["MOCK_CODEX_SLEEP"] = "5"
-            env["STALL_THRESHOLD_SECONDS"] = "2"
+            env["STALL_THRESHOLD_SECONDS"] = "1"
             env["STALL_POLL_INTERVAL_SECONDS"] = "1"
 
             cmd = [
