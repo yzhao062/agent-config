@@ -998,10 +998,23 @@ class DispatchTaskWrapperProcessContract(unittest.TestCase):
                 monitor_env = dict(env)
                 monitor_env["PRUN_MONITOR_TIMEOUT"] = "3"
                 monitor_env["PRUN_MONITOR_POLL"] = "1"
+                # monitor.sh reads dispatch-pid only once a unit has been quiet
+                # for the stall threshold. At the default 600 seconds it reports
+                # the unit as growing and never looks at the PID, so asserting
+                # only the absence of failed(dispatch-dead) would pass without
+                # testing anything. Drop the threshold so the branch is entered,
+                # and assert the reached state positively before the negative.
+                monitor_env["PRUN_STALL_THRESHOLD"] = "1"
                 monitor = subprocess.run(
                     [GIT_BASH, str(SCRIPTS_DIR / "monitor.sh"), str(state_dir)],
                     cwd=str(tmpdir), env=monitor_env,
                     capture_output=True, text=True, check=False, timeout=60,
+                )
+                self.assertEqual(monitor.returncode, 3,
+                                 monitor.stdout + monitor.stderr)
+                self.assertIn(
+                    "stalled(", monitor.stdout,
+                    "monitor never reached its liveness branch: " + monitor.stdout,
                 )
                 self.assertNotIn(
                     "failed(dispatch-dead)", monitor.stdout,
