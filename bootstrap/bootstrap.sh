@@ -488,6 +488,19 @@ _atomic_deploy_helper() {
   _atomic_dir=$(dirname "$_atomic_target")
   _atomic_base=$(basename "$_atomic_target")
   mkdir -p "$_atomic_dir" || return 1
+  # Deploying identical bytes is a rename that changes nothing, and on Windows a
+  # rename over a file a live session holds open is refused. That refusal exits
+  # this phase and records the whole run incomplete over a no-op (#44). The
+  # executable bit is part of "already deployed": skipping while the target is
+  # not executable would leave a helper the caller asked to be runnable sitting
+  # there unrunnable. A missing cmp falls through to the normal path.
+  if [ -f "$_atomic_target" ] && command -v cmp >/dev/null 2>&1; then
+    if cmp -s "$_atomic_source" "$_atomic_target"; then
+      if ! $_atomic_executable || [ -x "$_atomic_target" ]; then
+        return 0
+      fi
+    fi
+  fi
   _atomic_temp=$(mktemp "$_atomic_dir/.${_atomic_base}.XXXXXX") || return 1
   if ! cp -f "$_atomic_source" "$_atomic_temp"; then
     rm -f "$_atomic_temp"

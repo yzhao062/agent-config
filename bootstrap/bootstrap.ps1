@@ -321,6 +321,19 @@ function Copy-HelperAtomic([string]$Source, [string]$Destination) {
   $backupPath = $null
   try {
     New-Item -ItemType Directory -Force -Path $destinationDirectory -ErrorAction Stop | Out-Null
+    # Same no-op skip as the Bash helper (#44). A replacement onto a file a live
+    # session holds open is refused, and taking that refusal over identical bytes
+    # fails the phase for nothing. There is no executable bit to preserve here.
+    if (Test-Path -LiteralPath $Destination -PathType Leaf) {
+      try {
+        $sourceHash = (Get-FileHash -LiteralPath $Source -Algorithm SHA256 -ErrorAction Stop).Hash
+        $destinationHash = (Get-FileHash -LiteralPath $Destination -Algorithm SHA256 -ErrorAction Stop).Hash
+        if ($sourceHash -eq $destinationHash) { return $true }
+      } catch {
+        # Unreadable on either side: fall through to the replacement and let its
+        # own error path report, rather than turning a read failure into a skip.
+      }
+    }
     $tempPath = Join-Path $destinationDirectory ('.{0}.{1}.tmp' -f $destinationName, [guid]::NewGuid().ToString('N'))
     Copy-Item -LiteralPath $Source -Destination $tempPath -Force -ErrorAction Stop
     if (Test-Path -LiteralPath $Destination) {

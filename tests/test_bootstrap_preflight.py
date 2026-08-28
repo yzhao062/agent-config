@@ -3724,5 +3724,160 @@ class PowerShellPythonProbeQuotingTests(unittest.TestCase):
                     )
 
 
+def _deploy_probe_bash() -> str | None:
+    """Return a bash that can run a snippet, including on Windows.
+
+    ``_resolve_bash`` deliberately rejects the System32 and WindowsApps entries,
+    and ``shutil.which`` answers with the System32 one first on a machine where
+    both exist, so it can come back empty while Git for Windows is installed.
+    The probe below only needs to run a self-contained function, so it may look
+    in the standard install locations that PATH order hid.
+    """
+    if BASH:
+        return BASH
+    if not sys.platform.startswith("win"):
+        return None
+    roots = [
+        os.environ.get("ProgramFiles", "C:/Program Files"),
+        os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)"),
+        os.environ.get("LOCALAPPDATA", ""),
+    ]
+    for root in roots:
+        if not root:
+            continue
+        for parts in (("Git", "bin", "bash.exe"), ("Programs", "Git", "bin", "bash.exe")):
+            candidate = Path(root).joinpath(*parts)
+            if candidate.is_file():
+                return str(candidate)
+    return None
+
+
+DEPLOY_PROBE_BASH = _deploy_probe_bash()
+
+
+@unittest.skipUnless(DEPLOY_PROBE_BASH, "no usable bash for the helper-deploy probe")
+class AtomicHelperIdenticalDeploySkipTests(unittest.TestCase):
+    """_atomic_deploy_helper must not rename when the target already matches.
+
+    On Windows the rename is refused while a live session holds the helper open,
+    and bootstrap exits on that failure, so a deploy that would change nothing
+    fails the phase and records the whole run incomplete (anywhere-agents#44).
+
+    The skip has to respect the executable argument as well. Returning success
+    while the target is not executable would leave a helper the caller asked to
+    be runnable sitting there unrunnable, which is a quieter bug than the one
+    being fixed.
+
+    These run the real function text lifted out of bootstrap.sh, with mv shadowed
+    so a rename records itself and then fails the way Windows fails one onto a
+    held target. A skip is therefore visible as the absence of the marker, and
+    not merely as a success that might have renamed successfully.
+    """
+
+    def _helper_source(self) -> str:
+        text = BOOTSTRAP_SH.read_text(encoding="utf-8")
+        start = text.index("_atomic_deploy_helper() {")
+        end = text.index(chr(10) + "}" + chr(10), start) + 3
+        return text[start:end]
+
+    def _reports_executable(self, path: Path) -> bool:
+        probe = subprocess.run(
+            [DEPLOY_PROBE_BASH, "-c", 'test -x "$1"', "probe", str(path)],
+            capture_output=True, text=True, check=False, timeout=60,
+        )
+        return probe.returncode == 0
+
+    def _deploy(self, tmp: Path, source_bytes: bytes, target_bytes: bytes | None,
+                executable: str = "false", target_executable: bool = False):
+        source = tmp / "source-helper"
+        source.write_bytes(source_bytes)
+        target = tmp / "deployed-helper"
+        if target_bytes is not None:
+            target.write_bytes(target_bytes)
+            if target_executable:
+                os.chmod(str(target), 0o755)
+        marker = tmp / "mv-was-called"
+        driver = tmp / "driver.sh"
+        driver.write_text(
+            "set -u" + chr(10)
+            + self._helper_source()
+            + chr(10)
+            + 'mv() { : > "$MV_MARKER"; return 1; }' + chr(10)
+            + '_atomic_deploy_helper "$1" "$2" "$3"' + chr(10)
+            + "exit $?" + chr(10),
+            encoding="utf-8",
+        )
+        env = os.environ.copy()
+        env["MV_MARKER"] = str(marker)
+        # bash.exe invoked directly inherits the Windows PATH, which carries no
+        # dirname, basename, or mkdir. Git for Windows ships two bash entry
+        # points, <git>/bin/bash.exe and <git>/usr/bin/bash.exe, and the tools
+        # live beside the second one either way. Take whichever candidate
+        # actually holds them rather than assuming which entry point was found.
+        bash_dir = Path(DEPLOY_PROBE_BASH).resolve().parent
+        for candidate in (bash_dir, bash_dir.parent / "usr" / "bin"):
+            if (candidate / "dirname.exe").is_file() or (candidate / "dirname").is_file():
+                env["PATH"] = str(candidate) + os.pathsep + env.get("PATH", "")
+                break
+        result = subprocess.run(
+            [DEPLOY_PROBE_BASH, str(driver), str(source), str(target), executable],
+            capture_output=True, text=True, check=False, timeout=60, env=env,
+        )
+        return result, target, marker
+
+    def test_identical_bytes_skip_the_rename(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            body = b"#!/usr/bin/env bash" + bytes([10]) + b"exit 0" + bytes([10])
+            result, target, marker = self._deploy(tmp, body, body)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse(marker.exists(),
+                             "an identical deploy still attempted the rename")
+            self.assertEqual(target.read_bytes(), body)
+
+    def test_changed_bytes_still_rename(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            result, target, marker = self._deploy(tmp, b"new body", b"old body")
+            self.assertTrue(marker.exists(),
+                            "a changed deploy skipped the rename")
+            self.assertNotEqual(result.returncode, 0,
+                                "a failed rename must still fail the helper")
+
+    def test_absent_target_still_renames(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            result, target, marker = self._deploy(tmp, b"body", None)
+            self.assertTrue(marker.exists(), "a first install skipped the rename")
+
+    def test_identical_bytes_and_executable_target_skip(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            body = b"#!/bin/sh" + bytes([10]) + b"exit 0" + bytes([10])
+            result, target, marker = self._deploy(
+                tmp, body, body, executable="true", target_executable=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse(marker.exists(),
+                             "an identical executable deploy attempted the rename")
+
+    def test_identical_bytes_but_non_executable_target_still_renames(self) -> None:
+        """The half of the condition that a plain byte compare would miss."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            body = b"#!/bin/sh" + bytes([10]) + b"exit 0" + bytes([10])
+            probe = tmp / "mode-probe"
+            probe.write_bytes(body)
+            os.chmod(str(probe), 0o644)
+            if self._reports_executable(probe):
+                self.skipTest(
+                    "this filesystem reports a plain file as executable, so the "
+                    "mode half of the condition cannot be observed here")
+            result, target, marker = self._deploy(
+                tmp, body, body, executable="true", target_executable=False)
+            self.assertTrue(
+                marker.exists(),
+                "a deploy that had to add the executable bit skipped the rename")
+
+
 if __name__ == "__main__":
     unittest.main()
