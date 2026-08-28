@@ -121,7 +121,7 @@ hook is invoked with a payload in production, so this needs a caller that
 attaches no stdin and never closes it; that path is unproven, and a
 `select`-guarded or non-blocking read would close it.
 
-## 2. Compose rewrites 86 unchanged files, and one of them fails (open)
+## 2. Compose rewrites 86 unchanged files, and one of them fails (fixed 2026-08-28)
 
 Same day, unrelated path. `bootstrap.ps1` in trading-doc recorded
 `completed: false` at phase `generate`, having stopped at `compose` with rc=1:
@@ -162,6 +162,54 @@ Consequence when it fires: `bootstrap` exits 1 after `generate`, so
 session, and a staging directory is left behind (13 MB in the trading-doc
 case). Content integrity held: the deployed tree was byte-identical to a repo
 whose run completed.
+
+### What shipped (2026-08-28)
+
+Proposal 1 was taken. The review rounds that followed rejected proposals 2 and 3, and added a
+second half that this note had not asked for.
+
+`Transaction._apply_op` now returns early when the target already hashes to the op's
+`new_content_sha256`, so a rename that would change nothing is never attempted (aa `c0ee761`).
+The measurement held on a fresh sample: a stranded journal from `NSF-Proposal-Template-Yue`
+carried 102 write ops and every one was a no-op, including the op that aborted it.
+
+The check sits in `_apply_op` rather than in `stage_write`, which was the first placement tried
+and was wrong. An op has to stay queued: the v0.5.2 drift gate walks `self.ops`,
+`_validate_prestate` records unmanaged-file adoptions from that same walk, and
+`handlers/permission.py` queues several writes to one target where only the last one carries the
+answer. `tests/test_packs_reconciliation.py` now pins the classification the skip depends on,
+since reordering two comparisons in `_classify_write_op` would have turned it into data loss
+while every existing test still passed (aa `3eed3fc`).
+
+**Proposal 2 was rejected on review.** Treating any locked target as satisfied lets
+`pack-lock.json` and `pack-state.json` record a directory digest while the tree on disk is a mix
+of old and new files. `pack verify` only checks that output paths exist, so it stays quiet about
+exactly that drift, and `--fix` reports nothing to repair. Only the narrow form ships: skip when
+the bytes match, abort when they do not.
+
+**Proposal 3 was rejected on measurement.** The holder is not an antivirus scan. A shell holds a
+script open for as long as it is executing it, and `dispatch-task.sh` waits on its worker, so the
+window is minutes rather than milliseconds. No retry length reaches it.
+
+That left the case the skip cannot cover: a release that genuinely changes one of those scripts.
+All three long-running `prun` Bash entry points now hand off to a private temp copy before doing
+any work, so the deployed path is free while they run (ac `1ee6f6c` and `da1ef1a`, aa `563ff70`
+and `e6aad32`). `monitor.sh` and `gather.sh` were never safe, only hidden: files stage in sorted
+path order and the transaction stops at its first failure, so `dispatch-task.sh` took every abort
+ahead of them. The same defect in the user-level helper deploy is fixed the same way (ac
+`0d212d3`, aa `fe81e29`), which is the half aa#44 actually reported.
+
+Verified on Windows 11 and on Linux 6.17 aarch64. The Linux lane is not a second opinion here:
+the shared Bash contract mixin skips on Windows, and NTFS reports a plain file as executable, so
+the mode half of the helper condition has no state to distinguish there.
+
+Two things were split out rather than folded in. aa#47 records that deployed scripts are not
+executable on POSIX, so the bare invocation documented in `SKILL.md` fails with exit 126 there.
+aa#48 records that `implement-review` still carries the unreachable exec-failure cleanup that the
+`prun` scripts shed in ac `d067c0c` / aa `9f873d5`.
+
+The CHANGELOG entry is queued in
+[windows-rename-failure-class-pending-changelog](2026-08-28-windows-rename-failure-class-pending-changelog.md).
 
 ## 3. Two smaller findings from the same sweep (open)
 
