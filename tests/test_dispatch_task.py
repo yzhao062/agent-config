@@ -720,9 +720,13 @@ class DispatchTaskReleasesDeployedPath(unittest.TestCase):
         env["MOCK_CODEX_LOG"] = str(log_dir)
         env["MOCK_CODEX_EXIT"] = "0"
         env["MOCK_CODEX_SLEEP"] = self.WORKER_SLEEP_SECONDS
-        env["TMPDIR"] = str(tmpdir)
-        env["TEMP"] = str(tmpdir)
-        env["TMP"] = str(tmpdir)
+        # Git Bash reads these as shell strings, where a Windows backslash
+        # is an escape character. Hand it the forward-slash spelling so the
+        # state directory it creates is a path Python can find again.
+        posix_tmp = str(tmpdir).replace(chr(92), "/")
+        env["TMPDIR"] = posix_tmp
+        env["TEMP"] = posix_tmp
+        env["TMP"] = posix_tmp
         env.pop("PRUN_SCRATCH_CWD", None)
         if extra_env:
             env.update(extra_env)
@@ -798,6 +802,213 @@ class DispatchTaskReleasesDeployedPath(unittest.TestCase):
                     os.replace(self._replacement(tmpdir), deployed)
             finally:
                 proc.communicate(timeout=90)
+
+
+@unittest.skipUnless(
+    sys.platform.startswith("win") and GIT_BASH,
+    "the deployed-path release is a Windows file-sharing property; needs Git Bash",
+)
+class PrunLongRunningScriptsReleaseDeployedPath(unittest.TestCase):
+    """monitor.sh and gather.sh are the other two long-lived Bash holders.
+
+    Each can run for an hour, and skill files are staged in sorted path order
+    while the transaction stops at its first failure, so dispatch-task.sh sat in
+    front of both and hid them. They carry the same private-copy guard, and this
+    is the same live-replacement proof without a codex mock: both scripts poll on
+    their own and announce themselves on the first stdout line.
+    """
+
+    RUN_SECONDS = "6"
+    REPLACEMENT_BODY = "#!/usr/bin/env bash\nexit 0\n"
+
+    def _spawn(self, tmpdir, script_name, args, env_extra):
+        deployed_dir = tmpdir / "deployed"
+        deployed_dir.mkdir(exist_ok=True)
+        deployed = deployed_dir / script_name
+        shutil.copyfile(SCRIPTS_DIR / script_name, deployed)
+        env = os.environ.copy()
+        # Git Bash reads these as shell strings, where a Windows backslash
+        # is an escape character. Hand it the forward-slash spelling so the
+        # state directory it creates is a path Python can find again.
+        posix_tmp = str(tmpdir).replace(chr(92), "/")
+        env["TMPDIR"] = posix_tmp
+        env["TEMP"] = posix_tmp
+        env["TMP"] = posix_tmp
+        env.update(env_extra)
+        proc = subprocess.Popen(
+            [GIT_BASH, str(deployed)] + args,
+            cwd=str(tmpdir), env=env,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        return deployed, proc
+
+    def _replace_while_running(self, tmpdir, deployed, proc, expected_first_token):
+        """Wait for the script to announce itself, perform the rename the
+        composer would perform, then let it finish on its own."""
+        first = proc.stdout.readline()
+        self.assertTrue(
+            first.startswith(expected_first_token),
+            "first stdout line was %r, expected it to start with %r"
+            % (first, expected_first_token),
+        )
+        replacement = tmpdir / "replacement.sh"
+        replacement.write_text(self.REPLACEMENT_BODY, encoding="utf-8")
+        os.replace(replacement, deployed)
+        self.assertEqual(deployed.read_text(encoding="utf-8"), self.REPLACEMENT_BODY)
+        proc.communicate(timeout=60)
+
+    def test_monitor_releases_its_deployed_path(self) -> None:
+        with _temp_dir() as td:
+            tmpdir = Path(td)
+            state_dir = tmpdir / "unit-state"
+            state_dir.mkdir()
+            (state_dir / "tail").write_text("", encoding="utf-8")
+            (state_dir / "result-file").write_text(
+                str(tmpdir / "never.md"), encoding="utf-8")
+            deployed, proc = self._spawn(
+                tmpdir, "monitor.sh", [str(state_dir)],
+                {"PRUN_MONITOR_TIMEOUT": self.RUN_SECONDS, "PRUN_MONITOR_POLL": "1"},
+            )
+            self._replace_while_running(tmpdir, deployed, proc, "MONITOR-START")
+            self.assertEqual(list(tmpdir.glob("prun-monitor-reexec-*")), [])
+
+    def test_gather_releases_its_deployed_path(self) -> None:
+        with _temp_dir() as td:
+            tmpdir = Path(td)
+            deployed, proc = self._spawn(
+                tmpdir, "gather.sh", [str(tmpdir / "never.md")],
+                {"AGENT_CONFIG_GATHER_TIMEOUT": self.RUN_SECONDS,
+                 "PRUN_GATHER_POLL": "1"},
+            )
+            self._replace_while_running(tmpdir, deployed, proc, "GATHER-START")
+            self.assertEqual(list(tmpdir.glob("prun-gather-reexec-*")), [])
+
+
+@unittest.skipUnless(
+    sys.platform.startswith("win") and GIT_BASH,
+    "the Bash contract mixin skips on Windows; these pin the wrapper contract",
+)
+class DispatchTaskWrapperProcessContract(unittest.TestCase):
+    """The private-copy hand-off puts a command-string parent above the real
+    dispatcher, so the contract the caller sees has to survive one more process.
+
+    The Bash contract mixin skips on Windows, which is the only platform where
+    the wrapper exists for a reason, so these four assertions would otherwise
+    have no permanent home: exit-status propagation, both reaper exits, and what
+    dispatch-pid now names.
+    """
+
+    def _fixture(self, tmpdir):
+        log_dir = tmpdir / "mock-log"
+        log_dir.mkdir()
+        codex = _write_mock_codex(tmpdir, want_powershell_shim=False)
+        prompt = tmpdir / "prompt.txt"
+        prompt.write_text("TASK PROMPT body\n", encoding="utf-8")
+        env = os.environ.copy()
+        env["CODEX_BIN"] = str(codex)
+        env["MOCK_CODEX_LOG"] = str(log_dir)
+        # Git Bash reads these as shell strings, where a Windows backslash
+        # is an escape character. Hand it the forward-slash spelling so the
+        # state directory it creates is a path Python can find again.
+        posix_tmp = str(tmpdir).replace(chr(92), "/")
+        env["TMPDIR"] = posix_tmp
+        env["TEMP"] = posix_tmp
+        env["TMP"] = posix_tmp
+        env.pop("PRUN_SCRATCH_CWD", None)
+        return prompt, env
+
+    def _cmd(self, tmpdir, prompt, unit_id):
+        return [GIT_BASH, str(DISPATCH_SH),
+                "--prompt-file", str(prompt),
+                "--result-file", str(tmpdir / "result.md"),
+                "--unit-id", unit_id]
+
+    def _run(self, tmpdir, env_extra=None, timeout=120.0):
+        prompt, env = self._fixture(tmpdir)
+        if env_extra:
+            env.update(env_extra)
+        return subprocess.run(
+            self._cmd(tmpdir, prompt, "u_wrap"),
+            cwd=str(tmpdir), env=env, capture_output=True, text=True,
+            check=False, timeout=timeout,
+        )
+
+    def test_worker_exit_status_propagates_through_the_wrapper(self) -> None:
+        with _temp_dir() as td:
+            tmpdir = Path(td)
+            result = self._run(tmpdir, {"MOCK_CODEX_EXIT": "23"})
+            self.assertEqual(result.returncode, 23, result.stderr)
+
+    def test_idle_stall_reap_still_exits_124(self) -> None:
+        with _temp_dir() as td:
+            tmpdir = Path(td)
+            result = self._run(tmpdir, {"MOCK_CODEX_SLEEP": "30",
+                                        "PRUN_STALL_THRESHOLD": "3"})
+            self.assertEqual(result.returncode, 124, result.stderr)
+            self.assertIn("idle-stall", result.stderr)
+
+    def test_hard_timeout_reap_still_exits_124(self) -> None:
+        with _temp_dir() as td:
+            tmpdir = Path(td)
+            result = self._run(tmpdir, {"MOCK_CODEX_SLEEP": "30",
+                                        "CODEX_DISPATCH_TIMEOUT": "3"})
+            self.assertEqual(result.returncode, 124, result.stderr)
+            self.assertIn("hard-timeout", result.stderr)
+
+    def test_dispatch_pid_names_the_private_copy_and_reads_as_live(self) -> None:
+        """dispatch-pid is the private copy PID, not the PID of the process the
+        caller launched. monitor.sh tests that value for liveness, so the wrapper
+        must not make a running unit look dead."""
+        with _temp_dir() as td:
+            tmpdir = Path(td)
+            prompt, env = self._fixture(tmpdir)
+            env["MOCK_CODEX_SLEEP"] = "12"
+            proc = subprocess.Popen(
+                self._cmd(tmpdir, prompt, "u_pid"),
+                cwd=str(tmpdir), env=env,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            )
+            try:
+                # Find the state dir by glob rather than by parsing the live
+                # stdout pipe. Reading the STATE-DIR line and using that path
+                # was measured not to resolve here, which is the same class of
+                # Windows path mismatch that makes the shared Bash contract
+                # mixin skip on this platform. A glob under the test's own
+                # temp dir does not depend on the spelling the shell emits.
+                deadline = time.time() + 30
+                pid_file = None
+                while time.time() < deadline:
+                    found = list(tmpdir.glob("prun-task-*-u_pid-*/dispatch-pid"))
+                    if found:
+                        pid_file = found[0]
+                        break
+                    time.sleep(0.1)
+                self.assertIsNotNone(
+                    pid_file,
+                    "no prun-task-*-u_pid-*/dispatch-pid appeared under %s; "
+                    "tmpdir held %s" % (tmpdir, sorted(p.name for p in tmpdir.iterdir())),
+                )
+                state_dir = pid_file.parent
+                recorded = int(pid_file.read_text(encoding="utf-8").strip())
+                self.assertGreater(recorded, 0)
+                self.assertNotEqual(
+                    recorded, proc.pid,
+                    "dispatch-pid must name the private copy, not the wrapper",
+                )
+                monitor_env = dict(env)
+                monitor_env["PRUN_MONITOR_TIMEOUT"] = "3"
+                monitor_env["PRUN_MONITOR_POLL"] = "1"
+                monitor = subprocess.run(
+                    [GIT_BASH, str(SCRIPTS_DIR / "monitor.sh"), str(state_dir)],
+                    cwd=str(tmpdir), env=monitor_env,
+                    capture_output=True, text=True, check=False, timeout=60,
+                )
+                self.assertNotIn(
+                    "failed(dispatch-dead)", monitor.stdout,
+                    "monitor read a live unit as dead: " + monitor.stdout,
+                )
+            finally:
+                proc.communicate(timeout=120)
 
 
 if __name__ == "__main__":

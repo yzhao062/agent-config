@@ -32,6 +32,50 @@
 
 set -u
 
+# This script can run for an hour, and a shell holds a script open for as long
+# as it is executing it. On Windows that refuses any rename over the deployed
+# path and aborts a compose transaction (#43), the same failure dispatch-task.sh
+# carries this guard for. Hand off to a private temp copy so the deployed path
+# is free. A command-string parent removes the copy and propagates the status.
+# Nothing here resolves a sibling relative to $0, so no source dir is handed on.
+if [ "${PRUN_MONITOR_REEXEC:-}" != "1" ]; then
+    REEXEC_TMP_BASE="${TMPDIR:-/tmp}"
+    REEXEC_TMP_BASE="${REEXEC_TMP_BASE%/}"
+    REEXEC_DIR="${REEXEC_TMP_BASE}/prun-monitor-reexec-$$"
+    REEXEC_COPY="${REEXEC_DIR}/monitor.sh"
+
+    umask 077
+    if ! mkdir "$REEXEC_DIR"; then
+        echo "monitor: failed to create re-exec dir: $REEXEC_DIR" >&2
+        exit 2
+    fi
+    if ! cp -- "$0" "$REEXEC_COPY"; then
+        rmdir -- "$REEXEC_DIR" 2>/dev/null || true
+        echo "monitor: failed to create re-exec copy: $REEXEC_COPY" >&2
+        exit 2
+    fi
+    chmod u+x "$REEXEC_COPY" 2>/dev/null || true
+
+    export PRUN_MONITOR_REEXEC=1
+
+    exec "${BASH:-bash}" -c '
+        reexec_copy=$1
+        shift
+        "${BASH:-bash}" "$reexec_copy" "$@"
+        reexec_exit=$?
+        rm -f -- "$reexec_copy"
+        rmdir -- "$(dirname -- "$reexec_copy")" 2>/dev/null || true
+        exit "$reexec_exit"
+    ' monitor-reexec "$REEXEC_COPY" "$@"
+
+    echo "monitor: failed to launch re-exec copy: $REEXEC_COPY" >&2
+    rm -f -- "$REEXEC_COPY"
+    rmdir -- "$REEXEC_DIR" 2>/dev/null || true
+    exit 2
+fi
+
+unset PRUN_MONITOR_REEXEC
+
 if [ "$#" -lt 1 ]; then
     echo "monitor: need at least one <state-dir>" >&2
     echo "Usage: monitor.sh <state-dir> [<state-dir> ...]" >&2
