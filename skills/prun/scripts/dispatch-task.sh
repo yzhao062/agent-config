@@ -31,6 +31,59 @@
 
 set -u
 
+# Windows refuses a rename over a file another process holds open without
+# FILE_SHARE_DELETE, and a shell holds a script open for as long as it is
+# executing it. This dispatcher waits on its worker at the bottom of the file,
+# so it holds the deployed path for the whole run, minutes to tens of minutes.
+# A compose that redeploys the prun pack during a live fan-out then fails its
+# rename over this path and aborts the entire transaction (#43).
+#
+# So release the deployed path before doing any work: copy this file into a
+# private temp dir, hand off to the copy, and let a command-string parent wait
+# for the copy, delete it, and propagate its exit status. The sentinel stops a
+# re-exec loop. Unlike implement-review's dispatcher (#22) no source directory
+# is handed down, because nothing here resolves a sibling script or data file
+# relative to $0; the prompt and result paths arrive as arguments.
+if [ "${PRUN_DISPATCH_REEXEC:-}" != "1" ]; then
+    REEXEC_TMP_BASE="${TMPDIR:-/tmp}"
+    REEXEC_TMP_BASE="${REEXEC_TMP_BASE%/}"
+    REEXEC_DIR="${REEXEC_TMP_BASE}/prun-dispatch-task-reexec-$$"
+    REEXEC_COPY="${REEXEC_DIR}/dispatch-task.sh"
+
+    umask 077
+    if ! mkdir "$REEXEC_DIR"; then
+        echo "dispatch-task: failed to create re-exec dir: $REEXEC_DIR" >&2
+        exit 2
+    fi
+    if ! cp -- "$0" "$REEXEC_COPY"; then
+        rmdir -- "$REEXEC_DIR" 2>/dev/null || true
+        echo "dispatch-task: failed to create re-exec copy: $REEXEC_COPY" >&2
+        exit 2
+    fi
+    chmod u+x "$REEXEC_COPY" 2>/dev/null || true
+
+    export PRUN_DISPATCH_REEXEC=1
+
+    exec "${BASH:-bash}" -c '
+        reexec_copy=$1
+        shift
+        "${BASH:-bash}" "$reexec_copy" "$@"
+        reexec_exit=$?
+        rm -f -- "$reexec_copy"
+        rmdir -- "$(dirname -- "$reexec_copy")" 2>/dev/null || true
+        exit "$reexec_exit"
+    ' dispatch-task-reexec "$REEXEC_COPY" "$@"
+
+    echo "dispatch-task: failed to launch re-exec copy: $REEXEC_COPY" >&2
+    rm -f -- "$REEXEC_COPY"
+    rmdir -- "$REEXEC_DIR" 2>/dev/null || true
+    exit 2
+fi
+
+# The worker inherits this environment. Clear the sentinel so a dispatch the
+# worker starts itself still releases its own deployed path.
+unset PRUN_DISPATCH_REEXEC
+
 PROMPT_FILE=""
 RESULT_FILE=""
 UNIT_ID=""

@@ -179,6 +179,12 @@ scripts/dispatch-task.sh --prompt-file <prompt> --result-file <abs result> --uni
   AMSI-safe split of launch from watch+kill; the `.sh` does it inline).
 - Runs codex from a per-unit working dir: a scratch dir by default (read-only units), or the path in
   `PRUN_SCRATCH_CWD` (point this at a throwaway clone for code-writing units).
+- Re-executes from a private temp copy before it does any work, so the deployed
+  `dispatch-task.sh` is not held open while the worker runs. A shell keeps a script open for as
+  long as it is executing it. On Windows that refuses any rename over the file, which used to
+  abort a whole compose transaction mid-fan-out (anywhere-agents#43). `PRUN_DISPATCH_REEXEC` is
+  the internal loop guard, cleared before the worker starts. The `.ps1` needs none of this,
+  because PowerShell releases a parsed script file.
 - Env: `CODEX_DISPATCH_SANDBOX` (default `danger-full-access`), `CODEX_DISPATCH_REASONING` (default
   `xhigh`), `CODEX_DISPATCH_ISOLATE_MCP=off` to drop MCP isolation, `PRUN_SCRATCH_CWD` to set the cwd,
   `PRUN_STALL_THRESHOLD` (default `600`) for the idle-reap threshold, `CODEX_DISPATCH_TIMEOUT`

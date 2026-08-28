@@ -91,6 +91,35 @@ BASH = shutil.which("bash")
 PS_SHELL = shutil.which("pwsh") or shutil.which("powershell")
 
 
+def _git_bash() -> str | None:
+    """Return a Git Bash executable on Windows, or None if there is none.
+
+    ``shutil.which("bash")`` answers with the WSL launcher in System32 first,
+    which fails with "execvpe(/bin/bash)" when no distro is installed. The file
+    handle DispatchTaskReleasesDeployedPath is about belongs to Git Bash, so
+    that is the binary to find. Off Windows the plain PATH answer is right.
+    """
+    if not sys.platform.startswith("win"):
+        return BASH
+    roots = [
+        os.environ.get("ProgramFiles", "C:/Program Files"),
+        os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)"),
+        os.environ.get("LOCALAPPDATA", ""),
+    ]
+    for root in roots:
+        if not root:
+            continue
+        for parts in (("Git", "bin", "bash.exe"),
+                      ("Programs", "Git", "bin", "bash.exe")):
+            candidate = Path(root).joinpath(*parts)
+            if candidate.is_file():
+                return str(candidate)
+    return None
+
+
+GIT_BASH = _git_bash()
+
+
 def _write_mock_codex(tmpdir: Path, want_powershell_shim: bool) -> Path:
     py_path = tmpdir / "mock_codex.py"
     py_path.write_text(MOCK_CODEX_PY, encoding="utf-8")
@@ -625,6 +654,150 @@ class DispatchTaskStaticContract(unittest.TestCase):
         for token in ("PRUN_STALL_THRESHOLD", "CODEX_DISPATCH_TIMEOUT",
                       "idle-stall", "hard-timeout", "reap-reason", "taskkill"):
             self.assertIn(token, reap, f"reap-watch.ps1 missing {token}")
+
+    def test_reexec_guard_present_in_sh_only(self) -> None:
+        """The .sh releases its own deployed path before it starts the worker
+        (anywhere-agents#43). The .ps1 deliberately does not: PowerShell
+        releases a parsed script file, and re-executing it would force a
+        source-directory handoff for its reap-watch.ps1 lookup, which is risk
+        with no measured lock behind it."""
+        sh = DISPATCH_SH.read_text(encoding="utf-8")
+        for token in ("PRUN_DISPATCH_REEXEC", "prun-dispatch-task-reexec-",
+                      'cp -- "$0"', "unset PRUN_DISPATCH_REEXEC"):
+            self.assertIn(token, sh, f"dispatch-task.sh missing {token}")
+
+        ps1 = DISPATCH_PS1.read_text(encoding="utf-8")
+        self.assertNotIn(
+            "PRUN_DISPATCH_REEXEC", ps1,
+            "the PowerShell dispatcher does not need the re-exec guard",
+        )
+
+
+@unittest.skipUnless(
+    sys.platform.startswith("win") and GIT_BASH,
+    "the deployed-path release is a Windows file-sharing property; needs Git Bash",
+)
+class DispatchTaskReleasesDeployedPath(unittest.TestCase):
+    """A live fan-out must not block a redeploy of its own dispatcher.
+
+    Windows refuses a rename over a file another process holds open without
+    FILE_SHARE_DELETE, and a shell holds a script open for as long as it is
+    executing it. The composer deploys skill files by rename, so before the
+    re-exec guard a running worker aborted the whole compose transaction at
+    this one file (anywhere-agents#43).
+
+    Both tests run the real script from a copied "deployed" path against a mock
+    codex that sleeps, then attempt the rename the composer would attempt. The
+    second is a control: it pre-sets the sentinel so the guard is skipped, and
+    asserts the rename is still refused. If that control ever stops failing,
+    Git Bash has changed its sharing mode and the guard's premise is worth
+    rechecking rather than trusting.
+
+    This class does not extend the bash contract mixin, which skips on Windows
+    because Git Bash POSIX-translates env-var temp paths and that breaks its
+    path comparisons. Nothing here compares a path the shell produced.
+    """
+
+    WORKER_SLEEP_SECONDS = "8"
+    REPLACEMENT_BODY = "#!/usr/bin/env bash\nexit 0\n"
+
+    def _fixture(self, tmpdir: Path):
+        deployed_dir = tmpdir / "deployed"
+        deployed_dir.mkdir()
+        deployed = deployed_dir / "dispatch-task.sh"
+        shutil.copyfile(DISPATCH_SH, deployed)
+        log_dir = tmpdir / "mock-log"
+        log_dir.mkdir()
+        codex = _write_mock_codex(tmpdir, want_powershell_shim=False)
+        prompt = tmpdir / "prompt.txt"
+        prompt.write_text("TASK PROMPT body\n", encoding="utf-8")
+        return deployed, codex, prompt, log_dir
+
+    def _spawn(self, tmpdir: Path, deployed: Path, codex: Path, prompt: Path,
+               log_dir: Path, extra_env: dict[str, str] | None = None):
+        env = os.environ.copy()
+        env["CODEX_BIN"] = str(codex)
+        env["MOCK_CODEX_LOG"] = str(log_dir)
+        env["MOCK_CODEX_EXIT"] = "0"
+        env["MOCK_CODEX_SLEEP"] = self.WORKER_SLEEP_SECONDS
+        env["TMPDIR"] = str(tmpdir)
+        env["TEMP"] = str(tmpdir)
+        env["TMP"] = str(tmpdir)
+        env.pop("PRUN_SCRATCH_CWD", None)
+        if extra_env:
+            env.update(extra_env)
+        return subprocess.Popen(
+            [GIT_BASH, str(deployed),
+             "--prompt-file", str(prompt),
+             "--result-file", str(tmpdir / "result.md"),
+             "--unit-id", "u_lock"],
+            cwd=str(tmpdir), env=env,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+
+    def _wait_for_worker(self, log_dir: Path, proc, timeout: float = 30.0) -> None:
+        """Block until the mock worker has started and is inside its sleep."""
+        args_file = log_dir / "args"
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if args_file.exists():
+                return
+            if proc.poll() is not None:
+                out, err = proc.communicate()
+                raise AssertionError(
+                    "dispatch exited before the worker started "
+                    "(rc=%s)\nSTDOUT:\n%s\nSTDERR:\n%s"
+                    % (proc.returncode, out, err)
+                )
+            time.sleep(0.1)
+        proc.kill()
+        raise AssertionError("mock worker never started")
+
+    def _replacement(self, tmpdir: Path) -> Path:
+        path = tmpdir / "replacement.sh"
+        path.write_text(self.REPLACEMENT_BODY, encoding="utf-8")
+        return path
+
+    def test_deployed_path_is_replaceable_while_a_worker_runs(self) -> None:
+        with _temp_dir() as td:
+            tmpdir = Path(td)
+            deployed, codex, prompt, log_dir = self._fixture(tmpdir)
+            proc = self._spawn(tmpdir, deployed, codex, prompt, log_dir)
+            try:
+                self._wait_for_worker(log_dir, proc)
+                # The composer's own operation, at the moment it used to fail.
+                os.replace(self._replacement(tmpdir), deployed)
+                self.assertEqual(
+                    deployed.read_text(encoding="utf-8"),
+                    self.REPLACEMENT_BODY,
+                    "the replacement did not land at the deployed path",
+                )
+            finally:
+                stdout, stderr = proc.communicate(timeout=90)
+            self.assertEqual(
+                proc.returncode, 0,
+                "STDOUT:\n%s\nSTDERR:\n%s" % (stdout, stderr),
+            )
+            self.assertTrue(stdout.startswith("STATE-DIR "),
+                            "first stdout line: %s" % (stdout.splitlines()[:1],))
+            leftovers = list(tmpdir.glob("prun-dispatch-task-reexec-*"))
+            self.assertEqual(leftovers, [],
+                             "re-exec dir was not cleaned up: %s" % (leftovers,))
+
+    def test_without_the_guard_the_rename_is_refused(self) -> None:
+        """Control. Pre-setting the sentinel makes the dispatcher run from the
+        deployed path, which is what it did before the guard existed."""
+        with _temp_dir() as td:
+            tmpdir = Path(td)
+            deployed, codex, prompt, log_dir = self._fixture(tmpdir)
+            proc = self._spawn(tmpdir, deployed, codex, prompt, log_dir,
+                               extra_env={"PRUN_DISPATCH_REEXEC": "1"})
+            try:
+                self._wait_for_worker(log_dir, proc)
+                with self.assertRaises(PermissionError):
+                    os.replace(self._replacement(tmpdir), deployed)
+            finally:
+                proc.communicate(timeout=90)
 
 
 if __name__ == "__main__":
