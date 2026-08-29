@@ -7,7 +7,7 @@
 
 ## Why this note exists
 
-Six commits close aa#43 and aa#44. None of them touched a release-record file, which is this
+Seven changes close aa#43, aa#44, and aa#48. None touched a release-record file, which is this
 project's normal shape: feature commits and release commits stay separate. The entry below is
 recorded here so the next release does not have to reconstruct it from the diff.
 
@@ -19,11 +19,13 @@ recorded here so the next release does not have to reconstruct it from the diff.
 | ac / aa | `0d212d3` / `fe81e29` | bootstrap helper deploy skips when the target already matches |
 | ac / aa | `da1ef1a` / `e6aad32` | `monitor.sh` and `gather.sh` get the same release |
 | ac / aa | `d067c0c` / `9f873d5` | the exec-failure cleanup becomes reachable; liveness test fixed |
+| ac / aa | `1f103c5` / `27120a9` | the same release for the five `implement-review` guards |
 
 The measurement, the rejected alternatives, and the review history live in
 [stopped-task-false-failure-and-noop-compose](2026-08-21-stopped-task-false-failure-and-noop-compose.md)
-section 2. Two issues were split out rather than folded in: aa#47 (deployed scripts are not
-executable on POSIX) and aa#48 (`implement-review` still carries the unreachable exec cleanup).
+section 2. Two issues were split out rather than folded in. aa#47 (deployed scripts are not
+executable on POSIX) is still open. aa#48 (`implement-review` carried the same unreachable exec
+cleanup) is closed by the last row above.
 
 ## The entry
 
@@ -68,11 +70,18 @@ Place under the new version heading, alongside anything else landed since 0.7.18
   for, since returning success while the target is not executable would leave a helper the
   caller wanted runnable sitting there unrunnable.
 
-- **A failed re-exec now reports itself.** All three `prun` guards placed a diagnostic, a removal
-  of the private directory, and `exit 2` after a bare `exec`. Bash exits a noninteractive shell
-  on exec failure by default, so none of it could run and a launch failure would have leaked the
-  directory silently. `set +e` and `shopt -s execfail` immediately before the exec make the
-  cleanup reachable. Measured both ways on Git Bash 5.2 and on Linux bash 5.2.
+- **A failed re-exec now reports itself.** Eight Bash guards placed a diagnostic, a removal of the
+  private directory, and `exit 2` after a bare `exec`. They are the three `prun` guards plus five
+  in `implement-review`: `auto-watch.sh`, `stall-watch.sh`, and the three `dispatch-*.sh`. Bash
+  exits a noninteractive shell on exec failure by default. Neither the diagnostic nor the cleanup
+  could run, so a launch failure leaked the directory silently. `shopt -s execfail` makes a failed
+  `exec` return to the script instead. `auto-watch.sh` and prun's `gather.sh` also
+  enable `set -e`, so `set +e` keeps that returned status from tripping errexit before the cleanup
+  runs. The other six guards enable only `set -u`, where `set +e` is defensive. Git Bash 5.2 and
+  Linux bash 5.2 gave the same measurement. Before the fix, a forced failure returned 127, printed
+  no diagnostic, and leaked one directory. After, it returned 2, printed the diagnostic, and leaked
+  none. The `.ps1` siblings need neither option, because they call the copy inside `try` / `finally`
+  rather than replacing themselves.
 
 ## Verification recorded for the release
 
@@ -86,6 +95,17 @@ mode half of the helper condition has no state to distinguish.
 | ac bootstrap + repo suites | 334 passed, 11 skipped | 167 passed, 41 skipped |
 | ac `test_dispatch_task.py` | 38 passed, 21 skipped | 30 passed, 29 skipped |
 | helper executable-bit case | skipped, platform cannot observe | passed |
+| ac `implement-review` guard suites | 134 passed, 75 skipped | 126 passed, 83 skipped |
 
-`scripts/check-parity.sh` reported STRICT clean throughout. Three review rounds, final verdict
-PASS, with the round-1 and round-2 findings taken in full.
+Four of those suites split their integration mixins by platform: Windows runs their PowerShell
+classes and Linux runs their Bash classes. `test_auto_watch.py` is different. Its five Bash and
+five PowerShell cases gate on whether the interpreter is present rather than on `sys.platform`, so
+all ten ran on Windows. Between the two platform runs, both implementations of every guard were
+covered.
+
+The forced-failure probe ran on both platforms, over all fifteen copies of the five guards. Linux
+also confirmed the success path with a full `auto-watch.sh` run that ended `DONE`.
+
+`scripts/check-parity.sh` reported STRICT clean throughout. The first six changes took three review
+rounds, ending in PASS after the round-1 and round-2 findings were applied. Change seven drew no
+findings in its single review round.
