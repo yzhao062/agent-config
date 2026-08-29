@@ -52,6 +52,13 @@ if [ "${IMPLEMENT_REVIEW_DISPATCH_REEXEC:-}" != "1" ]; then
     export IMPLEMENT_REVIEW_DISPATCH_SOURCE_DIR
     IMPLEMENT_REVIEW_DISPATCH_SOURCE_DIR=$(dirname -- "$0")
 
+    # Let a failed exec reach the cleanup below. Bash exits a noninteractive
+    # shell on exec failure by default, so the diagnostic and the removal of
+    # the private directory were unreachable. A successful exec replaces this
+    # shell, so neither option change reaches normal execution.
+    set +e
+    shopt -s execfail
+
     exec "${BASH:-bash}" -c '
         reexec_copy=$1
         shift

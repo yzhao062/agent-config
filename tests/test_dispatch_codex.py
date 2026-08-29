@@ -1282,5 +1282,52 @@ class DispatchStallIntegrationTests(unittest.TestCase):
             )
 
 
+class ReexecFailureCleanupReachable(unittest.TestCase):
+    """A failed exec has to reach the cleanup each guard already writes.
+
+    Bash exits a noninteractive shell when exec fails, with 126 or 127, so the
+    diagnostic, the removal of the private copy, and the exit 2 that every guard
+    places after its exec could not run. Measured on the pre-fix script: rc=127,
+    no diagnostic, and the private directory left behind. `set +e` and
+    `shopt -s execfail` make that block reachable, and both are needed:
+    `execfail` stops the immediate exit, `set +e` stops the returned status from
+    tripping errexit before the cleanup runs (anywhere-agents#48; prun took the
+    same fix first in ac d067c0c / aa 9f873d5).
+
+    Checked by position rather than by presence, because the options only do
+    their job immediately before the exec they guard. One test covers all five
+    scripts because the guard is one shared shape, copied five times.
+    """
+
+    GUARDED = (
+        "auto-watch.sh",
+        "dispatch-claude.sh",
+        "dispatch-codex.sh",
+        "dispatch-copilot.sh",
+        "stall-watch.sh",
+    )
+
+    def test_every_guard_can_reach_its_cleanup(self) -> None:
+        for name in self.GUARDED:
+            with self.subTest(script=name):
+                text = (SCRIPTS_DIR / name).read_text(encoding="utf-8")
+                exec_at = text.find('exec "${BASH:-bash}"')
+                self.assertNotEqual(exec_at, -1, name + " has no re-exec hand-off")
+
+                before = text[:exec_at].rstrip()
+                tail = [line.strip() for line in before.splitlines()[-2:]]
+                self.assertEqual(
+                    tail, ["set +e", "shopt -s execfail"],
+                    name + " must set both options directly before its exec, "
+                    "otherwise a failed exec still leaves without cleaning up. "
+                    "Found: " + repr(tail),
+                )
+
+                self.assertIn(
+                    "failed to launch re-exec copy", text[exec_at:],
+                    name + " has no post-exec cleanup for those options to reach",
+                )
+
+
 if __name__ == "__main__":
     unittest.main()

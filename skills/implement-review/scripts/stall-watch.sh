@@ -58,6 +58,13 @@ if [ "${IMPLEMENT_REVIEW_STALL_WATCH_REEXEC:-}" != "1" ]; then
         rmdir -- "$reexec_dir" 2>/dev/null || true
     ' stall-watch-cleanup "$$" "$REEXEC_COPY" "$REEXEC_DIR" >/dev/null 2>&1 &
 
+    # Let a failed exec reach the cleanup below. Bash exits a noninteractive
+    # shell on exec failure by default, so the diagnostic and the removal of
+    # the private directory were unreachable. A successful exec replaces this
+    # shell, so neither option change reaches normal execution.
+    set +e
+    shopt -s execfail
+
     exec "${BASH:-bash}" "$REEXEC_COPY" "$@"
 
     echo "stall-watch: failed to launch re-exec copy: $REEXEC_COPY" >&2
