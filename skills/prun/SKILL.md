@@ -10,7 +10,7 @@ description: Parallel delegation fan-out. The Claude session coordinates (on wha
 `prun` fans a task out into independent units that run in parallel on separate-quota or in-session
 workers, while the Claude session only coordinates. Workers are **Codex** (`codex exec`, a separate abundant account, frontier model) and **Sonnet**
 subagents (inside the Claude session). **Codex is the prioritized default**: its quota is separate
-from the Claude plan and its current model (gpt-5.6 tier) is strong on hard reasoning and code, so
+from the Claude plan and its current model (gpt-6 tier) is strong on hard reasoning and code, so
 most units go to Codex. **Sonnet is reserved** for units that need something the Claude session
 uniquely provides (see the Executors rule). The coordinator decomposes the task, dispatches the units, gathers
 their results, reviews their diffs, and integrates. It never runs a unit itself.
@@ -62,7 +62,7 @@ or a unit's result cannot be checked without redoing it.
 
 | Executor | Quota | Notes |
 |---|---|---|
-| Codex (`codex exec`) | Separately authenticated Codex/OpenAI account; abundant | **Prioritized default.** Frontier model (gpt-5.6 tier), strong on hard reasoning and code, and the worker run spends no Claude-plan quota. Run many in parallel. |
+| Codex (`codex exec`) | Separately authenticated Codex/OpenAI account; abundant | **Prioritized default.** Frontier model (gpt-6 tier), strong on hard reasoning and code, and the worker run spends no Claude-plan quota. Run many in parallel. |
 | Sonnet subagent | Current Claude account; check Settings > Usage for the applicable limits or credits | Reserved, not a default. Runs in the Claude session, so it alone can reach session-internal tools (MCP / email / Artifacts) that Codex cannot. |
 | Claude session (this session) | Current Claude account; check Settings > Usage for the applicable limits or credits | Coordinator and integrator only, on whatever model is selected. Never a unit. |
 
@@ -70,7 +70,7 @@ Rule: **units never run on the coordinator (the Claude session itself).** The or
 executor per unit, with a strong default toward Codex:
 
 - **Codex is the default for almost every unit** (code, research, analysis, web fetch). Its quota is
-  separate and abundant and its frontier model (gpt-5.6 tier) is capability-competitive with the top Claude models,
+  separate and abundant and its frontier model (gpt-6 tier) is capability-competitive with the top Claude models,
   so there is rarely a reason to prefer another worker. Start here.
 - **Sonnet is the reserved exception, chosen only when a unit needs a tool the Claude session has but
   the isolated Codex worker does not.** Codex is an external process, so route to Sonnet when a unit
