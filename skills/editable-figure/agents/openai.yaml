@@ -1,0 +1,4 @@
+interface:
+  display_name: "Editable Figure"
+  short_description: "Editable PPTX figures; desktop PowerPoint required"
+  default_prompt: "Use $editable-figure to analyze this source, find suitable references for its document type, and design a concise figure that shows why the work is useful. Deliver an editable PPTX with an appropriate preview or publication export unless another output format or an assessment or prompt-only deliverable was requested."

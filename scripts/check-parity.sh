@@ -23,8 +23,8 @@
 #               composer-aware version; ac's bootstrap snippet still
 #               curls from ac but the file served is now byte-identical
 #               to aa and includes the AC->AA migration block),
-#               skills/{implement-review,ci-mockup-figure,readme-polish,prun}
-#               as recursive trees, and the shared-contract test files
+#               skills/{implement-review,ci-mockup-figure,readme-polish,
+#               prun,editable-figure} as recursive trees, and the shared-contract test files
 #               tests/test_{dispatch_codex,dispatch_copilot,dispatch_claude,
 #               health_check,guard,session_bootstrap,pointer_files,
 #               prompt_byte_parity,bootstrap_preflight,
@@ -53,8 +53,8 @@
 #               generate_agent_configs.py, bootstrap/packs.yaml,
 #               scripts/packs/ recursive (excluding __pycache__/),
 #               skills/{implement-review,my-router,ci-mockup-figure,
-#               readme-polish,prun}/ recursive, the five shipped
-#               .claude/commands/*.md pointers, and the vet.md alias
+#               readme-polish,prun,editable-figure}/ recursive, the six
+#               shipped .claude/commands/*.md pointers, and the vet.md alias
 #               pointer for implement-review. v0.6.0 promotes this
 #               from the v0.5.x manual diff -rq gate to a release gate.
 #
@@ -275,7 +275,7 @@ done
 # implement-review scripts, so the gap was reachable well before prun added
 # one; it simply went unnoticed until a verification run left a cache here.
 $AA_INTERNAL_ONLY || printf '\n== shared skills (recursive byte-identical) ==\n'
-cross_repo_skills="implement-review ci-mockup-figure readme-polish prun"
+cross_repo_skills="implement-review ci-mockup-figure readme-polish prun editable-figure"
 $AA_INTERNAL_ONLY && cross_repo_skills=""
 for skill in $cross_repo_skills; do
   if [ ! -d "$AC_ROOT/skills/$skill" ] || [ ! -d "$AA_ROOT/skills/$skill" ]; then
@@ -322,6 +322,7 @@ if [ -d "$AA_ROOT/packages/pypi/anywhere_agents/composer" ]; then
     .claude/commands/ci-mockup-figure.md
     .claude/commands/readme-polish.md
     .claude/commands/prun.md
+    .claude/commands/editable-figure.md
   )
   for f in "${aa_internal_files[@]}"; do
     src="$AA_ROOT/$f"
@@ -350,8 +351,8 @@ if [ -d "$AA_ROOT/packages/pypi/anywhere_agents/composer" ]; then
       diff -rq --exclude=__pycache__ "$AA_ROOT/scripts/packs" "$AA_MIRROR/scripts/packs" 2>&1 | sed 's/^/    /'
     fi
   fi
-  # skills/{implement-review,my-router,ci-mockup-figure,readme-polish}/
-  for skill in implement-review my-router ci-mockup-figure readme-polish prun; do
+  # All six shipped skill trees, including my-router.
+  for skill in implement-review my-router ci-mockup-figure readme-polish prun editable-figure; do
     if [ ! -d "$AA_ROOT/skills/$skill" ] || [ ! -d "$AA_MIRROR/skills/$skill" ]; then
       fail "skills/$skill/ (missing on one side: aa source vs wheel mirror)"
       continue
@@ -387,7 +388,14 @@ for f in "${by_design_files[@]}"; do
   fi
 done
 
-# skills/my-router as a recursive tree
+# skills/my-router as a recursive tree. Its two copies route to different
+# skill inventories: ac's table names the research skills under
+# reference-skills/, aa's names the six it ships plus fork guidance. That is
+# a functional split rather than a sanitization one, so it stays BY-DESIGN.
+# skills/editable-figure was BY-DESIGN for one release-preparation session
+# and is now STRICT above: the maintainer's decision is that the private
+# awarded-proposal and working-paper locators ship as written, which removes
+# the divergence and the standing re-sanitization obligation with it.
 if $AA_INTERNAL_ONLY; then
   :
 elif [ ! -d "$AC_ROOT/skills/my-router" ] || [ ! -d "$AA_ROOT/skills/my-router" ]; then

@@ -1,0 +1,18 @@
+{
+  "name": "lab-default",
+  "tokens": {
+    "background": "#FFFFFF",
+    "mint": "#BFDFD2",
+    "coral": "#ED8D5A",
+    "teal": "#4198AC",
+    "gold": "#ECB66C",
+    "gray": "#C9C9C9",
+    "ink": "#202923",
+    "mutedText": "#67756D",
+    "rule": "#DCE6DF",
+    "mintStroke": "#365E49",
+    "coralStroke": "#B66037"
+  },
+  "pairOrder": ["mint", "coral"],
+  "categoricalOrder": ["mint", "teal", "gold", "coral"]
+}

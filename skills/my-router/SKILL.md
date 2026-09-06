@@ -40,6 +40,7 @@ The user's prompt often contains the clearest signal. Match keywords to skills:
 | Keywords in prompt | Skill | Source |
 |---|---|---|
 | "cite", "citation", "bibliography", "bib", "references" | `bibref-filler` (or local variant like `nsf-bibref-filler` if available) | `skills/` (shared), check local first |
+| "editable figure", "editable diagram", "PowerPoint figure", "PPTX figure", "可编辑图", "用PPT画图" | `editable-figure` | `skills/` (shared) |
 | "figure", "diagram", "illustration", "schematic", "overview figure" | `figure-prompt-builder` | `skills/` (shared) |
 | "mockup", "HTML figure", "HTML mockup", "interactive figure", "dashboard mockup", "Gantt", "screenshotable figure", "capture mode", "skia-canvas", "TikZ figure", "arrow routing" | `ci-mockup-figure` | `skills/` (shared) |
 | "review staged", "review changes", "review the diff" | `implement-review` | `skills/` (shared) |
@@ -51,6 +52,8 @@ The user's prompt often contains the clearest signal. Match keywords to skills:
 | "slides", "presentation", "beamer" | `paper-to-beamer` or `deck-assembler` | `reference-skills/` (project-local) |
 | "cv", "curriculum vitae", "resume" | `condense-cv` | `reference-skills/` (project-local) |
 | "reimbursement", "travel claim", "expense" | `usc-reimbursement` | `reference-skills/` (project-local) |
+
+When an explanatory figure request explicitly asks for PowerPoint or native editability, use `editable-figure` before the generic figure, proposal, README-polish, or slide routes. A request to simplify an existing editable figure stays on that route. A full slide deck still uses the presentation route, and an explicit SVG, TikZ, screenshot, or prompt-only request keeps its requested format. Before taking the route, check that the session can perform the desktop PowerPoint validation `editable-figure` requires. If it cannot, explain the limitation and offer `ci-mockup-figure` only when its output fits the request; do not silently substitute HTML for an explicitly requested PPTX.
 
 ### 2. File types in working directory
 
@@ -131,6 +134,9 @@ When review is needed after domain skill execution:
 
 **User says:** "Review this"
 → Router detects: staged changes exist, `.tex` files in a proposal directory → `implement-review`, asks user which agency lens (NSF, NIH, etc.)
+
+**User says:** "Make an editable PowerPoint overview figure for this proposal"
+Router selects `editable-figure`, applies the proposal context, and uses the available presentation tooling to build and inspect a native PPTX.
 
 **User says:** "Make an overview figure for the proposal"
 → Router detects: keyword "figure" + "proposal" → checks for local `nsf-figure-builder` → if found, uses it; otherwise falls back to shared `figure-prompt-builder`

@@ -110,6 +110,7 @@ Codex can be used from within Claude Code as an MCP server. See [AGENTS.md — C
 | `dual-pass-workflow` | Outer shell for two-pass tasks: first pass builds the artifact, optional second pass audits and reconciles. Works with any domain skill (paper review, bug fix, writing, frontend edit, etc.). |
 | `bibref-filler` | Add new external verified citations while keeping curated bibliography files stable, placing machine-added entries in a separate `working.bib`, and leaving visible unresolved notes instead of guessing. |
 | `bibref-verify` | Audit existing bibliography entries before submission, keeping `.bib` read-only while checking for fabricated citations, stale venue metadata, and ready-to-paste fix blocks in `REFERENCE-CHECK.md`. |
+| `editable-figure` | Analyze source material, design a concise paper, proposal, or README figure, and deliver native editable PowerPoint objects with publication or web exports. |
 | `figure-prompt-builder` | Build copy-ready prompts for explanatory figures such as overviews, workflows, mechanisms, timelines, and conceptual illustrations, using a small bundled reference bank when helpful. |
 | `implement-review` | Review loop for staged changes. Detects content type, sends to Codex (terminal or plugin) for review using established frameworks (Google/Microsoft for code, NeurIPS/ACL for papers, NSF/NIH for proposals), categorizes feedback, revises, and iterates. |
 | `ci-mockup-figure` | Build interactive HTML mockups of systems, methodological flowcharts, dashboards, and timelines, then capture as space-efficient figures for papers and proposals. |
@@ -150,6 +151,11 @@ skills/                            # Shared skills (bootstrapped to all projects
     agents/openai.yaml             # Codex wrapper
     references/                    # contracts.md, task-mappings.md
     assets/                        # workflow.yaml, handoff.md, audit.md, reconcile.md
+  editable-figure/
+    SKILL.md                       # Analyze, design, and build editable figures
+    agents/openai.yaml             # Codex wrapper
+    references/                    # Document contexts, native authoring, iteration example
+    scripts/render_powerpoint.ps1 # Native single-figure PNG/PDF export
   figure-prompt-builder/
     SKILL.md                       # Skill definition
     agents/openai.yaml             # Codex wrapper
@@ -214,6 +220,7 @@ docs/
   bibref-verify.md
   ci-mockup-figure.md
   dual-pass-workflow.md
+  editable-figure.md
   figure-prompt-builder.md
   implement-review.md
   my-router.md
