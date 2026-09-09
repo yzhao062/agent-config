@@ -1,0 +1,46 @@
+[
+  {
+    "path": "editable-figure\\agents\\openai.yaml",
+    "sha256": "29BCC2E58F99E1375F83F26E02D3AC1986826D9580F0D3D2682A5AADC3FA49BA"
+  },
+  {
+    "path": "editable-figure\\references\\default-palette.json",
+    "sha256": "C26AB4ED19D193DF60F161531D7E71E7C2C64C17DA0BD4D611E82768C784A18D"
+  },
+  {
+    "path": "editable-figure\\references\\default-palette.md",
+    "sha256": "F172374918751E6191FE3AF3D3FE85E457F23BD21F12CC16A636F4ED1107229D"
+  },
+  {
+    "path": "editable-figure\\references\\document-contexts.md",
+    "sha256": "39D0D34F037BFFA7C574EFDF68BA85158D7420EB263491A4E0F202AD85EC6CCC"
+  },
+  {
+    "path": "editable-figure\\references\\iteration-example.md",
+    "sha256": "387B3B2AD4C05712FD8289B1491FBDFE0A98003B207E710D73031CD53918F040"
+  },
+  {
+    "path": "editable-figure\\references\\mechanism-figures.md",
+    "sha256": "C78CBBA273606302ACB22DC659689DB44714A56C9EBCCEAD886B7DE9611D3605"
+  },
+  {
+    "path": "editable-figure\\references\\native-powerpoint.md",
+    "sha256": "D0FE52795FEC6E68EBB474FFF37B57CFC4F8D43F0C689F8D3C4853464B643F84"
+  },
+  {
+    "path": "editable-figure\\references\\panels-and-results.md",
+    "sha256": "1C9AE783F3E14C41FFBCEEF986DB80B90024F32DDB5A1DD326F72DC8459BF96B"
+  },
+  {
+    "path": "editable-figure\\references\\reference-search.md",
+    "sha256": "26652D83B5A9227D749FCAED1C986B012B1E505900AE9B399E96C5AA4E701570"
+  },
+  {
+    "path": "editable-figure\\scripts\\render_powerpoint.ps1",
+    "sha256": "3751E8BDB95779DAF751D26D6DC473CC3F22488CB4390B505ABA73F0195CB5D1"
+  },
+  {
+    "path": "editable-figure\\SKILL.md",
+    "sha256": "B51E74C56FD6EA4E5D15010040B23C9CF374322DB59420E1FFB28B0DF111B9E3"
+  }
+]
