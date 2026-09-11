@@ -112,11 +112,11 @@ Codex can be used from within Claude Code as an MCP server. See [AGENTS.md — C
 | `bibref-verify` | Audit existing bibliography entries before submission, keeping `.bib` read-only while checking for fabricated citations, stale venue metadata, and ready-to-paste fix blocks in `REFERENCE-CHECK.md`. |
 | `editable-figure` | Analyze source material, design a concise paper, proposal, or README figure, and deliver native editable PowerPoint objects with publication or web exports. |
 | `figure-prompt-builder` | Build copy-ready prompts for explanatory figures such as overviews, workflows, mechanisms, timelines, and conceptual illustrations, using a small bundled reference bank when helpful. |
-| `implement-review` | Review loop for staged changes. Detects content type, sends to Codex (terminal or plugin) for review using established frameworks (Google/Microsoft for code, NeurIPS/ACL for papers, NSF/NIH for proposals), categorizes feedback, revises, and iterates. |
+| `implement-review` | Cross-model review loop for staged changes. Bare `/vet` uses Codex; `/vet agy` uses Gemini 3.8 Flash High through Antigravity; Copilot and headless Claude Code remain available. Every automated backend can run tests, experiments, shell commands, and network verification without interactive permission gates. It applies code, paper, and proposal review lenses, categorizes feedback, revises, and iterates. |
 | `ci-mockup-figure` | Build interactive HTML mockups of systems, methodological flowcharts, dashboards, and timelines, then capture as space-efficient figures for papers and proposals. |
 | `my-router` | Context-aware dispatcher that detects work type (papers, proposals, code, figures, citations, admin) and routes to the right domain skill. Works as the inner decision loop within superpowers' execution phase. |
 | `readme-polish` | Audit and rewrite a GitHub README using modern 2025-2026 patterns — centered header, badges, hero image, GitHub alert callouts, emoji feature bullets, collapsibles, Mermaid diagrams, tables over dense prose. Produces a README that survives a 10-second skim and a deep dive. |
-| `prun` | Parallel delegation fan-out. The coordinating session decomposes a task into independent units that run in parallel on Codex (`codex exec`) and Sonnet workers, never on the coordinator, then gathers results, reviews each diff, and integrates. Units may read or write code; code-writing units run in a throwaway clone with its remote removed, so workers cannot commit or push to the real repo. |
+| `prun` | Parallel delegation fan-out. The coordinating session decomposes a task into independent units that run in parallel on Sonnet and Agy workers, never on the coordinator, then gathers results, reviews each diff, and integrates. Codex is reserved for `/vet`, not fan-out. Unit count follows the dependency graph rather than a small fixed cap. Code-writing units run in a throwaway clone with its remote removed, so workers cannot commit or push to the real repo. |
 
 ## Skill Usage
 
@@ -197,6 +197,8 @@ figure-references/                 # Reusable reference figures organized by vis
 scripts/
   guard.py                         # PreToolUse hook: compound cd, destructive git/gh, writing-style, banner gates
   session_bootstrap.py             # SessionStart hook: runs bootstrap automatically
+  statusline.py                    # Compact Claude + Codex + primary Agy Gemini quota row
+  agent-quota.py                   # Expanded three-agent / four-pool quota readout + Agy refresh
   generate_agent_configs.py        # Generator: AGENTS.md -> CLAUDE.md + agents/codex.md
 user/
   settings.json                    # User-level Claude Code settings (permissions, hooks)

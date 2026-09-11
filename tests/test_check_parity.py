@@ -58,6 +58,8 @@ def _strict_test_files() -> tuple[str, ...]:
 STRICT_MEMBERSHIP_FLOOR = (
     "tests/_quiet_spawn.py",
     "tests/test_dispatch_codex.py",
+    "tests/test_dispatch_gemini.py",
+    "tests/test_dispatch_task_agy.py",
     "tests/test_dispatch_copilot.py",
     "tests/test_dispatch_claude.py",
     "tests/test_dispatch_task.py",
