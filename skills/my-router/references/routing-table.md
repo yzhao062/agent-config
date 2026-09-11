@@ -12,7 +12,7 @@
 | `dual-pass-workflow` | multi-step build-then-audit tasks | First pass builds, second pass audits and reconciles |
 | `my-router` | any task (this skill) | Detects context and dispatches to the right skill |
 | `readme-polish` | README audit / rewrite / modernize | Apply modern 2025-2026 GitHub README patterns (centered header, badges, hero image, callouts, emoji feature bullets, collapsibles, Mermaid, tables) |
-| `prun` | explicit parallel delegation / fan-out intent (not auto-routed by file type) | Fan out independent task units to Codex and Sonnet workers while the Opus session coordinates; workers never commit or push |
+| `prun` | explicit parallel delegation / fan-out intent (not auto-routed by file type) | Fan out independent task units to Sonnet and Agy workers while the Opus session coordinates; Codex is reserved for `/vet`, not fan-out; workers never commit or push |
 
 **Local-first rule:** If a project has a more specific local skill (e.g., `nsf-bibref-filler` alongside shared `bibref-filler`), always prefer the local version. Local skills are more customized for the project context.
 
