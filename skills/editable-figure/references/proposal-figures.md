@@ -32,6 +32,10 @@ Native editability does not require a figure made entirely of prose inside boxes
 
 ## Borrow the document's visual vocabulary
 
+For a short sponsor proposal with room for one figure, try a dominant domain scene with a smaller evidence or evaluation area when the argument centers on shared objects. In a September 2026 three-page Stellar proposal, equal research-question columns felt like stacked modules. A shared exchange scene made the trading relationships visible, and the author accepted the subsequent alignment revision for this lightweight proposal. This is a composition option, not a universal one-figure layout.
+
+Small domain miniatures can help readers recognize what the system handles: a transaction receipt, a bid/ask book, paired asset symbols, or an instrument image. Integrate them with the corresponding objects and preserve the main reading path. Use consistent native glyphs for simple schematic objects; retain authentic crops as replaceable pictures when their actual detail matters. A schematic remains illustrative. Real plots and screenshots need traceable sources, and invented prices, transaction hashes, or trend lines must not serve as visual texture. Keep details that survive manuscript scaling and avoid adding captions or panels merely to accommodate ornament.
+
 Inspect actual awarded-proposal pages when they are supplied, then compare candidate choices with the current manuscript's figures. Match more than color: typography, stroke weight, information-block shapes, arrow treatment, and actor/tool icons affect whether a figure belongs in the document.
 
 If the author points to recent paper figures, inspect those actual assets as additional donors. Equal node footprints, outside labels, simple record glyphs, and clear connection ports can transfer to a compact proposal graph. Keep the proposal's established color meanings.

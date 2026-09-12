@@ -50,6 +50,10 @@ Set axis number formatting explicitly when its default obscures the intended pre
 
 ## Canvas and group geometry
 
+For a schematic that should read as level, derive node centers, label baselines, and connection ports from shared horizontal and vertical guides. Equal bounding boxes alone do not align the visible artwork. Check each arrow's final segment and its contact with the node silhouette. Use orthogonal branches where they clarify the relationship, and matched radii with horizontal or vertical end tangents for symmetric loops. Preserve deliberate diagonals when the structure calls for them.
+
+Inspect this geometry in the native export at manuscript width. In a September 2026 Stellar proposal revision, individually reasonable coordinates produced sloping venue links, uneven title baselines, and an asymmetric bot loop. Shared guides and equal-radius corners corrected the appearance while preserving the mechanism. Native connector tests had passed before this visual correction; editability and visual alignment were separate checks.
+
 Capture top-level object positions before changing the slide size. In the observed PowerPoint COM workflow, increasing `PageSetup.SlideWidth` recentered the existing groups by half the increase. Applying the planned panel shift afterward displaced the result twice and clipped its right edge. Compare before/after absolute positions rather than assuming a canvas change leaves objects fixed.
 
 For a narrow spacing adjustment, a targeted OOXML edit can preserve chart data and other unaffected parts. Change the slide size and the intended panel transforms in a new copy, then compare package parts and render. Group `a:xfrm` uses both parent `off`/`ext` and child `chOff`/`chExt` coordinates; changing only one extent can unintentionally scale its children. Maintain the intended mapping and account for panel titles that live outside the moved group. Do not apply a case-specific pixel shift to every group.
