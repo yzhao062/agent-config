@@ -14,6 +14,8 @@ before checking git.
 """
 from __future__ import annotations
 
+import errno
+import importlib.util
 import json
 import os
 import re
@@ -25,6 +27,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 # tests/ is on sys.path under `unittest discover -s tests` but not under
 # `python -m unittest tests.<module>`, which validate.yml uses for the
@@ -126,7 +129,7 @@ def powershell_editions_or_fail(case: unittest.TestCase) -> list[str]:
 _POSIX_SANDBOX_TOOLS = (
     "sed", "uname", "printf", "tr", "grep", "cat", "mkdir", "echo", "rm",
     "dirname", "basename", "test", "ls", "head", "tail", "sh", "mv", "cp",
-    "chmod", "mktemp", "sleep",
+    "chmod", "mktemp", "sleep", "ln",
 )
 
 
@@ -3583,6 +3586,940 @@ class SettingsMergeEncodingTests(unittest.TestCase):
                         first, target.read_bytes(),
                         "the fallback is not idempotent, so every bootstrap rewrites the file",
                     )
+
+
+class SettingsPublicationTests(unittest.TestCase):
+    """~/.claude/settings.json survives a concurrent or interrupted writer.
+
+    The file registers the PreToolUse guard for every consumer on the machine.
+    A session-start burst runs one bootstrap per consumer repo, all writing this
+    one path, and an in-place write truncates before it fills. One such run left
+    it at zero bytes: the guard stopped gating destructive commands, the quota
+    status line went blank, and six user-only keys were gone with the newest
+    backup on disk 78 days old (anywhere-agents#32).
+    """
+
+    HELPER = ROOT / "scripts" / "merge_settings.py"
+    BOOTSTRAP_SH = ROOT / "bootstrap" / "bootstrap.sh"
+    BOOTSTRAP_PS1 = ROOT / "bootstrap" / "bootstrap.ps1"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        spec = importlib.util.spec_from_file_location("merge_settings", cls.HELPER)
+        assert spec and spec.loader
+        cls.module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.module)
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.home = Path(self.temp.name)
+        self.addCleanup(self.temp.cleanup)
+        self.target = self.home / "settings.json"
+        self.shared = self.home / "shared.json"
+        self.shared.write_text(
+            json.dumps({"permissions": {"allow": ["Bash(git:*)"]}}), encoding="utf-8"
+        )
+
+    def _write_target(self, data: dict) -> bytes:
+        payload = (json.dumps(data, indent=2) + "\n").encode("utf-8")
+        self.target.write_bytes(payload)
+        return payload
+
+    def _run_helper(self, target=None, shared=None, env=None):
+        return subprocess.run(
+            [sys.executable, str(self.HELPER),
+             str(target or self.target), str(shared or self.shared)],
+            capture_output=True, text=True, timeout=120, env=env,
+        )
+
+    def test_an_interrupted_publish_leaves_the_previous_content(self) -> None:
+        # The truncation is what made the incident expensive, so the target must
+        # never be the file being filled in. Failing the rename stands in for
+        # every way a write can stop early.
+        before = self._write_target({"env": {"KEEP": "1"}})
+        with mock.patch.object(
+            self.module.os, "replace", side_effect=OSError("interrupted")
+        ):
+            with self.assertRaises(OSError):
+                self.module.write_json(self.target, {"env": {"NEW": "2"}})
+        self.assertEqual(self.target.read_bytes(), before)
+        leftovers = [p.name for p in self.home.iterdir()
+                     if p.name.startswith(".") and p.name.endswith(".tmp")]
+        self.assertEqual(leftovers, [], f"temp file left behind: {leftovers}")
+
+    def test_concurrent_merges_keep_every_writers_key(self) -> None:
+        # The failing shape is a lost update, not only a truncation: two runs
+        # read the same bytes, each merges its own shared file, and the second
+        # rename discards what the first added. The lock is what stops it.
+        self._write_target({"env": {"BASE": "1"}})
+        shared_files = []
+        for index in range(6):
+            path = self.home / f"shared-{index}.json"
+            path.write_text(json.dumps({"env": {f"K{index}": str(index)}}), encoding="utf-8")
+            shared_files.append(path)
+        procs = [
+            subprocess.Popen(
+                [sys.executable, str(self.HELPER), str(self.target), str(path)],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            )
+            for path in shared_files
+        ]
+        for proc in procs:
+            _, err = proc.communicate(timeout=180)
+            self.assertEqual(proc.returncode, 0, err)
+        merged = json.loads(self.target.read_text(encoding="utf-8"))
+        self.assertEqual(merged["env"]["BASE"], "1")
+        for index in range(6):
+            self.assertIn(f"K{index}", merged["env"],
+                          f"a concurrent writer lost K{index}: {merged['env']}")
+
+    def test_a_held_lock_refuses_rather_than_racing(self) -> None:
+        # A peer mid-merge is the case the lock exists for, so the answer is a
+        # distinct exit code and an untouched target, not a best-effort write.
+        before = self._write_target({"env": {"KEEP": "1"}})
+        holder = subprocess.Popen(
+            [sys.executable, "-c",
+             "import sys, time\n"
+             "sys.path.insert(0, %r)\n" % str(self.HELPER.parent) +
+             "import merge_settings, pathlib\n"
+             "with merge_settings.settings_lock(pathlib.Path(%r)) as held:\n" % str(self.target) +
+             "    print('held' if held else 'unsupported', flush=True)\n"
+             "    time.sleep(120)\n"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        # Cleanup is LIFO, so wait registers first and runs last: kill, then
+        # reap. Windows refuses to remove a directory whose file is still open,
+        # and kill alone does not guarantee the handle is gone.
+        self.addCleanup(holder.wait)
+        self.addCleanup(holder.kill)
+        state = holder.stdout.readline().strip()
+        if state != "held":
+            self.skipTest("this filesystem does not support locking")
+        result = subprocess.run(
+            [sys.executable, "-c",
+             "import sys, pathlib\n"
+             "sys.path.insert(0, %r)\n" % str(self.HELPER.parent) +
+             "import merge_settings\n"
+             "merge_settings.LOCK_TIMEOUT_SECONDS = 1.0\n"
+             "sys.exit(merge_settings.main(['merge_settings', %r, %r]))"
+             % (str(self.target), str(self.shared))],
+            capture_output=True, text=True, timeout=120,
+        )
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertEqual(self.target.read_bytes(), before)
+
+    def test_the_previous_content_is_kept_under_a_capped_history(self) -> None:
+        keep = self.module.BACKUP_KEEP
+        self._write_target({"env": {"ROUND": "0"}})
+        for round_number in range(1, keep + 4):
+            self.shared.write_text(
+                json.dumps({"env": {"ROUND": str(round_number)}}), encoding="utf-8"
+            )
+            result = self._run_helper()
+            self.assertEqual(result.returncode, 0, result.stderr)
+        backups = sorted(p for p in self.home.iterdir()
+                         if p.name.startswith("settings.json.bak-"))
+        self.assertEqual(len(backups), keep,
+                         f"history is not capped at {keep}: {[p.name for p in backups]}")
+        newest = json.loads(backups[-1].read_text(encoding="utf-8"))
+        self.assertEqual(newest["env"]["ROUND"], str(keep + 2),
+                         "the newest backup is not the content the last run replaced")
+
+    def test_the_user_settings_target_takes_the_lock_the_composer_takes(self) -> None:
+        # The composer's permission handler stages a merge into this same file
+        # and publishes it under the per-user lock. A sibling lock would not
+        # exclude that writer, and a probe showed the interleaving dropping a
+        # committed permission with exit 0.
+        user_settings = Path.home() / ".claude" / "settings.json"
+        chosen = self.module.lock_path_for(user_settings)
+        self.assertEqual(chosen.name, ".pack-lock.lock")
+        self.assertEqual(chosen.parent, user_settings.parent)
+
+    def test_every_other_target_keeps_a_sibling_lock(self) -> None:
+        # The per-user lock has nothing to do with a file inside one repository,
+        # and this helper is called with the project settings path too.
+        project = self.home / ".claude" / "settings.json"
+        project.parent.mkdir(parents=True, exist_ok=True)
+        project.write_text("{}", encoding="utf-8")
+        chosen = self.module.lock_path_for(project)
+        self.assertEqual(chosen, project.with_name("settings.json.lock"))
+
+    def test_a_sharing_violation_is_contention_not_an_unsupported_filesystem(self) -> None:
+        # Treating every open failure as "this filesystem cannot lock" is how a
+        # Windows peer holding the lock file with exclusive sharing turned into
+        # an unlocked merge that reported success.
+        before = self._write_target({"env": {"KEEP": "1"}})
+        denied = PermissionError(errno.EACCES, "sharing violation")
+        with mock.patch.object(self.module.os, "open", side_effect=denied):
+            self.module.LOCK_TIMEOUT_SECONDS = 0.3
+            try:
+                rc = self.module.main(
+                    ["merge_settings", str(self.target), str(self.shared)]
+                )
+            finally:
+                self.module.LOCK_TIMEOUT_SECONDS = 60.0
+        self.assertEqual(rc, 3, "a sharing violation must be reported as contention")
+        self.assertEqual(self.target.read_bytes(), before)
+
+    def test_only_a_documented_unsupported_error_degrades(self) -> None:
+        self._write_target({"env": {"BASE": "1"}})
+        unsupported = OSError(errno.ENOSYS, "locking not supported")
+        with mock.patch.object(self.module, "_try_lock", side_effect=unsupported):
+            rc = self.module.main(["merge_settings", str(self.target), str(self.shared)])
+        self.assertEqual(rc, 0)
+        merged = json.loads(self.target.read_text(encoding="utf-8"))
+        self.assertEqual(merged["env"]["BASE"], "1")
+        self.assertIn("Bash(git:*)", merged["permissions"]["allow"])
+
+    def test_an_absent_target_is_created_inside_the_lock(self) -> None:
+        # Moving the existence check inside the lock meant the helper had to be
+        # able to create, and it refused an absent target with exit 1, so a clean
+        # machine ended up with no settings file at all, and therefore no guard.
+        self.assertFalse(self.target.exists())
+        result = self._run_helper()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        created = json.loads(self.target.read_text(encoding="utf-8"))
+        self.assertIn("Bash(git:*)", created["permissions"]["allow"])
+
+    def test_creating_an_absent_target_still_waits_for_the_lock(self) -> None:
+        # Creation must not be the path that skips serialization: a composer
+        # committing at that moment is exactly the writer being protected.
+        self.assertFalse(self.target.exists())
+        holder = subprocess.Popen(
+            [sys.executable, "-c",
+             "import sys, time\n"
+             "sys.path.insert(0, %r)\n" % str(self.HELPER.parent) +
+             "import merge_settings, pathlib\n"
+             "with merge_settings.settings_lock(pathlib.Path(%r)) as held:\n" % str(self.target) +
+             "    print('held' if held else 'unsupported', flush=True)\n"
+             "    time.sleep(120)\n"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        self.addCleanup(holder.wait)
+        self.addCleanup(holder.kill)
+        if holder.stdout.readline().strip() != "held":
+            self.skipTest("this filesystem does not support locking")
+        result = subprocess.run(
+            [sys.executable, "-c",
+             "import sys\n"
+             "sys.path.insert(0, %r)\n" % str(self.HELPER.parent) +
+             "import merge_settings\n"
+             "merge_settings.LOCK_TIMEOUT_SECONDS = 1.0\n"
+             "sys.exit(merge_settings.main(['merge_settings', %r, %r]))"
+             % (str(self.target), str(self.shared))],
+            capture_output=True, text=True, timeout=120,
+        )
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertFalse(self.target.exists(),
+                         "creation went ahead while a peer held the lock")
+
+    def test_an_unresolvable_target_refuses_rather_than_guessing(self) -> None:
+        # Choosing the sibling lock after a resolution failure published over a
+        # composer commit in a fault injection, so not knowing is a refusal.
+        self._write_target({"env": {"KEEP": "1"}})
+        with mock.patch.object(
+            Path, "resolve", side_effect=OSError(errno.EIO, "io error")
+        ):
+            with self.assertRaises(self.module.LockBusy):
+                self.module.lock_path_for(self.target)
+
+    @staticmethod
+    def _composer_locks_module() -> Path | None:
+        """Locate the composer's own lock module, wherever the wheel tree sits.
+
+        agent-config carries no composer, so this returns None there and the
+        cases below skip. anywhere-agents carries the bundled copy, which is
+        where the exclusion actually has to hold.
+        """
+        for base in (ROOT, ROOT.parent / "anywhere-agents"):
+            candidate = (base / "packages" / "pypi" / "anywhere_agents" / "composer"
+                         / "scripts" / "packs" / "locks.py")
+            if candidate.is_file():
+                return candidate
+        return None
+
+    def _composer_child(self, locks: Path, lock_path: Path) -> str:
+        """Hold the composer's user lock in a peer process until this test ends."""
+        child = subprocess.Popen(
+            [sys.executable, "-c",
+             "import importlib.util, pathlib, sys, time\n"
+             "spec = importlib.util.spec_from_file_location('composer_locks', %r)\n" % str(locks) +
+             "mod = importlib.util.module_from_spec(spec)\n"
+             "spec.loader.exec_module(mod)\n"
+             "with mod.acquire(pathlib.Path(%r), timeout=5.0):\n" % str(lock_path) +
+             "    print('held', flush=True)\n"
+             "    time.sleep(120)\n"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        self.addCleanup(child.wait)
+        self.addCleanup(child.kill)
+        return child.stdout.readline().strip()
+
+    def test_the_composer_lock_actually_excludes_the_helper(self) -> None:
+        # Naming the same path is not the contract; excluding the other writer
+        # is. The Round 1 design named a sibling lock and a probe drove the two
+        # writers straight through each other, dropping a committed permission.
+        locks = self._composer_locks_module()
+        if locks is None:
+            self.skipTest("no bundled composer in this repo")
+        home = Path(self.temp.name) / "fakehome"
+        (home / ".claude").mkdir(parents=True)
+        target = home / ".claude" / "settings.json"
+        target.write_text('{"env": {"KEEP": "1"}}', encoding="utf-8")
+        if self._composer_child(locks, home / ".claude" / ".pack-lock.lock") != "held":
+            self.skipTest("this filesystem does not support locking")
+        env = dict(os.environ, HOME=str(home), USERPROFILE=str(home))
+        result = subprocess.run(
+            [sys.executable, "-c",
+             "import sys\n"
+             "sys.path.insert(0, %r)\n" % str(self.HELPER.parent) +
+             "import merge_settings\n"
+             "merge_settings.LOCK_TIMEOUT_SECONDS = 1.0\n"
+             "sys.exit(merge_settings.main(['merge_settings', %r, %r]))"
+             % (str(target), str(self.shared))],
+            capture_output=True, text=True, timeout=120, env=env,
+        )
+        self.assertEqual(result.returncode, 3,
+                         f"the helper wrote while the composer held the lock\n{result.stderr}")
+        self.assertEqual(json.loads(target.read_text(encoding="utf-8")),
+                         {"env": {"KEEP": "1"}})
+
+    def test_the_helper_lock_actually_excludes_the_composer(self) -> None:
+        # The reverse direction matters just as much: a composer that could
+        # walk past this lock would overwrite a merge in progress.
+        locks = self._composer_locks_module()
+        if locks is None:
+            self.skipTest("no bundled composer in this repo")
+        home = Path(self.temp.name) / "fakehome2"
+        (home / ".claude").mkdir(parents=True)
+        target = home / ".claude" / "settings.json"
+        target.write_text('{"env": {"KEEP": "1"}}', encoding="utf-8")
+        lock_path = home / ".claude" / ".pack-lock.lock"
+        # settings_lock takes the settings file and derives the lock from the
+        # home directory, so the holder has to see the fixture as its home.
+        holder = subprocess.Popen(
+            [sys.executable, "-c",
+             "import sys, time\n"
+             "sys.path.insert(0, %r)\n" % str(self.HELPER.parent) +
+             "import merge_settings, pathlib\n"
+             "with merge_settings.settings_lock(pathlib.Path(%r)) as held:\n" % str(target) +
+             "    print('held' if held else 'unsupported', flush=True)\n"
+             "    time.sleep(120)\n"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            env=dict(os.environ, HOME=str(home), USERPROFILE=str(home)),
+        )
+        self.addCleanup(holder.wait)
+        self.addCleanup(holder.kill)
+        if holder.stdout.readline().strip() != "held":
+            self.skipTest("this filesystem does not support locking")
+        self.assertTrue(lock_path.is_file(),
+                        "the holder did not take the lock beside the fixture home")
+        result = subprocess.run(
+            [sys.executable, "-c",
+             "import importlib.util, pathlib, sys\n"
+             "spec = importlib.util.spec_from_file_location('composer_locks', %r)\n" % str(locks) +
+             "mod = importlib.util.module_from_spec(spec)\n"
+             "spec.loader.exec_module(mod)\n"
+             "try:\n"
+             "    with mod.acquire(pathlib.Path(%r), timeout=1.0):\n" % str(lock_path) +
+             "        print('ACQUIRED')\n"
+             "except mod.LockTimeout:\n"
+             "    print('REFUSED')\n"],
+            capture_output=True, text=True, timeout=120,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("REFUSED", result.stdout,
+                      f"the composer walked past the helper's lock: {result.stdout}")
+
+    def test_both_entry_points_read_the_merge_result(self) -> None:
+        # The Bash entry point used to discard the exit code, so a refused merge
+        # and an applied one produced the same ledger line.
+        sh = self.BOOTSTRAP_SH.read_text(encoding="utf-8")
+        self.assertIn("_settings_rc=$?", sh,
+                      "bootstrap.sh does not read the merge helper's exit code")
+        self.assertIn("_ledger_step user_files user failed", sh,
+                      "bootstrap.sh cannot record a failed settings merge")
+        ps1 = self.BOOTSTRAP_PS1.read_text(encoding="utf-8")
+        self.assertIn("SettingsMergeReason", ps1,
+                      "bootstrap.ps1 does not carry a merge failure to the ledger")
+        self.assertIn("'user_files' 'user' 'failed'", ps1,
+                      "bootstrap.ps1 cannot record a failed settings merge")
+
+    def test_no_entry_point_installs_settings_by_truncating_copy(self) -> None:
+        # First install is the same hazard: cp -f and Copy-Item -Force both
+        # truncate the destination before writing. Shape is all this can check;
+        # SettingsPublicationBashTests runs the Bash branch, and the PowerShell
+        # writer is exercised in SettingsPublicationPowerShellTests.
+        sh = self.BOOTSTRAP_SH.read_text(encoding="utf-8")
+        self.assertNotIn(
+            'cp -f .agent-config/repo/user/settings.json "$HOME/.claude/settings.json"', sh,
+            "bootstrap.sh still installs user settings with a truncating copy",
+        )
+        self.assertIn(
+            'ln "$_settings_temp" "$HOME/.claude/settings.json"', sh,
+            "bootstrap.sh does not publish user settings from a sibling temp file",
+        )
+        ps1 = self.BOOTSTRAP_PS1.read_text(encoding="utf-8")
+        self.assertNotIn(
+            "Copy-Item .agent-config/repo/user/settings.json $userSettings -Force", ps1,
+            "bootstrap.ps1 still installs user settings with a truncating copy",
+        )
+        self.assertIn(
+            "Copy-HelperAtomic .agent-config/repo/user/settings.json $userSettings", ps1,
+            "bootstrap.ps1 does not install user settings atomically",
+        )
+        self.assertIn("function Write-JsonFileAtomic", ps1,
+                      "bootstrap.ps1 has no atomic JSON writer")
+        self.assertIn("Write-JsonFileAtomic $userSettings", ps1,
+                      "bootstrap.ps1 still publishes user settings in place")
+
+
+@unittest.skipUnless(POWERSHELL, "pwsh/powershell not available")
+class SettingsPublicationPowerShellTests(unittest.TestCase):
+    """The PowerShell half of the settings write path, exercised rather than read.
+
+    Two of the Round 1 findings were defects the source-shape assertions could
+    not see: a whole-second backup stamp that collapsed two copies into one, and
+    a cleanup that deleted the recovery material when the publish failed.
+    """
+
+    BOOTSTRAP_PS1 = ROOT / "bootstrap" / "bootstrap.ps1"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        text = cls.BOOTSTRAP_PS1.read_text(encoding="utf-8")
+        wanted = ("Write-JsonFileUtf8", "Write-JsonFileAtomic", "Backup-SettingsFile")
+        blocks = []
+        for name in wanted:
+            match = re.search(
+                r"^function %s\b.*?^\}" % re.escape(name), text, re.S | re.M
+            )
+            if not match:
+                raise unittest.SkipTest(f"{name} not found in bootstrap.ps1")
+            blocks.append(match.group(0))
+        cls.functions = "\n\n".join(blocks)
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.home = Path(self.temp.name)
+        self.addCleanup(self.temp.cleanup)
+
+    def _pwsh(
+        self,
+        body: str,
+        substitutions: dict[str, str] | None = None,
+        prelude: str = "",
+    ) -> subprocess.CompletedProcess:
+        functions = self.functions
+        for old, new in (substitutions or {}).items():
+            assert functions.count(old) == 1, f"substitution anchor not unique: {old}"
+            functions = functions.replace(old, new, 1)
+        script = self.home / "probe.ps1"
+        script.write_text(prelude + functions + "\n\n" + body, encoding="utf-8")
+        return subprocess.run(
+            [POWERSHELL, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)],
+            capture_output=True, text=True, timeout=120,
+        )
+
+    def test_two_backups_in_one_second_keep_both_and_their_order(self) -> None:
+        # The first draft stamped whole seconds, so the second copy overwrote the
+        # first and a burst of consumer bootstraps kept one snapshot. Different
+        # content per round is what makes the ordering claim checkable: comparing
+        # a sorted list against itself sorted again cannot fail.
+        target = self.home / "settings.json"
+        target.write_text('{"round":1}', encoding="utf-8")
+        result = self._pwsh(
+            f"$p = '{target}'\n"
+            "Backup-SettingsFile $p\n"
+            "Set-Content -LiteralPath $p -Value '{\"round\":2}' -NoNewline\n"
+            "Backup-SettingsFile $p\n"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        copies = sorted((p for p in self.home.iterdir()
+                         if p.name.startswith("settings.json.bak-")),
+                        key=lambda p: p.name)
+        self.assertEqual(len(copies), 2,
+                         f"backups collapsed into one: {[p.name for p in copies]}")
+        rounds = [json.loads(p.read_text(encoding="utf-8"))["round"] for p in copies]
+        self.assertEqual(rounds, [1, 2],
+                         f"lexical order is not time order: {[p.name for p in copies]}")
+        # No same-second assertion here: two live clock reads can straddle a
+        # boundary with nothing wrong. The supplied-instant case below owns
+        # that claim, and this one keeps the count and the content order.
+
+    FIXED_CLOCK = (
+        "$script:instants = @(\n"
+        "  [datetime]::new(2026, 5, 4, 12, 0, 0, 123, [System.DateTimeKind]::Utc),\n"
+        "  [datetime]::new(2026, 5, 4, 12, 0, 0, 876, [System.DateTimeKind]::Utc))\n"
+        "$script:tick = 0\n"
+        "function Get-Date { $v = $script:instants[$script:tick]; "
+        "$script:tick++; return $v }\n"
+    )
+
+    def test_two_backups_at_supplied_instants_keep_both_and_their_order(self) -> None:
+        # The case above uses the real clock, so its same-second claim can fail
+        # on a boundary with nothing wrong. This one supplies both instants, so
+        # the naming contract is checked rather than the scheduler.
+        target = self.home / "settings.json"
+        target.write_text('{"round":1}', encoding="utf-8")
+        result = self._pwsh(
+            f"$p = '{target}'\n"
+            "Backup-SettingsFile $p\n"
+            "Set-Content -LiteralPath $p -Value '{\"round\":2}' -NoNewline\n"
+            "Backup-SettingsFile $p\n",
+            prelude=self.FIXED_CLOCK,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        copies = sorted((p for p in self.home.iterdir()
+                         if p.name.startswith("settings.json.bak-")),
+                        key=lambda p: p.name)
+        self.assertEqual(len(copies), 2,
+                         f"backups collapsed into one: {[p.name for p in copies]}")
+        rounds = [json.loads(p.read_text(encoding="utf-8"))["round"] for p in copies]
+        self.assertEqual(rounds, [1, 2],
+                         f"lexical order is not time order: {[p.name for p in copies]}")
+        self.assertIn("settings.json.bak-20260504-120000-123000-", copies[0].name)
+        self.assertIn("settings.json.bak-20260504-120000-876000-", copies[1].name)
+
+    PARTIAL_REPLACE = (
+        "function Invoke-PartialReplace($src, $dst, $bak) {\n"
+        "  [System.IO.File]::Move($dst, $bak)\n"
+        "  throw 'simulated ERROR_UNABLE_TO_MOVE_REPLACEMENT_2 (1177)'\n"
+        "}\n"
+    )
+
+    def _ledger_block(self, phase: str) -> str:
+        """Lift the shipped ledger decision for one phase out of bootstrap.ps1."""
+        text = self.BOOTSTRAP_PS1.read_text(encoding="utf-8")
+        match = re.search(
+            r"try \{\n  if \(\$script:SettingsMergeReason\) \{\n"
+            r"    Add-LedgerStep '%s'.*?\n\} catch \{\}" % re.escape(phase),
+            text, re.S,
+        )
+        if not match:
+            self.skipTest(f"the {phase} ledger decision is not in its expected shape")
+        return match.group(0)
+
+    def _run_ledger(self, phase: str, reason: str | None) -> str:
+        stub = (
+            "$script:rows = @()\n"
+            "function Add-LedgerStep { param([string]$Phase, [string]$Scope, "
+            "[string]$Status, $Rc = $null, [string]$Reason = '')\n"
+            "  $script:rows += \"$Phase|$Scope|$Status|$Reason\" }\n"
+        )
+        assignment = (
+            "$script:SettingsMergeReason = $null\n" if reason is None
+            else f"$script:SettingsMergeReason = '{reason}'\n"
+        )
+        script = self.home / f"ledger-{phase}.ps1"
+        script.write_text(
+            stub + assignment + self._ledger_block(phase) + "\n$script:rows -join \"`n\"\n",
+            encoding="utf-8",
+        )
+        result = subprocess.run(
+            [POWERSHELL, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)],
+            capture_output=True, text=True, timeout=120,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout.strip()
+
+    def test_a_refused_settings_merge_reaches_its_own_ledger_row(self) -> None:
+        # The project reason used to be saved after the project row had already
+        # been written as ok, so a refused project merge vanished, and an earlier
+        # revision reported it against the user phase instead. Searching the
+        # source for the word "failed" cannot tell either case apart.
+        for phase, scope in (("project_files", "repo"), ("user_files", "user")):
+            with self.subTest(phase=phase):
+                self.assertEqual(
+                    self._run_ledger(phase, None), f"{phase}|{scope}|ok|",
+                    f"{phase} did not record success",
+                )
+                self.assertEqual(
+                    self._run_ledger(phase, "refused for the test"),
+                    f"{phase}|{scope}|failed|refused for the test",
+                    f"{phase} did not record its own failure",
+                )
+
+    def test_a_partially_replaced_target_is_restored(self) -> None:
+        # ReplaceFile documents error 1177 with the original already moved to the
+        # backup name and the replacement still under its temp name. Holding the
+        # destination open fails earlier than that, so it never reached the state
+        # the recovery exists for; this substitutes the one .NET call instead.
+        target = self.home / "settings.json"
+        target.write_text('{"keep":1}', encoding="utf-8")
+        result = self._pwsh(
+            f"$p = '{target}'\n"
+            "$failed = $false\n"
+            "try { Write-JsonFileAtomic $p '{\"new\":2}' } catch { $failed = $true }\n"
+            "if (-not $failed) { Write-Error 'the publish was expected to fail'; exit 1 }\n",
+            substitutions={
+                "[System.IO.File]::Replace($temp, $Path, $backup)":
+                    "Invoke-PartialReplace $temp $Path $backup",
+            },
+            prelude=self.PARTIAL_REPLACE,
+        )
+        self.assertEqual(result.returncode, 0, f"{result.stdout}\n{result.stderr}")
+        self.assertTrue(target.is_file(),
+                        "the target was not restored after a partial replacement")
+        self.assertEqual(json.loads(target.read_text(encoding="utf-8")), {"keep": 1})
+
+    def test_a_failed_restore_keeps_the_backup_and_names_it(self) -> None:
+        # When the restore itself cannot run, the previous content is still on
+        # disk and the operator needs its exact path to recover by hand.
+        target = self.home / "settings.json"
+        target.write_text('{"keep":1}', encoding="utf-8")
+        result = self._pwsh(
+            f"$p = '{target}'\n"
+            "try { Write-JsonFileAtomic $p '{\"new\":2}' } catch { }\n",
+            substitutions={
+                "[System.IO.File]::Replace($temp, $Path, $backup)":
+                    "Invoke-PartialReplace $temp $Path $backup",
+                "[System.IO.File]::Move($backup, $Path)":
+                    "throw 'injected restore failure'",
+            },
+            prelude=self.PARTIAL_REPLACE,
+        )
+        survivors = sorted(p.name for p in self.home.iterdir()
+                           if p.name.startswith(".settings.json.")
+                           and p.name.endswith(".bak"))
+        self.assertTrue(survivors, "the previous content was deleted after a failed restore")
+        kept = self.home / survivors[0]
+        self.assertEqual(json.loads(kept.read_text(encoding="utf-8")), {"keep": 1})
+        self.assertIn(survivors[0], result.stderr,
+                      f"stderr does not name the surviving copy: {result.stderr}")
+
+
+class SettingsPublicationBashTests(unittest.TestCase):
+    """The Bash settings block run rather than read.
+
+    Codex raised the no-helper install twice: it tested for absence outside any
+    critical section and then published with a rename, and a probe drove that
+    interleaving into replacing a permission the composer had already committed.
+    Source-string checks passed the whole time, which is why these run the block.
+    """
+
+    BOOTSTRAP_SH = ROOT / "bootstrap" / "bootstrap.sh"
+    SHARED = '{"permissions": {"allow": ["Bash(git:*)"]}}'
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        text = cls.BOOTSTRAP_SH.read_text(encoding="utf-8")
+        match = re.search(
+            r"^if \[ -f \.agent-config/repo/user/settings\.json \]; then\n"
+            r".*?^  _ledger_target '~/\.claude/settings\.json'\n^fi$",
+            text, re.S | re.M,
+        )
+        if not match:
+            raise unittest.SkipTest("the settings block is not in its expected shape")
+        cls.block = match.group(0)
+
+    def setUp(self) -> None:
+        if not BASH:
+            self.skipTest("bash not available (Git Bash on Windows or system bash on POSIX)")
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.home = self.root / "home"
+        (self.home / ".claude").mkdir(parents=True)
+        self.work = self.root / "work"
+        shared = self.work / ".agent-config" / "repo" / "user"
+        shared.mkdir(parents=True)
+        (shared / "settings.json").write_text(self.SHARED, encoding="utf-8")
+        self.target = self.home / ".claude" / "settings.json"
+
+    def _run(self, substitutions: dict[str, str] | None = None,
+             env_extra: dict[str, str] | None = None,
+             py: str = "") -> subprocess.CompletedProcess:
+        """Run the extracted block with stubbed surroundings.
+
+        `py` empty is the no-helper path; naming an interpreter routes through
+        whatever `merge_settings.py` the fixture placed in the fetched tree.
+        """
+        block = self.block
+        for old, new in (substitutions or {}).items():
+            self.assertEqual(block.count(old), 1, f"substitution anchor not unique: {old}")
+            block = block.replace(old, new, 1)
+        script = self.root / "probe.sh"
+        _write_text_lf(
+            script,
+            f"_py='{py}'\n"
+            "_atomic_deploy_helper() { return 1; }\n"
+            "_ledger_target() { :; }\n"
+            + block
+            + "\nprintf 'REASON=%s\\n' \"${_SETTINGS_MERGE_REASON:-}\"\n",
+        )
+        env = _stripped_env(None)
+        env["HOME"] = str(self.home)
+        env.update(env_extra or {})
+        return subprocess.run(
+            [BASH, str(script)], cwd=str(self.work), env=env,
+            capture_output=True, text=True, timeout=SUBPROCESS_TIMEOUT,
+        )
+
+    def test_an_absent_target_is_routed_through_the_helper_not_the_shell(self) -> None:
+        # Whenever Python is present the helper owns create-or-merge, because it
+        # is the only writer here holding the lock. An existence test out in the
+        # shell would send a first install down the unlocked path instead, and
+        # that is not visible in the resulting file unless the two writers
+        # produce different bytes.
+        helper = self.work / ".agent-config" / "repo" / "scripts"
+        helper.mkdir(parents=True)
+        _write_text_lf(
+            helper / "merge_settings.py",
+            "import pathlib, sys\n"
+            "pathlib.Path(sys.argv[1]).write_text('{\"by\": \"helper\"}')\n",
+        )
+        self.assertFalse(self.target.exists())
+        result = self._run(py=sys.executable.replace("\\", "/"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            json.loads(self.target.read_text(encoding="utf-8")), {"by": "helper"},
+            "a first install bypassed the helper and its lock",
+        )
+
+    def test_a_first_install_without_python_still_lands_the_file(self) -> None:
+        # Refusing to install rather than installing unlocked would cost every
+        # such machine the PreToolUse guard this file registers.
+        result = self._run()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.target.read_text(encoding="utf-8"), self.SHARED)
+        self.assertIn("REASON=\n", result.stdout,
+                      f"a successful install recorded a failure: {result.stdout}")
+
+    def test_an_unavailable_atomic_create_refuses_rather_than_renaming(self) -> None:
+        # A rename here was tried and withdrawn. A negative existence check does
+        # not reserve the pathname, so the rename replaced a permission the
+        # composer committed inside that window and reported success. Refusing
+        # is loud, and it cannot destroy a finished write.
+        result = self._run(substitutions={
+            'ln "$_settings_temp" "$HOME/.claude/settings.json" 2>/dev/null':
+                'false',
+        })
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(self.target.exists(),
+                         "an unlocked rename published after the atomic create failed")
+        self.assertIn("REASON=could not create", result.stdout,
+                      f"the refusal was not recorded: {result.stdout}")
+        leftovers = [p.name for p in (self.home / ".claude").iterdir()
+                     if p.name.startswith(".settings.json.")]
+        self.assertEqual(leftovers, [], f"temp files were left behind: {leftovers}")
+
+    def test_a_target_that_appears_mid_install_is_not_replaced(self) -> None:
+        # The interleaving Codex drove: another writer commits the file between
+        # the absence test and the publish. ln(1) refuses an existing
+        # destination, which is what makes create-if-absent a single step.
+        other = '{"permissions": {"allow": ["Bash(ls:*)"]}}'
+        # Braces matter: the anchor sits under `!` in an `||` list, so an
+        # unbraced `&&` would rebind the condition and the race would not run.
+        result = self._run(substitutions={
+            'cp -f .agent-config/repo/user/settings.json "$_settings_temp"':
+                '{ cp -f .agent-config/repo/user/settings.json "$_settings_temp" '
+                '&& printf %s "$_RACE" > "$HOME/.claude/settings.json"; }',
+        }, env_extra={"_RACE": other})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            self.target.read_text(encoding="utf-8"), other,
+            "the install overwrote a file another writer had already committed",
+        )
+        self.assertIn("another writer created", result.stdout + result.stderr)
+        leftovers = [p.name for p in (self.home / ".claude").iterdir()
+                     if p.name.startswith(".settings.json.")]
+        self.assertEqual(leftovers, [], f"temp files were left behind: {leftovers}")
+
+    def test_no_python_over_an_existing_target_reports_rather_than_passes(self) -> None:
+        # Merging into an existing file is what needs the helper. The previous
+        # revision skipped silently, so the ledger row read the same as a run
+        # that had applied the shared keys.
+        existing = '{"env": {"KEEP": "1"}}'
+        self.target.write_text(existing, encoding="utf-8")
+        result = self._run()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.target.read_text(encoding="utf-8"), existing)
+        self.assertIn("REASON=no Python for the settings merge helper",
+                      result.stdout, f"the skipped merge was not recorded: {result.stdout}")
+
+
+@unittest.skipUnless(POWERSHELL, "pwsh/powershell not available")
+class SettingsEntryBlockPowerShellTests(unittest.TestCase):
+    """The PowerShell user-settings block run rather than read.
+
+    Round 2 found the shipped block failing a first install outright: the helper
+    ran before the existence check, refused an absent target, and the shell never
+    reached its own install branch. Nothing in the source shape said so.
+    """
+
+    BOOTSTRAP_PS1 = ROOT / "bootstrap" / "bootstrap.ps1"
+    SHARED = {"permissions": {"allow": ["Bash(git:*)"]}}
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        text = cls.BOOTSTRAP_PS1.read_text(encoding="utf-8")
+        # Every top-level function, so the block's dependencies do not have to be
+        # enumerated and kept in step as it grows. Definitions alone run nothing.
+        cls.functions = re.findall(r"^function [\w-]+.*?^\}", text, re.S | re.M)
+        if len(cls.functions) < 10:
+            raise unittest.SkipTest("bootstrap.ps1 functions are not in their expected shape")
+        block = re.search(
+            r"^if \(Test-Path \.agent-config/repo/user/settings\.json\) \{\n"
+            r".*?^  try \{ Add-LedgerTarget '~/\.claude/settings\.json' \} catch \{\}\n^\}$",
+            text, re.S | re.M,
+        )
+        if not block:
+            raise unittest.SkipTest("the user settings block is not in its expected shape")
+        cls.block = block.group(0)
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.home = self.root / "home"
+        self.claude = self.home / ".claude"
+        self.claude.mkdir(parents=True)
+        self.target = self.claude / "settings.json"
+        self.work = self.root / "work"
+        self.repo = self.work / ".agent-config" / "repo"
+        (self.repo / "user").mkdir(parents=True)
+        (self.repo / "scripts").mkdir(parents=True)
+        (self.repo / "user" / "settings.json").write_text(
+            json.dumps(self.SHARED), encoding="utf-8")
+
+    def _stub_helper(self, body: str) -> None:
+        _write_text_lf(self.repo / "scripts" / "merge_settings.py", body)
+
+    def _run(self, py: str | None, substitutions: dict[str, str] | None = None):
+        """Run the block with `py` as the interpreter, or None for no Python."""
+        functions = "\n\n".join(self.functions)
+        for old, new in (substitutions or {}).items():
+            self.assertEqual(functions.count(old), 1,
+                             f"substitution anchor not unique: {old}")
+            functions = functions.replace(old, new, 1)
+        py_line = (f"$pyCmd = Get-Command '{py}'\n" if py else "$pyCmd = $null\n")
+        script = self.root / "entry.ps1"
+        # The stub follows the real definitions, which include one of this name.
+        script.write_text(
+            f"$userClaude = '{self.claude.as_posix()}'\n"
+            + py_line
+            + functions + "\n\n"
+            + "function Add-LedgerTarget { param($Target) }\n"
+            + self.block + "\n"
+            "Write-Output \"REASON=$script:SettingsMergeReason\"\n",
+            encoding="utf-8",
+        )
+        # $HOME comes from USERPROFILE at session start, which is how the lock
+        # path gets pointed at the fixture without editing the function.
+        env = dict(os.environ, USERPROFILE=str(self.home), HOME=str(self.home))
+        return subprocess.run(
+            [POWERSHELL, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)],
+            capture_output=True, text=True, timeout=180, cwd=str(self.work), env=env,
+        )
+
+    @classmethod
+    def _project_block(cls) -> str | None:
+        text = cls.BOOTSTRAP_PS1.read_text(encoding="utf-8")
+        match = re.search(
+            r"^if \(Test-Path \.agent-config/repo/\.claude/settings\.json\) \{\n"
+            r".*?^\} catch \{\}$",
+            text, re.S | re.M,
+        )
+        return match.group(0) if match else None
+
+    def test_a_real_project_fallback_failure_reaches_the_ledger(self) -> None:
+        # The decision that emits the row was correct and had nothing to read:
+        # the fallback's catch printed a warning without setting the reason, so
+        # a malformed project file was preserved, warned about, and recorded ok.
+        block = self._project_block()
+        if block is None:
+            self.skipTest("the project settings block is not in its expected shape")
+        (self.repo / ".claude").mkdir(parents=True)
+        (self.repo / ".claude" / "settings.json").write_text(
+            json.dumps(self.SHARED), encoding="utf-8")
+        project = self.work / ".claude"
+        project.mkdir()
+        malformed = '{"permissions": '
+        (project / "settings.json").write_text(malformed, encoding="utf-8")
+        script = self.root / "project.ps1"
+        # The stubs come after the real definitions on purpose: bootstrap.ps1
+        # defines Add-LedgerStep itself, so a stub placed first is replaced by
+        # the real one and the rows silently never arrive.
+        script.write_text(
+            "$script:rows = @()\n"
+            "$pyCmd = $null\n"
+            + "\n\n".join(self.functions) + "\n\n"
+            "function Add-LedgerTarget { param($Target) }\n"
+            "function Add-LedgerStep { param([string]$Phase, [string]$Scope, "
+            "[string]$Status, $Rc = $null, [string]$Reason = '')\n"
+            "  $script:rows += \"$Phase|$Scope|$Status|$Reason\" }\n"
+            + block + "\n"
+            "Write-Output ($script:rows -join \"`n\")\n",
+            encoding="utf-8",
+        )
+        result = subprocess.run(
+            [POWERSHELL, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script)],
+            capture_output=True, text=True, timeout=180, cwd=str(self.work),
+        )
+        self.assertEqual(result.returncode, 0, f"{result.stdout}\n{result.stderr}")
+        self.assertEqual((project / "settings.json").read_text(encoding="utf-8"),
+                         malformed, "the malformed project file was not preserved")
+        self.assertIn("project_files|repo|failed", result.stdout,
+                      f"a real fallback failure recorded success: {result.stdout}")
+
+    def test_a_first_install_with_python_goes_through_the_helper(self) -> None:
+        # The regression Round 2 caught. Distinct bytes per writer are what make
+        # "which one published" answerable from the resulting file.
+        self._stub_helper(
+            "import pathlib, sys\n"
+            "pathlib.Path(sys.argv[1]).write_text('{\"by\": \"helper\"}')\n"
+        )
+        result = self._run(sys.executable)
+        self.assertEqual(result.returncode, 0, f"{result.stdout}\n{result.stderr}")
+        self.assertTrue(self.target.is_file(),
+                        f"a clean machine ended up with no settings file: {result.stdout}")
+        self.assertEqual(json.loads(self.target.read_text(encoding="utf-8")),
+                         {"by": "helper"},
+                         "the install bypassed the helper that holds the lock")
+        self.assertIn("REASON=\n", result.stdout, result.stdout)
+
+    def test_a_refused_helper_does_not_fall_through_to_an_unlocked_install(self) -> None:
+        # Exit 3 means a peer holds the lock. Installing anyway would be the
+        # unlocked write the lock exists to prevent.
+        self._stub_helper("import sys\nsys.exit(3)\n")
+        result = self._run(sys.executable)
+        self.assertEqual(result.returncode, 0, f"{result.stdout}\n{result.stderr}")
+        self.assertFalse(self.target.exists(),
+                         "the shell installed over a peer that held the lock")
+        self.assertIn("another writer held the lock", result.stdout,
+                      f"the refusal was not recorded: {result.stdout}")
+
+    def test_the_no_python_fallback_waits_for_the_lock_and_reports(self) -> None:
+        # Without Python this shell does the merge itself, so it has to take the
+        # same lock. A peer holding it must stop the write, not slow it down.
+        existing = {"env": {"KEEP": "1"}}
+        self.target.write_text(json.dumps(existing), encoding="utf-8")
+        helper = ROOT / "scripts" / "merge_settings.py"
+        holder = subprocess.Popen(
+            [sys.executable, "-c",
+             "import sys, time\n"
+             "sys.path.insert(0, %r)\n" % str(helper.parent) +
+             "import merge_settings, pathlib\n"
+             "with merge_settings.settings_lock(pathlib.Path(%r)) as held:\n" % str(self.target) +
+             "    print('held' if held else 'unsupported', flush=True)\n"
+             "    time.sleep(120)\n"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            env=dict(os.environ, USERPROFILE=str(self.home), HOME=str(self.home)),
+        )
+        self.addCleanup(holder.wait)
+        self.addCleanup(holder.kill)
+        if holder.stdout.readline().strip() != "held":
+            self.skipTest("this filesystem does not support locking")
+        result = self._run(None, substitutions={
+            "function Open-SettingsLock([string]$TargetPath, [int]$TimeoutSeconds = 60) {":
+                "function Open-SettingsLock([string]$TargetPath, [int]$TimeoutSeconds = 1) {",
+        })
+        self.assertEqual(result.returncode, 0, f"{result.stdout}\n{result.stderr}")
+        self.assertEqual(json.loads(self.target.read_text(encoding="utf-8")), existing,
+                         "the fallback merged while a peer held the lock")
+        self.assertIn("could not take the settings lock", result.stdout,
+                      f"the refusal was not recorded: {result.stdout}")
 
 
 class PowerShellPythonProbeQuotingTests(unittest.TestCase):

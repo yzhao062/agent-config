@@ -6,19 +6,201 @@ format have one implementation instead of two. The PowerShell entry point used
 PowerShell 7 and matches neither `json.dumps`, so the same file was reformatted
 by whichever machine touched it last. See anywhere-agents#36.
 
+The target is user-level state shared by every consumer repo on the machine, so
+two things guard it (anywhere-agents#32). The merged object is published by
+rename rather than written over the target, because an interrupted in-place
+write leaves a truncated file, and one such truncation cost a maintainer six
+user-only keys that no backup on disk carried. A lock serializes the whole
+read-merge-backup-write sequence, because a session-start burst runs one
+bootstrap per consumer repo and they all write this one file. For the user-level
+target that lock is the composer's per-user lock, which the composer's own
+permission handler already takes; every other target gets a sibling lock. The previous
+content is copied aside first, under a capped history, so a loss caused by
+something outside this script stays recoverable.
+
 Usage:
     merge_settings.py <target.json> <shared.json>
 
 Exit codes:
     0  merged, or nothing to do
-    1  a file could not be read or parsed
+    1  a file could not be read, parsed, merged, or published
     2  bad usage
+    3  another writer held the lock; the target was left alone
 """
 from __future__ import annotations
 
+import errno
 import json
+import os
 import pathlib
 import sys
+import time
+from contextlib import contextmanager
+from typing import Iterator
+
+# Timestamped copies of the previous content, newest kept. Ten covers a burst
+# of consumer-repo bootstraps plus several days of ordinary runs, and costs a
+# few hundred kilobytes. The loss this guards against went unnoticed for 78
+# days, which is why the history is bounded by count rather than by age.
+BACKUP_KEEP = 10
+
+# A peer bootstrap holds the lock only for the length of one merge, so this
+# covers a queue of consumer repos without hiding a genuinely stuck holder.
+LOCK_TIMEOUT_SECONDS = 60.0
+LOCK_POLL_SECONDS = 0.1
+
+# The only errors that mean "this filesystem cannot lock", rather than "a peer
+# is holding it". A sharing violation or a permission error is a peer to wait
+# for, so neither belongs here.
+_UNSUPPORTED_ERRNOS = frozenset(
+    getattr(errno, name)
+    for name in ("ENOSYS", "ENOTSUP", "EOPNOTSUPP", "ENOLCK", "EINVAL")
+    if hasattr(errno, name)
+)
+
+_IS_WINDOWS = sys.platform == "win32"
+
+if _IS_WINDOWS:
+    import msvcrt
+else:
+    import fcntl
+
+
+class LockBusy(Exception):
+    """Another process held the lock for longer than the timeout."""
+
+
+def _try_lock(fd: int) -> bool:
+    """Take a non-blocking exclusive lock, or report that a peer holds it.
+
+    Contention is a return value; every other error is raised, so a filesystem
+    that cannot lock at all reaches the caller instead of being read as a peer.
+    """
+    if _IS_WINDOWS:
+        try:
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            return True
+        except OSError as exc:
+            if exc.errno in (errno.EDEADLK, errno.EACCES):
+                return False
+            raise
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except OSError as exc:
+        if exc.errno in (errno.EAGAIN, errno.EWOULDBLOCK, errno.EACCES):
+            return False
+        raise
+
+
+def _unlock(fd: int) -> None:
+    try:
+        if _IS_WINDOWS:
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        else:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    except OSError:
+        # The OS releases on close and on process exit regardless.
+        pass
+
+
+def _unsupported(exc: OSError) -> bool:
+    """True only for an error that means this filesystem cannot lock at all.
+
+    Everything else, a sharing violation and a permission error included, is a
+    peer to wait for. Treating any failure as "no locking here" was how a
+    Windows peer holding the file with exclusive sharing turned into an
+    unlocked merge that reported success.
+    """
+    return exc.errno in _UNSUPPORTED_ERRNOS
+
+
+def lock_path_for(target: pathlib.Path) -> pathlib.Path:
+    """Pick the lock that every writer of ``target`` agrees on.
+
+    ``~/.claude/settings.json`` has a second writer: the composer's permission
+    handler stages a merge into it and publishes through its transaction, under
+    the per-user lock its own module documents. A sibling lock would not exclude
+    that writer, and a probe showed the resulting interleaving dropping a
+    committed permission with exit 0. Every other target, the project-level
+    settings file included, keeps a sibling lock, because the per-user lock has
+    nothing to do with a file inside one repository.
+
+    The lock name is taken from the canonical home path rather than from a
+    resolved leaf, so a symlinked settings file still names the right directory.
+    A target that cannot be resolved at all raises, because a guess between the
+    two locks is the case that loses a write.
+    """
+    user_settings = pathlib.Path.home() / ".claude" / "settings.json"
+    user_lock = user_settings.with_name(".pack-lock.lock")
+    if target.absolute() == user_settings.absolute():
+        return user_lock
+    try:
+        is_user_settings = target.resolve() == user_settings.resolve()
+    except OSError as exc:
+        # Not knowing which file this is means not knowing which lock guards it.
+        # Guessing the sibling lock here published over a composer commit.
+        raise LockBusy(
+            "cannot determine settings lock for %s: %s" % (target, exc)
+        ) from exc
+    if is_user_settings:
+        return user_lock
+    return target.with_name(target.name + ".lock")
+
+
+@contextmanager
+def settings_lock(target: pathlib.Path) -> Iterator[bool]:
+    """Serialize writers to ``target`` through the lock they all agree on.
+
+    Yields True while the lock is held, and False only when this filesystem
+    reports that locking is unsupported. That case still runs the merge:
+    publishing by rename already rules out the truncation that made
+    anywhere-agents#32 expensive, and refusing to bootstrap on an exotic
+    filesystem would trade a rare lost update for a certain failure. Contention
+    is the case the lock exists for, so it waits and then raises.
+    """
+    lock_path = lock_path_for(target)
+    deadline = time.monotonic() + LOCK_TIMEOUT_SECONDS
+    fd = None
+    while fd is None:
+        try:
+            fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
+        except OSError as exc:
+            if _unsupported(exc):
+                yield False
+                return
+            # A peer can hold the lock file with sharing flags that refuse a
+            # second open, so a failure here is contention until the deadline.
+            if time.monotonic() >= deadline:
+                raise LockBusy(
+                    "could not open %s within %.0fs: %s"
+                    % (lock_path, LOCK_TIMEOUT_SECONDS, exc)
+                )
+            time.sleep(LOCK_POLL_SECONDS)
+    try:
+        while True:
+            try:
+                if _try_lock(fd):
+                    break
+            except OSError as exc:
+                if _unsupported(exc):
+                    yield False
+                    return
+                raise
+            if time.monotonic() >= deadline:
+                raise LockBusy(
+                    "another process held %s for more than %.0fs"
+                    % (lock_path, LOCK_TIMEOUT_SECONDS)
+                )
+            time.sleep(LOCK_POLL_SECONDS)
+        try:
+            yield True
+        finally:
+            _unlock(fd)
+    finally:
+        os.close(fd)
 
 
 def deep_merge(base: dict, over: dict) -> None:
@@ -50,18 +232,105 @@ def read_json(path: pathlib.Path):
     return json.loads(path.read_bytes().decode("utf-8-sig"))
 
 
+def backup_name(path: pathlib.Path, when: float) -> str:
+    """Name a copy so that lexical order within one directory is time order.
+
+    A burst of consumer-repo bootstraps writes several copies inside the same
+    second, so a whole-second stamp would leave the prune ordering them by PID
+    and dropping an arbitrary one. The microseconds settle the order; the PID
+    only keeps two copies from colliding on one name.
+    """
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime(when))
+    micros = int((when - int(when)) * 1_000_000)
+    return "%s.bak-%s-%06d-%d" % (path.name, stamp, micros, os.getpid())
+
+
+def snapshot(path: pathlib.Path) -> pathlib.Path | None:
+    """Copy the current content aside, then prune to the newest BACKUP_KEEP.
+
+    Returns the copy, or None when there was nothing to copy or the copy could
+    not be written. A failed backup does not stop the merge: the publish below
+    is atomic either way, and refusing to run because a spare copy could not be
+    made would turn a recovery aid into a new way to fail.
+    """
+    try:
+        payload = path.read_bytes()
+    except OSError:
+        return None
+    if not payload:
+        return None
+    copy = path.with_name(backup_name(path, time.time()))
+    try:
+        copy.write_bytes(payload)
+    except OSError:
+        return None
+    prefix = path.name + ".bak-"
+    try:
+        existing = sorted(
+            (p for p in path.parent.iterdir() if p.name.startswith(prefix)),
+            key=lambda p: p.name,
+        )
+    except OSError:
+        return copy
+    for stale in existing[:-BACKUP_KEEP]:
+        try:
+            stale.unlink()
+        except OSError:
+            pass
+    return copy
+
+
+# Windows refuses a rename while any process holds the destination open without
+# delete sharing, and a scanner or indexer touching the file for a few
+# milliseconds is enough. Observed as ERROR_ACCESS_DENIED during a six-writer
+# run. Failing the merge for that would report a loss that did not happen, so
+# the publish waits briefly for the other reader to let go.
+_TRANSIENT_WINERRORS = frozenset((5, 32))
+REPLACE_RETRY_SECONDS = 2.0
+REPLACE_RETRY_INTERVAL = 0.05
+
+
+def _replace_with_retry(source: pathlib.Path, target: pathlib.Path) -> None:
+    deadline = time.monotonic() + REPLACE_RETRY_SECONDS
+    while True:
+        try:
+            os.replace(source, target)
+            return
+        except OSError as exc:
+            transient = getattr(exc, "winerror", None) in _TRANSIENT_WINERRORS
+            if not transient or time.monotonic() >= deadline:
+                raise
+            time.sleep(REPLACE_RETRY_INTERVAL)
+
+
 def write_json(path: pathlib.Path, data) -> None:
-    """Write the one canonical form: UTF-8, no BOM, LF, trailing newline."""
+    """Publish the canonical form by rename: UTF-8, no BOM, LF, trailing newline.
+
+    The bytes are parsed back before anything touches the target, so a value
+    that serializes without round-tripping fails while the old content is still
+    in place. The temporary file is a sibling, because rename is atomic only
+    within one filesystem.
+    """
     text = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
-    path.write_bytes(text.encode("utf-8"))
+    payload = text.encode("utf-8")
+    json.loads(payload.decode("utf-8"))
+    tmp = path.with_name(".%s.merge-%d.tmp" % (path.name, os.getpid()))
+    try:
+        with open(tmp, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        _replace_with_retry(tmp, path)
+    except OSError:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
 
 
-def main(argv: list[str]) -> int:
-    if len(argv) != 3:
-        sys.stderr.write("usage: merge_settings.py <target.json> <shared.json>\n")
-        return 2
-    target = pathlib.Path(argv[1])
-    shared = pathlib.Path(argv[2])
+def merge_into(target: pathlib.Path, shared: pathlib.Path) -> int:
+    """Read both files, merge, back up, and publish. Returns an exit code."""
     try:
         shared_data = read_json(shared)
     except Exception as exc:
@@ -69,6 +338,11 @@ def main(argv: list[str]) -> int:
         return 1
     try:
         target_data = read_json(target)
+    except FileNotFoundError:
+        # First install. Creating here keeps it inside the lock, so a composer
+        # committing a permission at the same moment cannot be overwritten by a
+        # caller that checked for absence outside the critical section.
+        target_data = {}
     except Exception as exc:
         sys.stderr.write("merge_settings: cannot read %s: %s\n" % (target, exc))
         return 1
@@ -93,8 +367,32 @@ def main(argv: list[str]) -> int:
         # persisting; leaving the file alone keeps the old content readable.
         sys.stderr.write("merge_settings: refusing to write an empty object to %s\n" % target)
         return 1
-    write_json(target, target_data)
+    snapshot(target)
+    try:
+        write_json(target, target_data)
+    except (OSError, ValueError) as exc:
+        sys.stderr.write("merge_settings: cannot publish %s: %s\n" % (target, exc))
+        return 1
     return 0
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) != 3:
+        sys.stderr.write("usage: merge_settings.py <target.json> <shared.json>\n")
+        return 2
+    target = pathlib.Path(argv[1])
+    shared = pathlib.Path(argv[2])
+    try:
+        with settings_lock(target) as held:
+            if not held:
+                sys.stderr.write(
+                    "merge_settings: %s does not support locking; "
+                    "merging without it\n" % target.parent
+                )
+            return merge_into(target, shared)
+    except LockBusy as exc:
+        sys.stderr.write("merge_settings: %s\n" % exc)
+        return 3
 
 
 if __name__ == "__main__":

@@ -663,6 +663,119 @@ function Write-JsonFileUtf8([string]$Path, [string]$Text) {
   [System.IO.File]::WriteAllBytes($Path, (New-Object System.Text.UTF8Encoding $false).GetBytes($Text))
 }
 
+# Publish by rename instead of writing over the destination. WriteAllBytes
+# truncates first, so an interrupted write leaves an empty settings file, and
+# one of those cost a maintainer six user-only keys (#32). The temp file is a
+# sibling because a rename is atomic only within one filesystem.
+function Write-JsonFileAtomic([string]$Path, [string]$Text) {
+  $directory = Split-Path -Parent $Path
+  $name = Split-Path -Leaf $Path
+  $temp = Join-Path $directory ('.{0}.{1}.tmp' -f $name, [guid]::NewGuid().ToString('N'))
+  $backup = $null
+  $published = $false
+  try {
+    Write-JsonFileUtf8 $temp $Text
+    if (Test-Path -LiteralPath $Path -PathType Leaf) {
+      $backup = Join-Path $directory ('.{0}.{1}.bak' -f $name, [guid]::NewGuid().ToString('N'))
+      [System.IO.File]::Replace($temp, $Path, $backup)
+    } else {
+      [System.IO.File]::Move($temp, $Path)
+    }
+    $published = $true
+  } catch {
+    # ReplaceFile can fail with the original already moved to the backup name
+    # and the replacement still under the temp name (Windows error 1177), so a
+    # blanket cleanup here is what would destroy the only surviving copy.
+    $failure = $_
+    if ($backup -and (Test-Path -LiteralPath $backup -PathType Leaf) -and
+        -not (Test-Path -LiteralPath $Path)) {
+      try {
+        [System.IO.File]::Move($backup, $Path)
+        $backup = $null
+      } catch {
+        [Console]::Error.WriteLine("warning: could not restore ${Path}; previous content is at $backup")
+        throw $failure
+      }
+    }
+    throw $failure
+  } finally {
+    if ($published) {
+      foreach ($stale in @($temp, $backup)) {
+        if ($stale -and (Test-Path -LiteralPath $stale -PathType Leaf)) {
+          Remove-Item -LiteralPath $stale -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+  }
+}
+
+# Take the same lock the merge helper takes, so the no-Python fallback and the
+# first install are not the paths that race. Both sides lock one byte at offset
+# 0 of the same file: FileStream.Lock and Python's msvcrt.locking are the same
+# Windows byte-range lock. Returns the stream to release, or $null when the lock
+# could not be taken, which the caller reports rather than writing anyway.
+function Open-SettingsLock([string]$TargetPath, [int]$TimeoutSeconds = 60) {
+  $userSettings = Join-Path (Join-Path $HOME '.claude') 'settings.json'
+  $lockPath = if ($TargetPath -eq $userSettings) {
+    Join-Path (Split-Path -Parent $userSettings) '.pack-lock.lock'
+  } else {
+    $TargetPath + '.lock'
+  }
+  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+  while ($true) {
+    try {
+      $stream = [System.IO.File]::Open(
+        $lockPath, [System.IO.FileMode]::OpenOrCreate,
+        [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::ReadWrite)
+      try {
+        $stream.Lock(0, 1)
+        return $stream
+      } catch {
+        $stream.Dispose()
+        if ((Get-Date) -ge $deadline) { return $null }
+      }
+    } catch {
+      if ((Get-Date) -ge $deadline) { return $null }
+    }
+    Start-Sleep -Milliseconds 100
+  }
+}
+
+function Close-SettingsLock($Stream) {
+  if (-not $Stream) { return }
+  try { $Stream.Unlock(0, 1) } catch {}
+  try { $Stream.Dispose() } catch {}
+}
+
+# Keep a short history of the previous content beside the file. The merge helper
+# does the same, so whichever path ran, the recovery material looks alike. The
+# loss this guards against went unnoticed for 78 days, so the history is bounded
+# by count rather than by age.
+function Backup-SettingsFile([string]$Path) {
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return }
+  try {
+    $directory = Split-Path -Parent $Path
+    $name = Split-Path -Leaf $Path
+    # Same fixed-width fractional component as the Python helper, so copies
+    # written by either path sort into one chronological history.
+    $stamp = (Get-Date).ToUniversalTime().ToString(
+      'yyyyMMdd-HHmmss-ffffff', [System.Globalization.CultureInfo]::InvariantCulture)
+    $copy = Join-Path $directory ('{0}.bak-{1}-{2}' -f $name, $stamp, $PID)
+    Copy-Item -LiteralPath $Path -Destination $copy -Force -ErrorAction Stop
+    $keep = 10
+    $existing = @(Get-ChildItem -LiteralPath $directory -Filter ($name + '.bak-*') -File -ErrorAction SilentlyContinue |
+      Sort-Object Name)
+    if ($existing.Count -gt $keep) {
+      foreach ($stale in $existing[0..($existing.Count - $keep - 1)]) {
+        Remove-Item -LiteralPath $stale.FullName -Force -ErrorAction SilentlyContinue
+      }
+    }
+  } catch {
+    # A recovery aid that cannot be written must not become a new way to fail;
+    # the publish below is atomic either way.
+  }
+}
+
 # Merge through the shared Python helper, so both entry points run the same
 # code and produce the same bytes. Returns false when the helper cannot run, in
 # which case the caller falls back to the in-shell merge below. The fallback is
@@ -691,7 +804,13 @@ function Invoke-SettingsMerge([string]$TargetPath, [string]$SharedPath) {
     $global:LASTEXITCODE = $null
     & $pyCmd.Path $helper $TargetPath $SharedPath
     if ($LASTEXITCODE -ne 0) {
-      [Console]::Error.WriteLine("warning: the settings merge helper refused $TargetPath; leaving it unchanged")
+      $reason = if ($LASTEXITCODE -eq 3) {
+        "another writer held the lock for ${TargetPath}; target left unchanged"
+      } else {
+        "settings merge helper exited $LASTEXITCODE for ${TargetPath}; target left unchanged"
+      }
+      $script:SettingsMergeReason = $reason
+      [Console]::Error.WriteLine("warning: $reason")
     }
     return $true
   } catch {
@@ -1044,6 +1163,8 @@ if (Test-Path .agent-config/repo/.claude/commands) {
   try { Add-LedgerTarget '.claude/commands' } catch {}
 }
 if (Test-Path .agent-config/repo/.claude/settings.json) {
+  # The project phase owns this variable from here to its ledger step below.
+  $script:SettingsMergeReason = $null
   if (Test-Path .claude/settings.json) {
     if (-not (Invoke-SettingsMerge '.claude/settings.json' '.agent-config/repo/.claude/settings.json')) {
       # Unreadable input leaves the file alone, which is what the helper does
@@ -1057,9 +1178,10 @@ if (Test-Path .agent-config/repo/.claude/settings.json) {
         if (@($project.PSObject.Properties).Count -eq 0) {
           throw 'refusing to write an empty object'
         }
-        Write-JsonFileUtf8 (Join-Path (Get-Location).Path '.claude/settings.json') (ConvertTo-CanonicalJson $project)
+        Write-JsonFileAtomic (Join-Path (Get-Location).Path '.claude/settings.json') (ConvertTo-CanonicalJson $project)
       } catch {
-        [Console]::Error.WriteLine("warning: could not merge .claude/settings.json; leaving it unchanged: $($_.Exception.Message)")
+        $script:SettingsMergeReason = "could not merge .claude/settings.json: $($_.Exception.Message)"
+        [Console]::Error.WriteLine("warning: $script:SettingsMergeReason")
       }
     }
   } else {
@@ -1067,7 +1189,13 @@ if (Test-Path .agent-config/repo/.claude/settings.json) {
   }
   try { Add-LedgerTarget '.claude/settings.json' } catch {}
 }
-try { Add-LedgerStep 'project_files' 'repo' 'ok' } catch {}
+try {
+  if ($script:SettingsMergeReason) {
+    Add-LedgerStep 'project_files' 'repo' 'failed' $null $script:SettingsMergeReason
+  } else {
+    Add-LedgerStep 'project_files' 'repo' 'ok'
+  }
+} catch {}
 # --- User-level setup: hooks and settings ---
 # This section modifies ~/.claude/ (user-level, not project-level).
 # It deploys a PreToolUse hook guard and merges shared permission settings.
@@ -1103,23 +1231,52 @@ if (Test-Path .agent-config/repo/scripts/agent-quota.py) {
 }
 if (Test-Path .agent-config/repo/user/settings.json) {
   New-Item -ItemType Directory -Force -Path $userClaude | Out-Null
+  # The project phase has already recorded its own outcome, so the user phase
+  # starts clean rather than inheriting a project failure.
+  $script:SettingsMergeReason = $null
   $userSettings = Join-Path $userClaude 'settings.json'
-  if (Test-Path $userSettings) {
-    if (-not (Invoke-SettingsMerge $userSettings '.agent-config/repo/user/settings.json')) {
+  if (Invoke-SettingsMerge $userSettings '.agent-config/repo/user/settings.json') {
+    # The helper ran and took the lock itself; its exit code already decided
+    # what the ledger records.
+  } else {
+    # No Python, so this shell does the merge. The existence check belongs
+    # inside the lock with the write: deciding absence outside it is how an
+    # installer overwrites a peer's finished merge.
+    $lock = Open-SettingsLock $userSettings
+    if (-not $lock) {
+      $script:SettingsMergeReason = "could not take the settings lock for ${userSettings} (a peer may hold it); target left unchanged"
+      [Console]::Error.WriteLine("warning: $script:SettingsMergeReason")
+    } else {
       try {
-        $shared = Read-JsonFileUtf8 .agent-config/repo/user/settings.json
-        $existing = Read-JsonFileUtf8 $userSettings
-        Merge-Json $existing $shared
-        if (@($existing.PSObject.Properties).Count -eq 0) {
-          throw 'refusing to write an empty object'
+        if (Test-Path $userSettings) {
+          try {
+            $shared = Read-JsonFileUtf8 .agent-config/repo/user/settings.json
+            $existing = Read-JsonFileUtf8 $userSettings
+            Merge-Json $existing $shared
+            if (@($existing.PSObject.Properties).Count -eq 0) {
+              throw 'refusing to write an empty object'
+            }
+            Backup-SettingsFile $userSettings
+            Write-JsonFileAtomic $userSettings (ConvertTo-CanonicalJson $existing)
+          } catch {
+            $script:SettingsMergeReason = "could not merge ${userSettings}: $($_.Exception.Message)"
+            [Console]::Error.WriteLine("warning: $script:SettingsMergeReason")
+          }
+        } else {
+          # First install publishes by rename too. Copy-Item -Force truncates
+          # the destination before writing. Copy-HelperAtomic signals failure by
+          # throwing, so the ledger only hears about it if this catches.
+          try {
+            [void](Copy-HelperAtomic .agent-config/repo/user/settings.json $userSettings)
+          } catch {
+            $script:SettingsMergeReason = "could not install ${userSettings}: $($_.Exception.Message)"
+            [Console]::Error.WriteLine("warning: $script:SettingsMergeReason")
+          }
         }
-        Write-JsonFileUtf8 $userSettings (ConvertTo-CanonicalJson $existing)
-      } catch {
-        [Console]::Error.WriteLine("warning: could not merge $userSettings; leaving it unchanged: $($_.Exception.Message)")
+      } finally {
+        Close-SettingsLock $lock
       }
     }
-  } else {
-    Copy-Item .agent-config/repo/user/settings.json $userSettings -Force
   }
   try { Add-LedgerTarget '~/.claude/settings.json' } catch {}
 }
@@ -1152,7 +1309,13 @@ if (Test-Path $claudeJson) {
   }
   try { Add-LedgerTarget '~/.claude.json' } catch {}
 }
-try { Add-LedgerStep 'user_files' 'user' 'ok' } catch {}
+try {
+  if ($script:SettingsMergeReason) {
+    Add-LedgerStep 'user_files' 'user' 'failed' $null $script:SettingsMergeReason
+  } else {
+    Add-LedgerStep 'user_files' 'user' 'ok'
+  }
+} catch {}
 
 # Codex CLI has no native updater like Claude Code. If Codex is installed as
 # the global npm package that this config recommends, keep it current during

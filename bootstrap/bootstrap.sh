@@ -996,13 +996,63 @@ if [ -f .agent-config/repo/scripts/agent-quota.py ]; then
 fi
 if [ -f .agent-config/repo/user/settings.json ]; then
   mkdir -p "$HOME/.claude"
-  if [ -f "$HOME/.claude/settings.json" ]; then
-    if [ -n "$_py" ] && [ -f .agent-config/repo/scripts/merge_settings.py ]; then
-      "$_py" .agent-config/repo/scripts/merge_settings.py \
-        "$HOME/.claude/settings.json" .agent-config/repo/user/settings.json
+  # The helper creates an absent target as well as merging an existing one, and
+  # it does both inside its lock. Testing for existence out here and installing
+  # separately is what let a concurrent composer commit be overwritten (#32).
+  if [ -n "$_py" ] && [ -f .agent-config/repo/scripts/merge_settings.py ]; then
+    # The helper publishes by rename and takes a sibling lock, so a refusal
+    # leaves the target holding its previous content. Read the code rather
+    # than carrying on regardless: this file registers the PreToolUse guard
+    # for every consumer on the machine, and a run that silently skipped the
+    # merge used to look exactly like one that applied it (#32).
+    "$_py" .agent-config/repo/scripts/merge_settings.py \
+      "$HOME/.claude/settings.json" .agent-config/repo/user/settings.json
+    _settings_rc=$?
+    if [ "$_settings_rc" -eq 3 ]; then
+      _SETTINGS_MERGE_REASON='another bootstrap held the settings lock; target left unchanged'
+    elif [ "$_settings_rc" -ne 0 ]; then
+      _SETTINGS_MERGE_REASON="settings merge helper exited ${_settings_rc}; target left unchanged"
     fi
+    if [ -n "${_SETTINGS_MERGE_REASON:-}" ]; then
+      printf 'warning: %s\n' "$_SETTINGS_MERGE_REASON" >&2
+    fi
+  elif [ -f "$HOME/.claude/settings.json" ]; then
+    # Merging into an existing file is exactly what needs the helper, so there
+    # is nothing this shell can safely do. Say so: a run that skipped the merge
+    # used to be indistinguishable from one that applied it (#32).
+    _SETTINGS_MERGE_REASON='no Python for the settings merge helper; target left unchanged'
+    printf 'warning: %s\n' "$_SETTINGS_MERGE_REASON" >&2
   else
-    cp -f .agent-config/repo/user/settings.json "$HOME/.claude/settings.json"
+    # First install with no helper and therefore no lock. ln(1) fails when the
+    # destination exists, so create-if-absent is one atomic step rather than a
+    # test followed by a rename that would overwrite a file another writer
+    # created in between. That is the interleaving that replaced a committed
+    # composer permission in a Round 2 probe (#32). Installing still matters
+    # here: this file is what registers the PreToolUse guard, and refusing
+    # would cost every such machine its guard to avoid a race that ln closes.
+    _settings_temp=$(mktemp "$HOME/.claude/.settings.json.XXXXXX" 2>/dev/null) || _settings_temp=''
+    if [ -z "$_settings_temp" ] || ! cp -f .agent-config/repo/user/settings.json "$_settings_temp"; then
+      [ -n "$_settings_temp" ] && rm -f "$_settings_temp"
+      _SETTINGS_MERGE_REASON='could not install ~/.claude/settings.json'
+      printf 'warning: %s\n' "$_SETTINGS_MERGE_REASON" >&2
+    elif ln "$_settings_temp" "$HOME/.claude/settings.json" 2>/dev/null; then
+      rm -f "$_settings_temp"
+      printf 'warning: installed ~/.claude/settings.json without the merge helper; no Python found\n' >&2
+    elif [ -f "$HOME/.claude/settings.json" ]; then
+      rm -f "$_settings_temp"
+      _SETTINGS_MERGE_REASON='another writer created ~/.claude/settings.json first; merging into it needs Python'
+      printf 'warning: %s\n' "$_SETTINGS_MERGE_REASON" >&2
+    else
+      # The atomic create was not available: no ln on PATH, or a filesystem
+      # that does not do hard links. Publishing with a rename here was tried
+      # and withdrawn: a negative existence check does not reserve the name, so
+      # the rename replaced a permission the composer committed inside that
+      # window, returned 0, and recorded nothing. Refusing is loud and cannot
+      # destroy a finished write, which is the whole point of #32.
+      rm -f "$_settings_temp"
+      _SETTINGS_MERGE_REASON='could not create ~/.claude/settings.json atomically; target left absent'
+      printf 'warning: %s\n' "$_SETTINGS_MERGE_REASON" >&2
+    fi
   fi
   _ledger_target '~/.claude/settings.json'
 fi
@@ -1046,7 +1096,11 @@ except Exception:
   fi
   _ledger_target '~/.claude.json'
 fi
-_ledger_step user_files user ok
+if [ -n "${_SETTINGS_MERGE_REASON:-}" ]; then
+  _ledger_step user_files user failed null "$_SETTINGS_MERGE_REASON"
+else
+  _ledger_step user_files user ok
+fi
 
 # Codex CLI has no native updater like Claude Code. If Codex is installed as
 # the global npm package that this config recommends, keep it current during
