@@ -282,6 +282,7 @@ Bootstrap deploys `scripts/guard.py` to `~/.claude/hooks/guard.py` and wires it 
 | agent-style advisory | Same tools and extensions as the row above, excluding an `agent-io` path anywhere | `agent_style` is importable and its mechanical detectors report findings (RULE-05, 06, 12, B, D, I) | **advisory only**, reporting up to 5 findings and a count of any withheld to both the model and the user without setting a permission decision |
 | Banner emission | Any tool except `Read`, `Grep`, `Glob`, `Skill`, `Task`, `TodoWrite`, `BashOutput`, `WebFetch`, `WebSearch`, `ToolSearch`, `LS`, `NotebookRead`; plus `Write`/`Edit`/`MultiEdit` whose target path exactly equals `<project-root>/.agent-config/banner-emitted.json` after absolute-path normalization and Windows case folding | `<project-root>/.agent-config/session-event.json.ts > <project-root>/.agent-config/banner-emitted.json.ts`. `<project-root>` is found by walking up from `cwd` until `.agent-config/bootstrap.{sh,ps1}` is present. Source repos (no `.agent-config/`) and unrelated directories skip the gate entirely | **first arm** (banner-emitted.json absent): **deny** with instruction to emit banner + write acknowledgment to the per-project ack file. **Re-arm** (ack file exists but ts is stale, including malformed JSON): pass-through with a `[banner-gate] SessionStart re-fire detected ...` advisory line on stderr. The agent should still re-emit the banner on its next textual response per the rule in § "Session Start Check", but tool calls are not blocked (issue anywhere-agents#7). |
 | Compound `cd` | `Bash` | Command contains `cd <path> && <cmd>` or `cd <path>; <cmd>` | **deny** with inline `Suggested rewrite:` line (e.g. `git -C <path> <cmd>` for git, or pass the path as an argument) |
+| Nested `git init` | `Bash` + `PowerShell` | A `git init` whose target directory is already inside a git worktree | **deny** with inline `Suggested rewrite:` line pointing at the session scratch directory |
 | Destructive git | `Bash` + `PowerShell` | `git push`, `git commit`, `git merge`, `git rebase`, `git reset --hard`, `git clean`, `git branch -d/-D`, `git checkout --`, `git tag -d`, `git stash drop/clear` | **ask** (user confirms) |
 | Destructive / publish gh | `Bash` + `PowerShell` | `gh pr create/merge/close`, `gh repo delete`, `gh release create/delete/upload/edit` | **ask** (user confirms) |
 | Publish | `Bash` + `PowerShell` | `npm publish`, `npm unpublish`, `twine upload`, `python -m twine upload` | **ask** (user confirms) |
@@ -295,6 +296,51 @@ Two details were settled by measurement rather than by reading the docs. The fin
 
 **Both writing-style guards skip a path a caller marked as agent I/O.** They pick scope by file extension, and extension does not separate prose an agent is writing from text an agent is carrying. A scratch directory holds a dispatch prompt beside a draft proposal section. Measured across 34 local session transcripts, 23% of prose-extension writes landed in a scratch directory. The most frequent names there belonged to the review loop itself: `ir-prompt-r1.txt`, `review-prompt-r1.txt`, `ir-round1.txt`. Findings on that text cannot be acted on. A dispatch prompt is an instruction to another agent, so rewriting it changes what was asked. Captured round output is another agent's words, and rewriting it falsifies the record. So the writer declares the location, by putting the file under a directory named `agent-io`. The two guards then trust that marker to different depths. Anywhere on disk is enough for the advisory, matched case-insensitively and on either separator, because a wrong exemption there costs one message. Only a path under a temp root that encloses no repository satisfies the deny gate, resolved through symlinks first, because CI checks repositories out below temp directories routinely. A marker trusted anywhere would be a one-token bypass: an agent could write `repo/agent-io/proposal.md` and skip the banned-word check on real prose. Carried text belongs in the session scratch directory in any case, which is where `implement-review` and `prun` are documented to write it. An unmarked path is still scanned, so a forgotten marker costs noise instead of silence.
 
+**A `git init` inside a repository is denied rather than asked about.** The
+second repository is invisible from the first: the directory that holds it is
+normally an ignored one, so `git status` in the parent never mentions it again.
+IDEs are where it surfaces. PyCharm and VS Code both scan for nested `.git`
+directories and register each as a VCS root, after which every file staged in
+one appears in the changes view beside real work, separated only by a branch
+label. Measured on one machine: four review packets left in a proposal repo
+over a single day held 85 staged-and-never-committed files across four roots,
+and the commit panel offered all of them under one checkbox. A mis-click there
+commits build artifacts into a repository shared with a co-PI.
+
+It is a deny because the reroute exists and an unattended agent can take it in
+one turn: artifacts an agent generates belong in the session scratch directory,
+which is already where the skills that carry text between agents write. The
+gate answers the question git would answer, so it checks the executable before
+reading a subcommand, follows a global `-C`, resolves `..` and symlinks, and
+skips the values of options that take one. A deliberate inner repository, a
+submodule most often, sets `AGENT_NESTED_GIT_INIT_HOOK=off` for that one call.
+No shipped skill creates such a directory, which is why this is a gate rather
+than a correction to one (anywhere-agents#56).
+
+**The gate declines commands whose shape it cannot account for, and that is
+deliberate.** A command carrying a heredoc is not judged at all, because its
+body is data that reads exactly like commands and deciding where the body ends
+is where two separate defects lived. A single command carrying a redirection is
+not judged either, because its operands are not arguments and reading one as the
+target denied a directory that never existed. A backslash or a backtick
+immediately before a quote declines the whole command: an escape moves where a
+quoted region ends, and the splitter and the tokenizer downstream both assume
+it does not, so recognizing it in one place would leave two others wrong. At a
+possible comment start, the gate declines as well when the boundary character
+before the `#` is itself preceded by either escape character, since an escaped
+operator does not end a word. An escaped hash is not that shape, since an
+escape is not a boundary character, so `\#` stays the literal text a shell
+reads it as and the command after the separator is still judged. Both escape
+checks ignore shell-specific escape rules and escape parity by design, so a
+doubled escape declines like a single one. A PowerShell block
+comment declines for the heredoc's reason, since its body spans lines. Five
+review rounds produced the rule: every widening of the parser closed one gap and
+opened a false positive somewhere adjacent. The two errors are not symmetric. A
+false positive blocks work an agent is entitled to do and no rewrite repairs it,
+while a declined command behaves exactly as it did before this gate existed.
+`git init` reached through any of those shapes is not how the nested
+repositories that prompted this were created.
+
 **Round 6 noise audit (v0.7.0):** Deny messages embed a concrete `Suggested rewrite:` line so an autonomous agent (`/implement-review auto`, headless `claude -p`, any unattended loop) can lift the reroute in one model turn instead of inferring it. Destructive operations stay `ask` because they have no agent-side reroute; human approval is the contract.
 
 **Escape hatches:** set the corresponding env var in the `env` block of `~/.claude/settings.json`. Disable values: `off` / `0` / `disabled` / `false` / `no`.
@@ -303,6 +349,7 @@ Two details were settled by measurement rather than by reading the docs. The fin
 |---|---|
 | `AGENT_STYLE_HOOK=off` | Writing-style gate and its agent-style advisory |
 | `AGENT_COMPOUND_CD_HOOK=off` | Compound-cd gate only |
+| `AGENT_NESTED_GIT_INIT_HOOK=off` | Nested `git init` gate only |
 | `AGENT_CONFIG_GATES=off` | Legacy blanket: writing-style + banner only (BC-preserved) |
 
 **The mandatory risk set (destructive git, destructive/publish gh, package publishes, file/device destruction) is NOT bypassable by ANY env var.** No escape hatch turns the `ask` prompt into pass-through. The guards have no automatic reroute; human approval is the contract. The advertised env-var set lives in `scripts/guard.py:_ESCAPE_HATCH_ENV_NAMES`; a static literal-scan test enforces that no future hook env var can be added without registering it there.

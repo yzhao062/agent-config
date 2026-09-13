@@ -94,6 +94,295 @@ class CompoundCdTests(unittest.TestCase):
         self.assertEqual(run_guard("cd repo || exit 1"), "DENY")
 
 
+class NestedGitInitTests(unittest.TestCase):
+    """A git init inside an existing worktree is denied, elsewhere it is not.
+
+    Four review packets left in one proposal repo held 85 staged-and-never-
+    committed files across four nested .git directories. Git never mentioned
+    them, because the enclosing directory was ignored; PyCharm registered each
+    as a VCS root and offered to commit all of them at once (#56). No skill
+    creates those packets, so the durable fix is a gate rather than an edit.
+
+    Every case below was raised by a reviewer against a first draft that
+    denied `npm init`, ignored `git -C`, read a flag value as the target, and
+    missed a git init after a newline or a pipe. They run through the hook
+    rather than the helper, because the first draft's one negative case passed
+    against a defect that denied every `<tool> init` in the repository.
+    """
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.repo = self.root / "repo"
+        (self.repo / "out" / "packet").mkdir(parents=True)
+        result = subprocess.run(
+            ["git", "init", "-q", str(self.repo)], capture_output=True, text=True)
+        if result.returncode != 0:
+            self.skipTest("git is not available")
+        self.outside = self.root / "outside"
+        self.outside.mkdir()
+        self.inside = self.repo / "out" / "packet"
+
+    def _decide(self, command, cwd, env=None):
+        response = run_guard_with_payload(
+            {"tool_name": "Bash", "tool_input": {"command": command}},
+            env=env, cwd=str(cwd),
+        )
+        if response is None:
+            return "PASSED"
+        return response["hookSpecificOutput"]["permissionDecision"].upper()
+
+    def test_a_git_init_inside_a_worktree_is_denied(self) -> None:
+        for command, cwd, label in (
+            ("git init", self.inside, "bare init inside"),
+            ("git init packet", self.repo / "out", "relative target"),
+            (f"git init {self.inside}", self.outside, "absolute target"),
+            ("git init ../out/packet", self.repo / "out", "a .. that stays inside"),
+        ):
+            with self.subTest(label):
+                self.assertEqual(self._decide(command, cwd), "DENY", label)
+
+    def test_a_target_outside_every_worktree_is_allowed(self) -> None:
+        for command, cwd, label in (
+            ("git init", self.outside, "bare init outside"),
+            (f"git init {self.outside / 'fresh'}", self.repo, "absolute target outside"),
+            ("git init ../outside/fresh", self.repo, "a .. that escapes the repo"),
+            (f"git init {self.repo}", self.outside, "re-initializing an existing root"),
+        ):
+            with self.subTest(label):
+                self.assertEqual(self._decide(command, cwd), "PASSED", label)
+
+    def test_another_tool_named_init_is_not_a_git_init(self) -> None:
+        # The defect that made this class table-driven: extract_git_subcommand
+        # starts at token 1 and assumes its caller checked the executable, so
+        # every `<tool> init` in every consumer repository was denied.
+        for command in ("npm init", "yarn init -y", "cargo init", "terraform init",
+                        "uv init", "echo init", "pnpm init", "go mod init"):
+            with self.subTest(command):
+                self.assertEqual(self._decide(command, self.inside), "PASSED", command)
+
+    def test_the_directory_git_would_run_in_decides(self) -> None:
+        # `git -C` is the form this repository's own compound-cd gate steers
+        # agents toward, and ignoring it inverted the decision in both
+        # directions: it passed an init that lands inside and denied one that
+        # lands outside.
+        for command, cwd, expected, label in (
+            (f"git -C {self.inside} init", self.outside, "DENY", "-C into a repo"),
+            (f"git -C{self.inside} init", self.outside, "DENY", "attached -Cpath"),
+            (f"git -C {self.outside} init", self.repo, "PASSED", "-C out of a repo"),
+        ):
+            with self.subTest(label):
+                self.assertEqual(self._decide(command, cwd), expected, label)
+
+    def test_a_flag_value_is_never_read_as_the_target(self) -> None:
+        for command, label in (
+            (f"git init -b main {self.inside}", "-b"),
+            (f"git init --object-format sha1 {self.inside}", "--object-format"),
+            (f"git init --ref-format files {self.inside}", "--ref-format"),
+            (f"git init --object-format=sha1 {self.inside}", "--object-format= inline"),
+        ):
+            with self.subTest(label):
+                self.assertEqual(self._decide(command, self.outside), "DENY", label)
+
+    def test_ordinary_shell_forms_do_not_slip_past(self) -> None:
+        for command, label in (
+            (f"& git init {self.inside}", "PowerShell call operator"),
+            (f"&git init {self.inside}", "call operator with no space"),
+            (f"echo hello | git init {self.inside}", "after a pipe"),
+            (f"echo hello\ngit init {self.inside}", "after a newline"),
+            (f"true && git init {self.inside}", "after &&"),
+        ):
+            with self.subTest(label):
+                self.assertEqual(self._decide(command, self.outside), "DENY", label)
+
+    def test_a_command_that_redirects_is_declined_rather_than_misread(self) -> None:
+        # A redirection's operands are not arguments, and every attempt to tell
+        # them apart read one as the target: `git init >/dev/null` was denied at
+        # a repository root, and `git init *> $null <outside>` was denied for a
+        # directory git created outside the worktree. Declining is the contract
+        # now, so none of these may deny.
+        for command, cwd, label in (
+            ("git init >/dev/null", self.repo, "attached redirect, no target"),
+            ("git init > /dev/null", self.repo, "bare redirect, no target"),
+            ("git init *> $null", self.repo, "PowerShell redirect"),
+            (f"git init *> $null {self.outside / 'fresh'}", self.repo, "target outside"),
+            (f"git init >/dev/null {self.inside}", self.outside, "target inside"),
+            (f"git init 2>&1 {self.inside}", self.outside, "attached descriptor"),
+            (f"git init>/dev/null {self.inside}", self.outside, "no space before the operator"),
+        ):
+            with self.subTest(label):
+                self.assertEqual(self._decide(command, cwd), "PASSED", label)
+
+    def test_a_heredoc_makes_the_whole_command_data(self) -> None:
+        # A heredoc body reads exactly like commands, and deciding where it ends
+        # is the part that went wrong twice: stripping the opener line deleted a
+        # real command, and an indented terminator ended the body early. The
+        # command is declined as a whole instead.
+        body = f"cat <<'EOF'\ngit init {self.inside}\nEOF"
+        unquoted = f"cat <<EOF\ngit init {self.inside}\nEOF"
+        indented = f"cat <<'EOF'\n EOF\ngit init {self.inside}\nEOF"
+        two = f"cat <<A <<B\nnothing\nA\ngit init {self.inside}\nB"
+        suffix = f"cat <<'EOF'; git init {self.inside}\nnothing\nEOF"
+        for command, label in (
+            (body, "quoted heredoc"),
+            (unquoted, "unquoted heredoc"),
+            (indented, "an indented line is not the terminator"),
+            (two, "two heredocs on one header"),
+            (suffix, "a real command after the opener, declined with it"),
+        ):
+            with self.subTest(label):
+                self.assertEqual(self._decide(command, self.outside), "PASSED", label)
+
+    def test_a_comment_after_an_operator_is_still_a_comment(self) -> None:
+        # A shell word ends at an operator as well as at whitespace, so `;#`
+        # and `|#` begin comments. Reading them as arguments turned a printed
+        # note into a denied command under both shells.
+        for command, tool, label in (
+            (f"echo hello;# note; git init {self.inside}", "Bash", "after ;"),
+            (f"echo hello |# note; git init {self.inside}\ncat", "Bash", "after |"),
+            (f"Write-Output hello;# note; git init {self.inside}", "PowerShell",
+             "PowerShell after ;"),
+        ):
+            with self.subTest(label):
+                response = run_guard_with_payload(
+                    {"tool_name": tool, "tool_input": {"command": command}},
+                    cwd=str(self.outside),
+                )
+                self.assertIsNone(response, label)
+
+    def test_an_escaped_operator_does_not_start_a_comment(self) -> None:
+        # Extending the comment boundary to the operator characters brought
+        # its own false denial. `\;` and `` `; `` are literal, so the word
+        # continues and the `#` beside it is an ordinary character. Stripping
+        # from there deleted a string opener and exposed the string body as
+        # commands. Declining is the policy the quote escapes already take.
+        bash = f"printf '%s' \\;#'payload\ngit init {self.inside}\n'"
+        pwsh = f"Write-Output `;#'payload\ngit init {self.inside}\n'"
+        for command, tool, label in (
+            (bash, "Bash", "backslash-escaped operator"),
+            (pwsh, "PowerShell", "backtick-escaped operator"),
+        ):
+            with self.subTest(label):
+                response = run_guard_with_payload(
+                    {"tool_name": tool, "tool_input": {"command": command}},
+                    cwd=str(self.outside),
+                )
+                self.assertIsNone(response, label)
+
+    def test_an_escaped_hash_is_literal_text_not_a_comment(self) -> None:
+        # The boundary test reads the character before the boundary, not the
+        # one before the `#`, and an escape is not a boundary character, so
+        # `\#` and `` `# `` never reach it. The hash stays the literal
+        # argument text every shell reads it as, and the initializer after the
+        # separator is judged. Both reviewers asked for the shipped
+        # description and the code to agree here.
+        for command, tool, label in (
+            (f"printf '%s' \\#; git init {self.inside}", "Bash", "backslash hash"),
+            (f"Write-Output `#; git init {self.inside}", "PowerShell", "backtick hash"),
+        ):
+            with self.subTest(label):
+                response = run_guard_with_payload(
+                    {"tool_name": tool, "tool_input": {"command": command}},
+                    cwd=str(self.outside),
+                )
+                self.assertIsNotNone(response, label)
+
+    def test_a_quoted_operator_beside_a_hash_is_not_a_comment(self) -> None:
+        # The control for the case above. An operator inside quotes is not an
+        # operator, so the `#` beside it opens nothing, and the initializer
+        # after the real separator is still judged.
+        self.assertEqual(
+            self._decide(f"printf '%s' ';#' ; git init {self.inside}", self.outside),
+            "DENY",
+        )
+
+    def test_a_block_comment_carries_its_body_like_a_heredoc(self) -> None:
+        # PowerShell's `<# ... #>` spans lines, so the body reads as commands
+        # once the command is split. The whole command is declined instead.
+        command = f"<#\ngit init {self.inside}\n#>\nWrite-Output hello"
+        response = run_guard_with_payload(
+            {"tool_name": "PowerShell", "tool_input": {"command": command}},
+            cwd=str(self.outside),
+        )
+        self.assertIsNone(response, "a block comment body was judged as a command")
+
+    def test_an_escaped_quote_makes_the_command_undecidable(self) -> None:
+        # An escape moves where a quoted region ends, and the splitter and
+        # tokenizer downstream both assume it does not, so one fix in the
+        # scanner would not be enough. Capturing a command example inside a
+        # double-quoted string is ordinary in exactly this repository's work.
+        bash = f'printf "%s" "literal \\"; git init {self.inside}; \\""'
+        pwsh = f'Write-Output "literal `"; git init {self.inside}; `""'
+        for command, tool, label in (
+            (bash, "Bash", "backslash escape"),
+            (pwsh, "PowerShell", "backtick escape"),
+        ):
+            with self.subTest(label):
+                response = run_guard_with_payload(
+                    {"tool_name": tool, "tool_input": {"command": command}},
+                    cwd=str(self.outside),
+                )
+                self.assertIsNone(response, label)
+
+    def test_a_windows_path_is_not_an_escaped_quote(self) -> None:
+        # The escape check keys on a quote after the escape character, so a
+        # backslash-separated path is unaffected. This is the control for the
+        # tokenizer fix an earlier round needed.
+        self.assertEqual(
+            self._decide(f"git init {self.inside}", self.outside), "DENY")
+
+    def test_a_here_string_is_a_redirection_not_a_heredoc(self) -> None:
+        # `<<<` puts its word on the same line, so only that segment is
+        # declined and a real initializer after it is still judged.
+        command = f"cat <<<EOF\ngit init {self.inside}"
+        self.assertEqual(self._decide(command, self.outside), "DENY")
+
+    def test_a_marker_inside_quotes_or_a_comment_is_not_a_heredoc(self) -> None:
+        # The mirror of the case above. Arming heredoc mode from a quoted or
+        # commented `<<EOF` declined real commands that follow, and resetting
+        # quote state per line made a multiline quoted argument containing `#`
+        # swallow its own closing quote.
+        for command, label in (
+            (f"printf '%s' '<<EOF'\ngit init {self.inside}", "quoted marker"),
+            (f"echo hello # <<EOF\ngit init {self.inside}", "commented marker"),
+            (f"printf '%s' 'payload\n# data'\ngit init {self.inside}",
+             "multiline quoted argument"),
+        ):
+            with self.subTest(label):
+                self.assertEqual(self._decide(command, self.outside), "DENY", label)
+
+    def test_a_comment_is_not_executed(self) -> None:
+        self.assertEqual(
+            self._decide(f"echo hello # note; git init {self.inside}", self.outside),
+            "PASSED",
+        )
+
+    def test_the_word_init_elsewhere_does_not_trigger_it(self) -> None:
+        self.assertNotEqual(self._decide("git commit -m 'init'", self.repo), "DENY")
+        self.assertEqual(self._decide("echo 'git init'", self.repo), "PASSED")
+        self.assertEqual(self._decide("git status", self.repo), "PASSED")
+
+    def test_the_escape_env_releases_it(self) -> None:
+        # A submodule is a deliberate inner repository, so the gate has to be
+        # openable for one call rather than only argued with.
+        self.assertEqual(
+            self._decide("git init", self.inside,
+                         env={"AGENT_NESTED_GIT_INIT_HOOK": "off"}),
+            "PASSED",
+        )
+
+    def test_the_deny_names_the_reroute_and_the_escape(self) -> None:
+        response = run_guard_with_payload(
+            {"tool_name": "Bash", "tool_input": {"command": "git init"}},
+            cwd=str(self.inside),
+        )
+        reason = response["hookSpecificOutput"]["permissionDecisionReason"]
+        self.assertIn("Suggested rewrite:", reason)
+        self.assertIn("scratch", reason)
+        self.assertIn("AGENT_NESTED_GIT_INIT_HOOK", reason)
+
+
 class DestructiveGitDirectTests(unittest.TestCase):
     """Destructive git commands in direct form should ask."""
 

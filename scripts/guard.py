@@ -52,6 +52,8 @@ Escape hatches (v0.7.0):
 - AGENT_STYLE_HOOK=off (per-guard): disables writing-style and the agent-style
   advisory, which share the gate because they scan the same writes.
 - AGENT_COMPOUND_CD_HOOK=off (per-guard): disables compound cd only.
+- AGENT_NESTED_GIT_INIT_HOOK=off (per-guard): disables the nested git init
+  gate only. Set it to create a submodule or a deliberate inner repository.
 
 Destructive git/gh `ask` checks have NO agent-side reroute (commit/push/reset/merge
 need human approval) and are NOT disabled by any escape env. Adding any future
@@ -437,6 +439,7 @@ _ESCAPE_HATCH_ENV_NAMES = (
     "AGENT_CONFIG_GATES",
     "AGENT_STYLE_HOOK",
     "AGENT_COMPOUND_CD_HOOK",
+    "AGENT_NESTED_GIT_INIT_HOOK",
 )
 
 
@@ -444,6 +447,15 @@ def _env_disabled(name):
     """Return True iff env var `name` is set to a disable-truthy value."""
     val = (os.environ.get(name) or "").strip().lower()
     return val in ("0", "off", "false", "disabled", "no")
+
+
+def nested_git_init_enabled():
+    """Return False if the per-guard env disables the nested git init gate.
+
+    AGENT_CONFIG_GATES does NOT disable it: that legacy blanket predates this
+    gate and covers the writing-style and banner gates only.
+    """
+    return not _env_disabled("AGENT_NESTED_GIT_INIT_HOOK")
 
 
 def gates_enabled():
@@ -1119,6 +1131,250 @@ def cd_compound_deny_message(cmd):
     )
 
 
+# A `git init` inside a directory that is already inside a repository creates a
+# second repository the outer one cannot see. Git stays quiet about it, because
+# the usual home for such a directory is an ignored one, so `git status` in the
+# parent never mentions it. IDEs are the surface where it lands: PyCharm and VS
+# Code both scan for nested `.git` directories and register each as a VCS root,
+# after which every file staged in one appears in the changes view beside real
+# work. Measured on this machine: four review packets left in one proposal repo
+# over a single day held 85 staged-and-never-committed files across four roots,
+# and the IDE offered to commit all of them under one checkbox (aa#56).
+#
+# The reroute is the session scratch directory, which is where the skills that
+# carry text between agents are already documented to write. A deliberate inner
+# repository, a submodule most often, sets the escape env for that one call.
+_GIT_INIT_FLAGS_WITH_VALUES = (
+    "--separate-git-dir", "--template", "--initial-branch", "-b",
+    # Both take a value that reads as a path when skipped, so omitting them let
+    # `git init --object-format sha1 <target>` publish a repository the gate
+    # believed was named `sha1`.
+    "--object-format", "--ref-format",
+)
+
+
+# What this gate will and will not read.
+#
+# Five review rounds established one pattern: every attempt to recover git's
+# arguments from arbitrary shell text produced a new false positive. Reading a
+# redirection as the target denied a directory that never existed. Splitting on
+# newlines turned heredoc bodies into commands. Stripping heredocs then deleted
+# real commands from the opener line. Ending a word at an operator, which is
+# ordinary shell semantics, then read an escaped operator as one. Each repair
+# was correct about the case it named and wrong about a neighbouring one.
+#
+# So the gate stops trying. It reads commands whose shape it can account for,
+# and declines the rest rather than guessing. The two are not symmetric: a false
+# positive blocks work an agent is entitled to do and no rewrite repairs it,
+# while a declined command merely behaves as it did before this gate existed.
+# A blind spot restores the status quo; a wrong deny creates a new problem.
+#
+# Declined, and documented as such: any command carrying a heredoc, because its
+# body is data that reads exactly like commands; any single command carrying a
+# redirection, because its operands are not arguments; a PowerShell block
+# comment, for the heredoc's reason; a backslash or backtick immediately before
+# a quote, because an escape moves where a quoted region ends; and, at a
+# possible comment start, a boundary character that is itself preceded by either
+# escape character. An escaped hash is not that shape, since an escape is not a
+# boundary character, so `\#` stays the literal text a shell reads it as. Both
+# escape checks ignore shell-specific escape rules and escape parity, so they
+# decline a doubled escape as readily as a single one.
+# `git init` through those forms is not how the packets in #56 were created.
+_HEREDOC = re.compile(r"(?<!<)<<(?!<)")
+
+# A shell word ends at an operator as well as at whitespace, so `;#` and `|#`
+# begin comments too. Bash and PowerShell agree on that, and reading them as
+# arguments turned a printed note into a denied command.
+_WORD_BOUNDARIES = " \t\n;|&("
+
+# Shapes whose extent this gate cannot establish, and therefore will not judge.
+# A PowerShell block comment carries its body across lines the way a heredoc
+# does. An escaped quote moves where a quoted region ends, and the splitter and
+# tokenizer downstream repeat the same assumption, so recognizing it in one
+# place would not be enough.
+_BLOCK_COMMENT = "<#"
+_QUOTE_ESCAPES = ('\\"', "\\'", '`"', "`'")
+
+
+def _executable_text(cmd):
+    """Strip comments, or return None when the command must not be judged.
+
+    One quote-aware pass over the whole string rather than per line: resetting
+    quote state at each newline made a multiline quoted argument containing a
+    `#` look like a comment, which deleted a closing quote and made ordinary
+    text that followed appear quoted.
+    """
+    # An escape before a quote moves the end of the quoted region, and every
+    # helper below assumes it does not. Decline rather than mis-track: a
+    # command example captured inside a double-quoted string is ordinary text,
+    # and this file's own workflows carry them.
+    if any(escape in cmd for escape in _QUOTE_ESCAPES):
+        return None
+    out = []
+    i = 0
+    n = len(cmd)
+    in_single = in_double = False
+    while i < n:
+        ch = cmd[i]
+        if ch == "'" and not in_double:
+            in_single = not in_single
+        elif ch == '"' and not in_single:
+            in_double = not in_double
+        elif not in_single and not in_double:
+            # `<<<` is a here-string, whose word sits on the same line, so it
+            # is an ordinary redirection and the segment is declined below
+            # rather than the whole command here.
+            if ch == "<" and _HEREDOC.match(cmd, i):
+                return None
+            if cmd.startswith(_BLOCK_COMMENT, i):
+                return None
+            if ch == "#" and (i == 0 or cmd[i - 1] in _WORD_BOUNDARIES):
+                # An escaped operator is literal, so it does not end a word
+                # and what follows `#` is not a comment. Stripping there
+                # deleted a string opener and exposed its contents as
+                # commands. The test is the character before the boundary,
+                # not before the `#`, so `\#` never reaches it: an escape is
+                # not a boundary character, which leaves the hash as the
+                # literal argument text every shell reads it as. Escape
+                # parity is ignored, so a doubled escape declines like a
+                # single one: the policy is to stop rather than to decide
+                # whose escape rules apply, as with the quote escapes.
+                if i >= 2 and cmd[i - 2] in ("\\", "`"):
+                    return None
+                newline = cmd.find("\n", i)
+                if newline == -1:
+                    break
+                i = newline
+                continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _carries_redirection(segment):
+    """True when a segment redirects, so its tokens are not all arguments."""
+    in_single = in_double = False
+    for ch in segment:
+        if ch == "'" and not in_double:
+            in_single = not in_single
+        elif ch == '"' and not in_single:
+            in_double = not in_double
+        elif not in_single and not in_double and ch in "<>":
+            return True
+    return False
+
+
+def git_init_target(parts, cwd):
+    """Return the directory a `git init` would create a repository in.
+
+    `parts` is the tokenized command. Returns None when this is not a git init.
+    A `git init` with no path argument targets the working directory, which is
+    what the improvised packets did.
+
+    The leading executable is checked here rather than assumed. Every other
+    caller of ``extract_git_subcommand`` has already established that the
+    command is git, and that helper simply starts scanning at token 1, so
+    calling it without the check denied `npm init`, `cargo init`, `yarn init`,
+    `terraform init` and even `echo init` inside any repository.
+    """
+    if not parts or _basename(parts[0]) != "git":
+        return None
+    idx, sub = extract_git_subcommand(parts)
+    if sub != "init":
+        return None
+    # A global `-C <path>` changes the directory git runs in, so it decides
+    # where a relative target lands. Reading it is not optional here: the
+    # compound-cd gate in this same file tells agents to prefer `git -C`, so it
+    # is the form they are steered toward.
+    i = 1
+    while i < idx:
+        token = parts[i]
+        if token == "-C" and i + 1 < idx:
+            cwd = os.path.join(cwd, parts[i + 1])
+            i += 2
+        elif token.startswith("-C") and len(token) > 2:
+            cwd = os.path.join(cwd, token[2:])
+            i += 1
+        elif token in _GIT_VALUE_FLAGS:
+            i += 2
+        else:
+            i += 1
+    cwd = os.path.realpath(cwd)
+    rest = parts[idx + 1:]
+    skip_next = False
+    for token in rest:
+        if skip_next:
+            skip_next = False
+            continue
+        if token.startswith("-"):
+            # `--flag=value` carries its value inline; the listed flags take a
+            # separate argument that must not be read as the target path.
+            if "=" not in token and token in _GIT_INIT_FLAGS_WITH_VALUES:
+                skip_next = True
+            continue
+        target = token if os.path.isabs(token) else os.path.join(cwd, token)
+        # realpath resolves `..` as well as symlinks. Walking lexical parents
+        # of `<repo>/../outside/fresh` revisits `<repo>`, finds its `.git`, and
+        # denies a target that git would create outside the worktree.
+        return os.path.realpath(target)
+    return cwd
+
+
+def nested_git_init_deny_message(cmd, cwd):
+    """Deny message when a git init would nest inside an existing worktree.
+
+    Returns None when the command is not a git init, or when its target is not
+    inside a repository, which is the ordinary case this must not disturb.
+    """
+    # _split_subcommands rather than the compound-cd splitter: this one also
+    # breaks on newlines and single pipes, both of which carried a git init
+    # past the gate. A leading PowerShell call operator is dropped so
+    # `& git init` is seen as the command it runs.
+    text = _executable_text(cmd)
+    if text is None:
+        return None
+    for segment in _split_subcommands(text):
+        if _carries_redirection(segment):
+            continue
+        # _tokenize_shell rather than shlex: it does not treat a backslash as
+        # an escape, so a Windows target path survives tokenizing. shlex in
+        # posix mode mangled a backslash-separated Windows target, which then
+        # read as a relative path and pointed the check at the wrong directory.
+        stripped = segment.strip()
+        # PowerShell's call operator binds with or without a space, and
+        # `&git init` reached the worktree untouched while `& git init` did not.
+        if stripped.startswith("&") and not stripped.startswith("&&"):
+            stripped = stripped[1:].lstrip()
+        parts = _tokenize_shell(stripped)
+        if not parts:
+            continue
+        try:
+            target = git_init_target(strip_wrappers(parts), cwd)
+        except (ValueError, IndexError):
+            continue
+        if target is None:
+            continue
+        # `target` itself, not a child of it: _inside_git_worktree starts at the
+        # parent of what it is given, so passing the target asks whether the
+        # target's surroundings are a repository. Passing a child asked whether
+        # the target is one, which denied re-initializing an existing root even
+        # though that creates nothing nested.
+        if not _inside_git_worktree(target):
+            continue
+        return (
+            "Nested git init blocked: this would create a second repository "
+            f"inside an existing worktree, at {target}. Git will not mention "
+            "it again, but IDEs register each nested .git as a VCS root, and "
+            "its staged files then appear in the changes view beside real "
+            "work (anywhere-agents#56). Suggested rewrite: create it under "
+            "the session scratch directory instead, which is where carried "
+            "artifacts belong. For a deliberate inner repository such as a "
+            "submodule, set AGENT_NESTED_GIT_INIT_HOOK=off in "
+            "~/.claude/settings.json env for that call."
+        )
+    return None
+
+
 def strip_wrappers(parts):
     """Skip env, inline VAR=VALUE, and standard command-prefix wrappers
     (sudo / doas) so a dangerous command behind a transparent prefix is still
@@ -1772,6 +2028,15 @@ def main():
     # Honors AGENT_COMPOUND_CD_HOOK. AGENT_CONFIG_GATES does NOT disable it.
     if shell != "powershell" and compound_cd_enabled():
         deny = cd_compound_deny_message(cmd)
+        if deny:
+            print(make_response("deny", deny))
+            return
+
+    # Check 3b: nested git init (Bash + PowerShell). A deny rather than an ask,
+    # because the reroute exists and an unattended agent can take it in one
+    # turn. Honors AGENT_NESTED_GIT_INIT_HOOK.
+    if nested_git_init_enabled():
+        deny = nested_git_init_deny_message(cmd, os.getcwd())
         if deny:
             print(make_response("deny", deny))
             return
