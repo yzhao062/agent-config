@@ -204,6 +204,59 @@ Codex runs as an IDE plugin with direct access to the repo. The user tells Codex
      Manual override tokens still win before Auto-terminal opt-in tokens.
    - Plain-phrase opt-in in the invoking message: case-insensitive substring match on any of `cli mode`, `use cli`, `auto codex`, `use codex exec`, AND no negation word (`do not`, `don't`, `no`, `not`, `avoid`, `manual`) within 4 words before the matched phrase.
    - **Reviewer-backend selection (Agy, Gemini through Antigravity CLI, opt-in)**: when the selected channel is Auto-terminal and the slash arguments contain `agy`, `gemini`, or `antigravity`, use `dispatch-gemini.py` and expect `Review-Antigravity.md`. The canonical invocation is `/vet agy`; `/vet gemini`, `/vet antigravity`, the compatible `/implement-review` forms with `auto` or `cli`, and plain phrases such as `use agy as reviewer`, `use gemini as reviewer`, or `review with antigravity` are aliases under the same negation guard. A reviewer token does not need an `auto` token when Auto-terminal came from `IMPLEMENT_REVIEW_DEFAULT_CHANNEL=auto`. If the orchestrator is Agy, Gemini, or Antigravity, rewrite to Codex before dispatch and state why.
+   - **Reviewer-backend selection (two reviewers in one invocation)**: reviewer
+     tokens are a set rather than a single choice. When the invocation names
+     more than one, dispatch each named backend for the same round. `both` is
+     the shorthand for the pair this loop actually runs, `codex agy`, and it
+     means those two specifically rather than every backend that exists; name
+     the tokens explicitly for any other combination. `/vet both`, `/vet codex
+     agy`, and plain phrases such as `review with codex and agy` are the same
+     request under the same negation guard. Everything downstream already takes
+     a set: `EXPECTED_REVIEWERS` is the comma-separated normalized list
+     (`Codex,Antigravity`), `FILE_GLOB` becomes `Review-*.md`, and Phase 2's
+     multi-reviewer consolidation classifies each finding as Convergent or
+     Single-source. With one reviewer token, or none, nothing here changes.
+
+     **Dispatch them one after another, not at once.** Two concurrent
+     dispatches were both killed for low memory on a 32 GB workstation with
+     4.5 GB free, which costs the whole round and produces no review from
+     either. Sequential dispatch survived the same conditions.
+
+     Sequential dispatch needs its own lifecycle, because the watcher is a
+     wait-for-any helper: `auto-watch` exits as soon as one file matching its
+     glob appears, so a single watcher over `Review-*.md` would report the
+     round finished while the second reviewer had not started. Run **one
+     dispatch, one watcher and one health check per reviewer**, each with that
+     reviewer's own `STATE-DIR` and its exact `Review-<Name>.md` rather than
+     the wildcard.
+
+     Before launching the next reviewer, require that the previous dispatcher
+     returned, or identity-checked evidence that its worker exited. `DONE`,
+     `REVIEW-READY` and a clean health check authorize **intake only**: all
+     three are computed from the review file's freshness and quietness, and
+     each was reproduced while the worker was still alive, so none of them is
+     a statement about the process. Repeating `await-review` after
+     `REVIEW-READY` cannot help, because it keeps returning the same
+     publication result. Where the harness has been lost and termination
+     cannot be established, hold the existing bounded checkpoint and ask,
+     rather than reading `REVIEW-READY` as permission to launch: a file
+     appearing is not proof the previous worker exited, and launching on that
+     signal alone would defeat the memory sequencing this rule exists for.
+     Phase 1d's `DONE` instruction resumes Phase 2 immediately for a
+     single-reviewer round; during an unfinished sequential queue it means
+     this reviewer is ready for intake, and the next dispatch is the next
+     step. Advance to Phase 2 only once the queue is done.
+
+     Keep the full expected set for consolidation, so Phase 2 still classifies
+     findings as Convergent or Single-source. If a reviewer fails, still run
+     the rest; when the round ends with one healthy current-round source and
+     the others confirmed failed, that source is complete intake, labelled
+     Single-source, and the manual follow-up and direct-paste steps Phase 2
+     otherwise asks for when several reviewers were expected do not apply,
+     because a confirmed dispatch failure already answers what they ask.
+     Emit one channel line per reviewer so the user can see which backend
+     each round actually reached.
+
    - **Reviewer-backend selection (explicit Codex)**: when the selected channel is Auto-terminal and the invocation contains the reviewer token `codex`, keep the normal `dispatch-codex` backend and expect `Review-Codex.md`. This makes the pointer-file hint explicit without changing the no-token default.
    - **Reviewer-backend selection (Copilot cross-vendor backend, opt-in)**: when the selected channel is Auto-terminal and the invocation names Copilot, the backend is GitHub Copilot instead of `codex exec`. Triggers: slash args `/implement-review auto copilot`, `/implement-review copilot auto`, or `/implement-review copilot`; plain phrases `use copilot as reviewer`, `copilot as reviewer`, `auto copilot`, `review with copilot`, under the same negation guard; and role-reversal wording naming Codex as the implementer and Copilot as the reviewer. A reviewer token does not need an `auto` token when Auto-terminal came from the user-scoped default. With no reviewer token, Auto-terminal selects Codex. When Copilot is the backend, dispatch uses `dispatch-copilot.{ps1,sh}` and the expected review file is `Review-GitHub-Copilot.md` (see Auto-terminal Copilot backend above).
    - **Reviewer-backend selection (Claude, with mechanical self-review guard)**: select `dispatch-claude` only when BOTH of the following hold: (1) the selected channel is Auto-terminal and the slash args include `claude` (e.g., `/implement-review claude`, `/implement-review auto claude`, or `/vet claude`), OR a plain phrase matches the patterns `use claude as reviewer`, `claude as reviewer`, `review with claude`, or role-reversal wording naming Codex as implementer and Claude as reviewer, all under the same negation guard on the line above; AND (2) the orchestrator running this skill is NOT Claude Code. A reviewer token does not need an `auto` token when Auto-terminal came from the user-scoped default. Bare Auto-terminal with no `claude` / `copilot` / `agy` / `gemini` / `antigravity` token still selects Codex. **Orchestrator detection** keys on a single documented signal: when this skill is interpreted by Claude Code, the orchestrator is `claude` by definition (the skill is running INSIDE the CC session). The script-level dispatch guard separately checks `CLAUDECODE=1` so a script launched as a Bash / PowerShell subprocess from a CC session also detects it. When orchestrator is `claude` and the slash args / phrase ask for the Claude backend, rewrite the selection to Codex (or Copilot if Codex is unavailable on PATH) BEFORE any dispatch script is launched, and emit one user-visible line: `Claude backend skipped: Claude Code cannot review its own implementation; using <backend> instead.` Pair this with the script-level `IMPLEMENT_REVIEW_ORCHESTRATOR` / `CLAUDECODE=1` exit-2 in `dispatch-claude.{sh,ps1}` so direct callers that bypass path-selection cannot self-dispatch either. The script-level test covers the four enforceable cases in `tests/test_dispatch_claude.py::_DispatchContractMixin` guard methods; the path-selection rewrite itself is prose-level (no parser / selector function exists to call), so its verification is the negative live test in Task 4.7, not a unit test. Dispatch uses `dispatch-claude.{ps1,sh}` and the expected review file is `Review-Claude-Code.md`.
