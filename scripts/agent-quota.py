@@ -127,14 +127,23 @@ def _write_json_atomic(path, payload):
             pass
 
 
-def _refresh_agy_cache():
-    """Refresh the Agy cache synchronously in a bounded helper process."""
-    cache_age = _path_age(AGY_QUOTA_CACHE)
-    if cache_age is not None and cache_age < AGY_QUOTA_TTL_SECONDS:
-        return 0
-    attempt_age = _path_age(AGY_QUOTA_ATTEMPT)
-    if attempt_age is not None and attempt_age < AGY_QUOTA_TTL_SECONDS:
-        return 0
+def _refresh_agy_cache(force=False):
+    """Refresh the Agy cache synchronously in a bounded helper process.
+
+    ``force`` skips the snapshot and attempt TTLs for a caller that already
+    holds newer evidence than the cache does. A dispatcher whose run just died
+    on a quota limit is the case: the meter it hit outranks a snapshot taken
+    minutes earlier, and without this the next unit of the batch reads the old
+    positive fraction and dies the same way. The lock and the bounded query
+    below still apply, so a forced refresh cannot pile up queries.
+    """
+    if not force:
+        cache_age = _path_age(AGY_QUOTA_CACHE)
+        if cache_age is not None and cache_age < AGY_QUOTA_TTL_SECONDS:
+            return 0
+        attempt_age = _path_age(AGY_QUOTA_ATTEMPT)
+        if attempt_age is not None and attempt_age < AGY_QUOTA_TTL_SECONDS:
+            return 0
 
     os.makedirs(os.path.dirname(AGY_QUOTA_CACHE), exist_ok=True)
     try:
@@ -608,8 +617,8 @@ def agy_row(refresh_started=False, installed=True):
 
 
 def main():
-    if sys.argv[1:] == ["--refresh-agy"]:
-        return _refresh_agy_cache()
+    if sys.argv[1:] in (["--refresh-agy"], ["--refresh-agy", "--force"]):
+        return _refresh_agy_cache(force="--force" in sys.argv[1:])
     installed = _agy_binary() is not None
     # Without a binary the helper would only exit 1 in the background, so the
     # plain readout names the missing install instead of a refresh that

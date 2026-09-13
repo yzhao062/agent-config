@@ -1,6 +1,7 @@
 """Contract tests for prun's Antigravity task dispatcher."""
 from __future__ import annotations
 
+import datetime
 import importlib.util
 import json
 import os
@@ -96,6 +97,207 @@ class DispatchTaskAgyUnitTests(unittest.TestCase):
         self.assertIsNotNone(self.module.UNIT_RE.fullmatch("paper_review-12"))
         self.assertIsNone(self.module.UNIT_RE.fullmatch("../escape"))
 
+    def test_model_pool_keys_on_the_name_agy_uses(self) -> None:
+        self.assertEqual(self.module.model_pool("gemini-3.8-flash-high"), "gemini")
+        self.assertEqual(self.module.model_pool("claude-opus-4-6-thinking"), "second")
+        self.assertEqual(self.module.model_pool("gpt-oss-120b-medium"), "second")
+        # An unknown name is not gated: Agy names its models, and refusing one
+        # for belonging to no known group would block a model that works.
+        self.assertIsNone(self.module.model_pool("some-future-model"))
+
+    def test_a_group_is_read_at_its_emptiest_bucket(self) -> None:
+        # A full weekly allowance is no help to a unit the 5-hour bucket
+        # stops, and the 5-hour bucket is the one that emptied on 2026-09-11.
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        cache = Path(temp.name) / "quota.json"
+        cache.write_text(
+            json.dumps(
+                {
+                    "usage": {
+                        "groups": [
+                            {
+                                "name": "Gemini Models",
+                                "buckets": [
+                                    {"remaining_fraction": 0.9, "reset_time": "w"},
+                                    {"remaining_fraction": 0.1, "reset_time": "5h"},
+                                ],
+                            }
+                        ]
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        os.environ["AGY_QUOTA_CACHE"] = str(cache)
+        self.addCleanup(os.environ.pop, "AGY_QUOTA_CACHE", None)
+        states = self.module.read_pool_states()
+        self.assertEqual(states["gemini"], (0.1, "5h"))
+
+    def test_an_unreported_group_is_unknown_rather_than_empty(self) -> None:
+        # The gate stops a dispatch only into a group it read as empty. A
+        # snapshot that carries one group says nothing about the other, and
+        # refusing on that would block work whenever Agy renames a group.
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        cache = Path(temp.name) / "quota.json"
+        cache.write_text(
+            json.dumps(
+                {
+                    "usage": {
+                        "groups": [
+                            {
+                                "name": "Claude and GPT models",
+                                "buckets": [
+                                    {"remaining_fraction": 0.0, "reset_time": "r"}
+                                ],
+                            }
+                        ]
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        os.environ["AGY_QUOTA_CACHE"] = str(cache)
+        self.addCleanup(os.environ.pop, "AGY_QUOTA_CACHE", None)
+        model, note, blocked = self.module.quota_route("claude-opus-4-6-thinking")
+        self.assertEqual(model, self.module.DEFAULT_MODEL)
+        self.assertIn("MODEL-FALLBACK", note)
+        self.assertEqual(blocked, "")
+
+    def test_the_gate_is_switchable_off(self) -> None:
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        cache = Path(temp.name) / "quota.json"
+        cache.write_text(
+            json.dumps(
+                {
+                    "usage": {
+                        "groups": [
+                            {
+                                "name": "Gemini Models",
+                                "buckets": [{"remaining_fraction": 0.0}],
+                            }
+                        ]
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        os.environ["AGY_QUOTA_CACHE"] = str(cache)
+        self.addCleanup(os.environ.pop, "AGY_QUOTA_CACHE", None)
+        self.assertNotEqual(self.module.quota_route(self.module.DEFAULT_MODEL)[2], "")
+        os.environ["PRUN_AGY_QUOTA_GATE"] = "off"
+        self.addCleanup(os.environ.pop, "PRUN_AGY_QUOTA_GATE", None)
+        self.assertEqual(
+            self.module.quota_route(self.module.DEFAULT_MODEL), (self.module.DEFAULT_MODEL, "", "")
+        )
+
+    def test_a_non_finite_fraction_is_not_an_empty_group(self) -> None:
+        # NaN compares false against every threshold, so admitting one read as
+        # an exhausted group and refused the dispatch.
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        cache = Path(temp.name) / "quota.json"
+        cache.write_text(
+            '{"usage": {"groups": [{"name": "Gemini Models", "buckets": '
+            '[{"remaining_fraction": NaN}]}]}}',
+            encoding="utf-8",
+        )
+        os.environ["AGY_QUOTA_CACHE"] = str(cache)
+        self.addCleanup(os.environ.pop, "AGY_QUOTA_CACHE", None)
+        self.assertIsNone(self.module.read_pool_states())
+        self.assertEqual(
+            self.module.quota_route(self.module.DEFAULT_MODEL),
+            (self.module.DEFAULT_MODEL, "", ""),
+        )
+
+    def test_an_empty_bucket_expires_at_its_own_reset(self) -> None:
+        # A five-hour bucket that read empty an hour ago says nothing about
+        # now, and the refusal would otherwise stand until something else
+        # refreshed the snapshot.
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        past = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=5)
+        future = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=2)
+        cache = Path(temp.name) / "quota.json"
+
+        def write(reset: datetime.datetime) -> None:
+            cache.write_text(
+                json.dumps(
+                    {
+                        "usage": {
+                            "groups": [
+                                {
+                                    "name": "Gemini Models",
+                                    "buckets": [
+                                        {
+                                            "remaining_fraction": 0.0,
+                                            "reset_time": reset.isoformat().replace(
+                                                "+00:00", "Z"
+                                            ),
+                                        }
+                                    ],
+                                }
+                            ]
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+        os.environ["AGY_QUOTA_CACHE"] = str(cache)
+        self.addCleanup(os.environ.pop, "AGY_QUOTA_CACHE", None)
+        write(future)
+        self.assertNotEqual(self.module.quota_route(self.module.DEFAULT_MODEL)[2], "")
+        write(past)
+        self.assertEqual(
+            self.module.quota_route(self.module.DEFAULT_MODEL),
+            (self.module.DEFAULT_MODEL, "", ""),
+        )
+
+    def test_a_snapshot_that_cannot_be_refreshed_reads_as_unknown(self) -> None:
+        # The managed snapshot has a lifetime. One that stayed stale through a
+        # refresh attempt is no evidence, and refusing on it would block work
+        # for as long as the readout stays unavailable.
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        home = Path(temp.name) / "home"
+        (home / ".claude").mkdir(parents=True)
+        cache = home / ".claude" / "agy-quota-cache.json"
+        cache.write_text(
+            json.dumps(
+                {
+                    "usage": {
+                        "groups": [
+                            {
+                                "name": "Gemini Models",
+                                "buckets": [{"remaining_fraction": 0.0}],
+                            }
+                        ]
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        old = time.time() - (self.module.QUOTA_CACHE_MAX_AGE_SECONDS + 600)
+        os.utime(cache, (old, old))
+        saved = {k: os.environ.get(k) for k in ("HOME", "USERPROFILE", "AGY_QUOTA_CACHE")}
+
+        def restore() -> None:
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+        self.addCleanup(restore)
+        os.environ.pop("AGY_QUOTA_CACHE", None)
+        os.environ["HOME"] = str(home)
+        os.environ["USERPROFILE"] = str(home)
+        # No agent-quota.py under this home, so the refresh cannot land.
+        self.assertIsNone(self.module.read_pool_states())
+
     def test_failure_reason_reads_the_final_result_status(self) -> None:
         self.assertEqual(self.module.failure_reason(None, None), "")
         self.assertEqual(self.module.failure_reason("SUCCESS", None), "")
@@ -161,6 +363,50 @@ class DispatchTaskAgyIntegrationTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
+    def _quota(self, gemini: float, second: float) -> str:
+        """Write a snapshot in the shape agent-quota.py publishes.
+
+        Each call gets its own file, so a scenario's snapshot survives the
+        healthy default `_run` writes for every other case. No bucket carries
+        a reset time: a dated one expires under the runtime expiry rule and
+        would turn these routing cases red on a later calendar day. The
+        expiry rule has its own test, which builds explicit past and future
+        reset times.
+        """
+        self._quota_seq = getattr(self, "_quota_seq", 0) + 1
+        cache = self.root / f"agy-quota-{self._quota_seq}.json"
+        cache.write_text(
+            json.dumps(
+                {
+                    "cached_at": int(time.time()),
+                    "usage": {
+                        "groups": [
+                            {
+                                "name": "Gemini Models",
+                                "buckets": [
+                                    {
+                                        "id": "gemini-5h",
+                                        "remaining_fraction": gemini,
+                                    }
+                                ],
+                            },
+                            {
+                                "name": "Claude and GPT models",
+                                "buckets": [
+                                    {
+                                        "id": "3p-5h",
+                                        "remaining_fraction": second,
+                                    }
+                                ],
+                            },
+                        ]
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        return str(cache)
+
     def _write_mock(self) -> Path:
         script = self.root / "mock_agy.py"
         script.write_text(MOCK_AGY, encoding="utf-8")
@@ -198,6 +444,10 @@ class DispatchTaskAgyIntegrationTests(unittest.TestCase):
                 "TEMP": str(self.root),
                 "TMP": str(self.root),
                 "TMPDIR": str(self.root),
+                # Every dispatch now consults the Agy meter, so without a
+                # private snapshot these cases would read the operator's real
+                # one and fail on a machine whose Gemini quota is spent.
+                "AGY_QUOTA_CACHE": self._quota(gemini=1.0, second=1.0),
             }
         )
         if own_cwd:
@@ -205,7 +455,11 @@ class DispatchTaskAgyIntegrationTests(unittest.TestCase):
             # the only case where an omitted --mode is allowed.
             env.pop("PRUN_SCRATCH_CWD", None)
         if extra_env:
-            env.update(extra_env)
+            for key, value in extra_env.items():
+                if value == "":
+                    env.pop(key, None)
+                else:
+                    env[key] = value
         argv = [
             str(PYTHON),
             str(DISPATCH),
@@ -454,6 +708,143 @@ class DispatchTaskAgyIntegrationTests(unittest.TestCase):
         self.assertEqual(result2.returncode, 2)
         self.assertEqual(result2.stdout, "")
         self.assertFalse(target2.exists())
+
+    def test_an_exhausted_second_group_falls_back_to_the_gemini_default(self) -> None:
+        # The unit runs instead of failing, because the Gemini default is what
+        # it would have used anyway. Seven units of the 2026-09-11 fan-out were
+        # aimed at the Claude group and four died in a row on its 5-hour meter.
+        result, target = self._run(
+            extra_env={
+                "AGY_QUOTA_CACHE": self._quota(gemini=0.86, second=0.0),
+                "ANTIGRAVITY_DISPATCH_MODEL": "claude-opus-4-6-thinking",
+                "MOCK_AGY_MODELS": "gemini-3.8-flash-high\nclaude-opus-4-6-thinking",
+            }
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        argv = json.loads((self.log / "args.json").read_text(encoding="utf-8"))
+        self.assertIn("gemini-3.8-flash-high", argv)
+        self.assertNotIn("claude-opus-4-6-thinking", argv)
+        # Recorded rather than silent: the ledger must not read as though the
+        # unit ran on the model the caller named.
+        self.assertIn("MODEL-FALLBACK", result.stderr)
+        self.assertIn("claude-and-gpt-quota-exhausted", result.stderr)
+        state_dir = Path(result.stdout.split("STATE-DIR ", 1)[1].strip())
+        self.assertEqual(
+            (state_dir / "model").read_text(encoding="utf-8").strip(),
+            "gemini-3.8-flash-high",
+        )
+        self.assertTrue(target.is_file())
+
+    def test_an_exhausted_gemini_group_does_not_escalate_on_its_own(self) -> None:
+        # Spending the smaller metered group is the user's call. An agent took
+        # it unasked once and left it at 60% in a day.
+        result, target = self._run(
+            extra_env={"AGY_QUOTA_CACHE": self._quota(gemini=0.0, second=1.0)}
+        )
+        self.assertEqual(result.returncode, 75, result.stderr)
+        self.assertIn("ANTIGRAVITY_DISPATCH_MODEL", result.stderr)
+        self.assertFalse((self.log / "args.json").is_file())
+        self.assertIn("FALLBACK", target.read_text(encoding="utf-8"))
+
+    def test_both_groups_exhausted_stops_the_dispatch(self) -> None:
+        result, _ = self._run(
+            extra_env={"AGY_QUOTA_CACHE": self._quota(gemini=0.0, second=0.0)}
+        )
+        self.assertEqual(result.returncode, 75, result.stderr)
+        self.assertIn("both Agy quota groups are exhausted", result.stderr)
+        self.assertFalse((self.log / "args.json").is_file())
+
+    def test_a_claude_model_is_dispatched_without_effort(self) -> None:
+        # Agy rejects `--effort` for that group, so the unconditional flag made
+        # the whole group unreachable.
+        result, _ = self._run(
+            extra_env={
+                "AGY_QUOTA_CACHE": self._quota(gemini=0.86, second=0.6),
+                "ANTIGRAVITY_DISPATCH_MODEL": "claude-opus-4-6-thinking",
+                "MOCK_AGY_MODELS": "gemini-3.8-flash-high\nclaude-opus-4-6-thinking",
+            }
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        argv = json.loads((self.log / "args.json").read_text(encoding="utf-8"))
+        self.assertIn("claude-opus-4-6-thinking", argv)
+        self.assertNotIn("--effort", argv)
+
+    def test_a_gemini_model_still_carries_effort(self) -> None:
+        result, _ = self._run(
+            extra_env={"AGY_QUOTA_CACHE": self._quota(gemini=0.86, second=0.6)}
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        argv = json.loads((self.log / "args.json").read_text(encoding="utf-8"))
+        self.assertEqual(argv[argv.index("--effort") + 1], "high")
+
+    def test_an_unreadable_snapshot_does_not_gate_the_dispatch(self) -> None:
+        # The gate exists to stop a known-empty group. A missing or malformed
+        # snapshot is not that, and refusing on it would block work whenever
+        # the readout is unavailable.
+        missing = self.root / "no-such-quota.json"
+        result, target = self._run(extra_env={"AGY_QUOTA_CACHE": str(missing)})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(target.is_file())
+
+    def test_a_backend_failure_forces_a_refresh_past_the_readout_ttl(self) -> None:
+        # The readout keeps a five-minute TTL, so an unforced refresh after a
+        # quota death asks nothing and the next unit routes on the fraction
+        # that was already wrong. That is the repeat this gate exists to stop.
+        home = self.root / "home"
+        (home / ".claude").mkdir(parents=True, exist_ok=True)
+        calls = self.root / "refresh-calls.txt"
+        stub = home / ".claude" / "agent-quota.py"
+        stub.write_text(
+            "import json, os, sys\n"
+            "from pathlib import Path\n"
+            "Path(os.environ['REFRESH_CALLS']).open('a', encoding='utf-8')"
+            ".write(' '.join(sys.argv[1:]) + '\\n')\n"
+            "cache = Path.home() / '.claude' / 'agy-quota-cache.json'\n"
+            "cache.write_text(json.dumps({'usage': {'groups': ["
+            "{'name': 'Gemini Models', 'buckets': [{'remaining_fraction': 0.9}]},"
+            "{'name': 'Claude and GPT models', 'buckets': [{'remaining_fraction': 0.0}]}"
+            "]}}), encoding='utf-8')\n",
+            encoding="utf-8",
+        )
+        cache = home / ".claude" / "agy-quota-cache.json"
+        cache.write_text(
+            json.dumps(
+                {
+                    "usage": {
+                        "groups": [
+                            {
+                                "name": "Gemini Models",
+                                "buckets": [{"remaining_fraction": 0.9}],
+                            },
+                            {
+                                "name": "Claude and GPT models",
+                                "buckets": [{"remaining_fraction": 0.4}],
+                            },
+                        ]
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        result, _ = self._run(
+            extra_env={
+                # Empty removes the key, so the dispatcher reads the managed
+                # snapshot under the fake home and may refresh it.
+                "AGY_QUOTA_CACHE": "",
+                "HOME": str(home),
+                "USERPROFILE": str(home),
+                "REFRESH_CALLS": str(calls),
+                "ANTIGRAVITY_DISPATCH_MODEL": "claude-opus-4-6-thinking",
+                "MOCK_AGY_MODELS": "gemini-3.8-flash-high\nclaude-opus-4-6-thinking",
+                "MOCK_AGY_STATUS": "ERROR",
+                "MOCK_AGY_ERROR": "Individual quota reached. Resets in 34m7s.",
+            }
+        )
+        self.assertEqual(result.returncode, 70, result.stderr)
+        self.assertIn("--force", calls.read_text(encoding="utf-8"))
+        refreshed = json.loads(cache.read_text(encoding="utf-8"))
+        second = refreshed["usage"]["groups"][1]["buckets"][0]["remaining_fraction"]
+        self.assertEqual(second, 0.0)
 
     def test_nonzero_exit_publishes_fallback(self) -> None:
         result, target = self._run(extra_env={"MOCK_AGY_EXIT": "9"})

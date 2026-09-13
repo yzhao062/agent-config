@@ -26,7 +26,9 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import datetime
 import json
+import math
 import os
 import re
 import shutil
@@ -45,6 +47,18 @@ DEFAULT_EFFORT = "high"
 DEFAULT_TIMEOUT_SECONDS = 2700
 MIN_RESULT_BYTES = 20
 UNIT_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+# Agy meters two model groups separately, the Gemini models and a second group
+# holding Claude and GPT-OSS, and one dispatch names one model, so only one of
+# them can serve a unit. Nothing between dispatches read that meter, so a batch
+# aimed at an empty group produced one failed unit per dispatch: on 2026-09-11
+# four units of a seven-unit fan-out died in a row, each carrying "Individual
+# quota reached ... Resets in 34m". The dispatcher now reads the snapshot
+# `agent-quota.py` maintains and routes on it.
+SECOND_POOL_PREFIXES = ("claude-", "gpt-")
+GEMINI_POOL_PREFIX = "gemini-"
+QUOTA_CACHE_MAX_AGE_SECONDS = 900
+QUOTA_EXHAUSTED_EXIT = 75
 
 
 def fail(message: str, code: int = 2) -> int:
@@ -141,6 +155,223 @@ def sandbox_opt_in() -> bool:
         "PRUN_AGY_SANDBOX must be 1/true/yes/on or 0/false/no/off "
         f"(got: {raw})"
     )
+
+
+def env_off(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {
+        "0",
+        "off",
+        "false",
+        "disabled",
+        "no",
+    }
+
+
+def model_pool(model: str) -> str | None:
+    """Which Agy quota group meters this model, or None when unknown.
+
+    An unrecognized name is not gated. Agy names its models itself, so a
+    future one would otherwise be refused for belonging to no known group.
+    """
+    lowered = model.strip().lower()
+    if lowered.startswith(GEMINI_POOL_PREFIX):
+        return "gemini"
+    if lowered.startswith(SECOND_POOL_PREFIXES):
+        return "second"
+    return None
+
+
+def quota_cache_path() -> tuple[Path, bool]:
+    """The snapshot to read, and whether this process may refresh it.
+
+    `AGY_QUOTA_CACHE` is `agent-quota.py`'s own override. A caller that points
+    at its own snapshot owns its freshness; refreshing there would overwrite
+    the file it supplied.
+    """
+    override = os.environ.get("AGY_QUOTA_CACHE", "").strip()
+    if override:
+        return Path(override), False
+    return Path.home() / ".claude" / "agy-quota-cache.json", True
+
+
+def refresh_quota_cache(force: bool = False) -> None:
+    """Re-read Agy's meter through the readout bootstrap already deploys.
+
+    Its zero-turn `/usage` query is the same one the statusline runs, so this
+    spends no model quota. A missing script or a failed run leaves the caller
+    with whatever snapshot it had, which is the no-gate case.
+
+    ``force`` is for the caller that already knows more than the snapshot: a
+    run that just died on a quota limit. The readout keeps its own five-minute
+    TTL, so without this the refresh after such a failure returns having asked
+    nothing, and the next unit routes on the fraction that was already wrong.
+    """
+    script = Path.home() / ".claude" / "agent-quota.py"
+    if not script.is_file():
+        return
+    command = [sys.executable, str(script), "--refresh-agy"]
+    if force:
+        command.append("--force")
+    try:
+        subprocess.run(command, capture_output=True, timeout=90, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return
+
+
+def quota_snapshot_age(path: Path) -> float | None:
+    """Seconds since the snapshot was written, or None when it is not usable.
+
+    A snapshot older than the refresh threshold counts as unusable rather than
+    old, so a caller that could not refresh it reads no state at all.
+    """
+    try:
+        age = time.time() - path.stat().st_mtime
+    except OSError:
+        return None
+    return age if age <= QUOTA_CACHE_MAX_AGE_SECONDS else None
+
+
+def still_empty(reset: str, now: float) -> bool:
+    """True while an empty bucket's own reset time has not arrived.
+
+    A five-hour bucket that read empty an hour ago says nothing about now, and
+    the gate would otherwise keep refusing on it until something else happened
+    to refresh the snapshot. An unparseable or absent reset time keeps the
+    reading, because no expiry can be established from it.
+    """
+    if not reset:
+        return True
+    text = reset.strip()
+    if text.endswith(("Z", "z")):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.datetime.fromisoformat(text)
+    except ValueError:
+        return True
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+    return parsed.timestamp() > now
+
+
+def read_pool_states() -> dict[str, tuple[float, str]] | None:
+    """Remaining fraction and reset hint per group, or None when unreadable.
+
+    The lowest bucket decides a group: a full weekly allowance is no help to a
+    unit that the 5-hour bucket stops, and the 5-hour bucket is the one that
+    emptied on 2026-09-11. A bucket whose reset time has passed is dropped
+    first, and a snapshot still older than the refresh threshold after a
+    refresh attempt is treated as unreadable, so neither one keeps refusing
+    work on a reading that has expired.
+    """
+    path, may_refresh = quota_cache_path()
+    if may_refresh:
+        if quota_snapshot_age(path) is None:
+            refresh_quota_cache()
+        age = quota_snapshot_age(path)
+        # A refresh that did not land leaves the caller with a reading it
+        # cannot date. The gate stops a dispatch only on current evidence.
+        if age is None:
+            return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    usage = data.get("usage")
+    groups = usage.get("groups") if isinstance(usage, dict) else None
+    if not isinstance(groups, list):
+        return None
+    now = time.time()
+    states: dict[str, tuple[float, str]] = {}
+    for group in groups:
+        if not isinstance(group, dict):
+            continue
+        name = str(group.get("name", "")).lower()
+        if "gemini" in name:
+            pool = "gemini"
+        elif "claude" in name or "gpt" in name:
+            pool = "second"
+        else:
+            continue
+        buckets = group.get("buckets")
+        for bucket in buckets if isinstance(buckets, list) else []:
+            if not isinstance(bucket, dict):
+                continue
+            remaining = bucket.get("remaining_fraction")
+            if isinstance(remaining, bool) or not isinstance(remaining, (int, float)):
+                continue
+            # A NaN compares false against every threshold, so admitting one
+            # would read as an empty group and refuse the dispatch.
+            if not math.isfinite(float(remaining)):
+                continue
+            reset = str(bucket.get("reset_time") or "").strip()
+            if float(remaining) <= 0 and not still_empty(reset, now):
+                continue
+            current = states.get(pool)
+            if current is None or float(remaining) < current[0]:
+                states[pool] = (float(remaining), reset)
+    return states or None
+
+
+def both_exhausted(states: dict[str, tuple[float, str]]) -> str:
+    gemini = states.get("gemini")
+    second = states.get("second")
+    return (
+        "both Agy quota groups are exhausted (Gemini resets "
+        f"{(gemini[1] if gemini else '') or 'later'}, Claude and GPT resets "
+        f"{(second[1] if second else '') or 'later'})."
+    )
+
+
+def quota_route(model: str) -> tuple[str, str, str]:
+    """Return the model to dispatch, a swap note, and a blocking reason.
+
+    An exhausted second group falls back to the Gemini default, because that
+    default is what the unit would have used anyway and the swap is recorded
+    rather than silent. An exhausted Gemini group does not escalate the other
+    way. Spending the smaller metered group is the user's call: an agent that
+    took it unasked is what left it at 60% after one day, and a fan-out that
+    escalates on its own would empty it without anyone choosing to.
+
+    A group the snapshot does not report is unknown rather than empty. The
+    gate stops a dispatch only into a group it read as empty; everything else
+    dispatches as it did before this gate existed.
+    """
+    if env_off("PRUN_AGY_QUOTA_GATE"):
+        return model, "", ""
+    pool = model_pool(model)
+    if pool is None:
+        return model, "", ""
+    states = read_pool_states()
+    if states is None:
+        return model, "", ""
+    own = states.get(pool)
+    if own is None or own[0] > 0:
+        return model, "", ""
+    other = states.get("second" if pool == "gemini" else "gemini")
+    other_may_serve = other is None or other[0] > 0
+    if pool == "second":
+        if other_may_serve:
+            return (
+                DEFAULT_MODEL,
+                f"MODEL-FALLBACK from={model} to={DEFAULT_MODEL} "
+                f"reason=claude-and-gpt-quota-exhausted resets={own[1] or 'later'}",
+                "",
+            )
+        return model, "", both_exhausted(states)
+    if other is not None and other[0] <= 0:
+        return model, "", both_exhausted(states)
+    reason = f"the Agy Gemini quota group is exhausted (resets {own[1] or 'later'})."
+    if other is not None:
+        # Spending the smaller metered group is the user's call, so the
+        # message names the escalation instead of taking it.
+        reason += (
+            " Wait for that reset, or name a model in the Claude and GPT "
+            "group through ANTIGRAVITY_DISPATCH_MODEL if that escalation is "
+            "wanted."
+        )
+    return model, "", reason
 
 
 def run_preflight(executable: str, model: str, state_dir: Path) -> tuple[int, str]:
@@ -480,6 +711,19 @@ def main(argv: list[str] | None = None) -> int:
 
     tail_path = state_dir / "tail"
     stderr_path = state_dir / "tail.stderr-tmp"
+    model, quota_note, quota_block = quota_route(model)
+    if quota_block:
+        stderr_path.write_text(quota_block + "\n", encoding="utf-8")
+        publish_fallback(
+            result_path, args.unit_id, quota_block, tail_path, stderr_path, nonce
+        )
+        return fail(quota_block, QUOTA_EXHAUSTED_EXIT)
+    if quota_note:
+        print(f"dispatch-task-agy: {quota_note}", file=sys.stderr, flush=True)
+        (state_dir / "quota-note").write_text(quota_note + "\n", encoding="utf-8")
+    # The ledger's executor column reads this, so a fallback unit is not
+    # recorded as having run on the model the caller asked for.
+    (state_dir / "model").write_text(model + "\n", encoding="utf-8")
     preflight_code, preflight_error = run_preflight(executable, model, state_dir)
     if preflight_code:
         stderr_path.write_text(preflight_error + "\n", encoding="utf-8")
@@ -498,8 +742,14 @@ def main(argv: list[str] | None = None) -> int:
         "stream-json",
         "--model",
         model,
-        "--effort",
-        effort,
+    ]
+    # Agy rejects `--effort` for the Claude and GPT models ("--effort is not
+    # supported for model ..."), so passing it unconditionally made that whole
+    # group unreachable: the 2026-09-11 fan-out had to patch a copy of this
+    # script to use it at all. Only the Gemini models take the flag.
+    if model_pool(model) != "second":
+        command += ["--effort", effort]
+    command += [
         "--mode",
         args.mode,
         "--print-timeout",
@@ -578,6 +828,11 @@ def main(argv: list[str] | None = None) -> int:
             # result, so the event status decides the outcome, not the exit code.
             exit_code = 70
             reason = backend_failure
+            # The meter this unit just hit is what the next unit's gate reads,
+            # and a quota stop is exactly the failure that repeats across a
+            # batch. Refresh so the rest of the fan-out routes on it.
+            if quota_cache_path()[1]:
+                refresh_quota_cache(force=True)
 
     worker_wrote = result_path.is_file() and result_path.stat().st_size > 0
     if worker_wrote:

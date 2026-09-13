@@ -203,12 +203,42 @@ Resolve scripts via this order, first hit wins: `skills/prun/scripts/`, then
   state directory, the conversation id from Agy's `init` event is recorded to
   `<state-dir>/conversation-id`, and the final response is published atomically to the result path.
 - Defaults to `gemini-3.8-flash-high` at `high` effort. Override with
-  `ANTIGRAVITY_DISPATCH_MODEL` and `ANTIGRAVITY_DISPATCH_EFFORT`.
+  `ANTIGRAVITY_DISPATCH_MODEL` and `ANTIGRAVITY_DISPATCH_EFFORT`. Agy takes
+  `--effort` for its Gemini models only, so the dispatcher omits the flag for
+  the second group below rather than having Agy reject the whole call.
 - Agy Ultra exposes a second quota group for `claude-sonnet-4-6`,
   `claude-opus-4-6-thinking`, and `gpt-oss-120b-medium`. Keep Gemini as the
   default because it adds an independent model family to the Sonnet fan-out.
   The second group is an explicit overflow option through
   `ANTIGRAVITY_DISPATCH_MODEL`; it adds quota, not reviewer-family diversity.
+  **Naming it is the user's call.** A fan-out that reached for it on its own
+  spent 646 generations of that group in a day, on units a Gemini worker would
+  have taken, and the group is the smaller of the two.
+- **The dispatcher checks group quota before launching.** The two groups are
+  metered separately, and one dispatch names one model, so a batch aimed at an
+  empty group fails once per unit: on 2026-09-11 four units of a seven-unit
+  fan-out died in a row, each carrying `Individual quota reached ... Resets in
+  34m`. Before launching, the dispatcher reads the snapshot `agent-quota`
+  maintains and decides:
+  - The Claude and GPT group is empty and Gemini is not: dispatch the Gemini
+    default instead, and record the swap. The line `MODEL-FALLBACK from=... to=...
+    reason=claude-and-gpt-quota-exhausted resets=...` goes to stderr and to
+    `<state-dir>/quota-note`. `<state-dir>/model` always names the model that
+    actually ran, so the ledger's executor column is not the model the caller
+    asked for when the two differ.
+  - The Gemini group is empty: exit `75` without launching, and say so. It does
+    not escalate into the metered group on its own; the message names
+    `ANTIGRAVITY_DISPATCH_MODEL` for the operator who wants that.
+  - Both groups are empty: exit `75` with both reset times.
+  - A group the snapshot does not report is unknown rather than empty, and an
+    unreadable snapshot skips the check entirely. The gate stops a dispatch
+    only into a group it read as empty. `PRUN_AGY_QUOTA_GATE=off` disables it.
+  A run that fails at the backend forces a snapshot refresh before exiting,
+  past the readout's own five-minute TTL, because the meter it just hit is
+  newer evidence than the snapshot. Later units then route on what it recorded.
+  This is not a guarantee: a refresh that cannot run, a meter that is
+  unavailable, and units already in flight can still produce repeated quota
+  errors.
 - `--mode` defaults to `accept-edits` with `--dangerously-skip-permissions`, the same unattended
   capability the implement-review Gemini reviewer already runs with, so a unit can verify numbers,
   run experiments, and fetch the web without a permission prompt. The default applies only to the
