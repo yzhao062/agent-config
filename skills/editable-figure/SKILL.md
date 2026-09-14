@@ -69,6 +69,8 @@ Choose the visual structure from the message: an example with an intervention po
 
 Use graphics to carry relationships. Text should identify objects and explain only what the graphic cannot. A useful starting point for a compact overview is a few focal elements, each with an object and a short question or label. Adjust to the source; this is not a fixed panel or word quota.
 
+For overview figures, retain a concrete domain object that participates in the mechanism, such as a circuit feeding measurements, rather than relying on a domain name in the title. Check that a reader can identify both the subject and the connection between panels. Shared variables, a carried example, or explicit input/output edges can establish that connection; adjacency and panel letters alone cannot. A section pointer printed in the figure, such as `Section 3.2`, helps navigation but does not explain the mechanism. Recheck it in the compiled document after structural edits, because section numbers move.
+
 Concise explanation can use visually rich content. Maps, scene illustrations, screenshots, scientific plots, and structured panels can make a proposal easier to understand when they carry its substance. Evaluate their role and reading hierarchy rather than treating flat minimalism, a particular font, or the absence of rounded panels as a quality test.
 
 ### Make occupied space earn its place
@@ -111,7 +113,7 @@ A dominant schematic can explain what the work makes possible, while a smaller r
 
 When the author wants a large (a) and narrow (b), reserve the gutter first, then divide the remaining width according to their reading roles. Judge separation between the actual labels and artwork, including axes and callouts. A divider does not compensate for crowded panels. After changing the canvas, recalculate text size at the final display width.
 
-Read [panels-and-results.md](references/panels-and-results.md) when combining an explanatory panel with data or revising their spacing. It covers panel hierarchy, source-derived numbers, descriptive versus inferential claims, and focused revisions. Use the plotting workflow for scientific correctness and the native PowerPoint guidance for editable chart behavior.
+Read [panels-and-results.md](references/panels-and-results.md) when combining an explanatory panel with data, separating regions within a wide schematic, or revising panel spacing. It covers panel hierarchy, region separation, cross-panel edges, source-derived numbers, descriptive versus inferential claims, and focused revisions. Use the plotting workflow for scientific correctness and the native PowerPoint guidance for editable chart behavior.
 
 ### Choose how to draft
 

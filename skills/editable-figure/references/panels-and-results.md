@@ -24,6 +24,14 @@ Expanding the slide can preserve the drawing's internal geometry, but it reduces
 
 Inspect the resulting manuscript page or README viewport. Widening the canvas is a tradeoff, not free space. Tighten low-value content if the final labels become hard to read. See [native-powerpoint.md](native-powerpoint.md) for canvas resizing and group-transform pitfalls.
 
+## Separate panels without breaking the reading path
+
+When a wide schematic reads as one uninterrupted strip, give its conceptual regions visible boundaries while preserving the cross-panel relationships. Start with gutters and aligned headings. Pale surfaces, a thin border, or a restrained shadow can add separation when whitespace alone is insufficient. These are optional treatments, not a requirement for cards or three columns. Keep them subordinate to semantic colors, and inspect at manuscript width so the treatment does not become visual clutter or disappear entirely.
+
+For the PDF export implications of shadows, see [native-powerpoint.md](native-powerpoint.md#inspect-the-final-export).
+
+Route cross-panel edges through the gutters to explicit destinations. An edge feeding a region with several readouts should not accidentally point at one readout and imply that only it receives the result. Keep qualifications next to the object they qualify; a nearby label from another row can appear to complete the wrong sentence even when their text boxes do not overlap.
+
 ## Keep the numerical claim attached to its estimator
 
 Read plotted values from an authoritative table, board, or experiment artifact. Prefer a parser shared with the paper's existing plotting code. Retain the input locator, series labels, transformation, and precision beside the builder. Do not infer values from image pixels when source data exists.
