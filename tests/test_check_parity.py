@@ -79,6 +79,7 @@ STRICT_MEMBERSHIP_FLOOR = (
     "tests/test_prun_report.py",
     "tests/test_prun_snapshot.py",
     "tests/test_style_audit.py",
+    "tests/test_prun_executors.py",
 )
 
 

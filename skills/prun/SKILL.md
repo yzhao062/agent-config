@@ -1,6 +1,6 @@
 ---
 name: prun
-description: Parallel delegation fan-out. The coordinating session decomposes and integrates while task units run in parallel on workers, never on the coordinator. Sonnet is the in-session executor for anything that needs session tools. Agy (Gemini through the Antigravity CLI) takes the larger share of the rest; it runs unattended in a scratch dir or throwaway clone and gets follow-up turns while slower units finish. Codex is not a prun executor. Unit count follows the dependency graph rather than a small fixed cap. Units may read or write code; workers never commit or push, and the session plus the user are the final integration gate.
+description: Parallel delegation fan-out on Agy. The coordinating session decomposes and integrates while task units run in parallel as Agy processes (Gemini through the Antigravity CLI), never on the coordinator and never on Claude-side workers such as Sonnet subagents. Each unit runs unattended in a scratch dir or throwaway clone and gets follow-up turns while slower units finish. Codex is not a prun executor either. Unit count follows the dependency graph rather than a small fixed cap. Units may read or write code; workers never commit or push, and the session plus the user are the final integration gate.
 ---
 
 # prun (parallel run)
@@ -8,18 +8,16 @@ description: Parallel delegation fan-out. The coordinating session decomposes an
 ## Overview
 
 `prun` fans a task out into independent units that run in parallel while the current session only
-coordinates. Workers are **Sonnet** subagents inside a Claude session and **Agy** processes running
-Gemini through the Antigravity CLI. Sonnet is the in-session executor and the only route to session
-tools. Agy supplies the independent Google model family, a separate subscription pool, and the
-faster turnaround, so it carries the larger share of ordinary units. **Codex is not a prun executor**;
-reserve its higher-cost quota for the default `/vet` gatekeeper role. The coordinator decomposes the
-task, dispatches the units, gathers their results, reviews their diffs, and integrates. It never
-runs a unit itself.
+coordinates. **Every worker is an Agy process** running Gemini through the Antigravity CLI, on the
+Google AI plan authenticated in `agy`. The coordinator decomposes the task, dispatches the units,
+gathers their results, reviews their diffs, and integrates. It never runs a unit itself.
 
-The orchestrator picks the executor per unit: session-internal tools go to Sonnet, and Agy takes
-the larger share of everything else while its pool is healthy. Sonnet units share the current
-Claude account. Agy units use the Google AI plan authenticated in `agy`. Exact plan buckets can
-change, so inspect current quota before a large batch.
+**No Claude-side workers.** A Sonnet subagent, a Workflow agent, or any other Agent-tool worker draws
+on the same Claude account as the coordinating session, so a fan-out of them spends that account's
+quota at the rate of the fan-out. That is the pool the coordinating session itself needs, and it
+drained fast once `prun` routed units to Sonnet. **Codex is not a prun executor** either; its
+higher-cost quota is reserved for the default `/vet` gatekeeper role. Exact plan buckets can change,
+so inspect current Agy quota before a large batch.
 
 ## Relationship to the native Workflow tool
 
@@ -28,26 +26,18 @@ with structured output, judge panels, and resume. A Workflow run counts against 
 usage and rate limits, and its agents use the session model unless the script routes a stage to a
 different Claude model.
 
-`prun` supports two account paths. A **Sonnet** unit shares the current Claude account with the
-coordinating session. An **Agy** unit runs Gemini through an authenticated Antigravity CLI and uses
-the Google AI plan attached to it. Use the Executors rule below to choose each unit's executor.
-The coordinating session also spends a small Anthropic amount while it
-decomposes, dispatches, reads results, and integrates.
+`prun` is the fan-out that stays off that account. Its units run on Agy and use the Google AI plan;
+the coordinating session spends only the small Anthropic amount it needs to decompose, dispatch,
+read results, and integrate. `prun` therefore never starts a Workflow or a Claude subagent, not as a
+unit, a fallback, or a second panel. When the user explicitly asks for a Claude panel, that is a
+Workflow run the user asked for, and it happens outside `prun`. A cross-vendor read on staged work
+is what `/vet` is for.
 
-The two relate in two ways, both with the current session as the orchestrator:
-
-- **Substitute (quota).** Read both pools with `agent-quota`, including snapshot age and reset
-  times. If Claude cannot accommodate the next batch, route suitable units to Agy or defer them.
-  Do not silently shrink a genuinely parallel task to an arbitrary two or three workers. A quota
-  reading does not establish that the other account can finish the batch.
-- **Complement (diversity).** When a Workflow is affordable and the user's request or an
-  applicable project requirement calls for a cross-vendor perspective, run a Claude panel through
-  the Workflow and a Gemini panel through Agy. Use the same structured
-  contract and the same question on both sides, then cross-check. Agreement across vendors is usually
-  a stronger signal than agreement inside one model family, because shared model lineage and tools
-  can share blind spots. Invoke them together in one natural-language request; no special mode is
-  needed. Reserve this for high-stakes work (a review, an audit, a hard design call), since it spends
-  both pools and the coordinator must merge two result sets.
+When the Agy Gemini group cannot accommodate the next batch, queue or defer units instead of moving
+them onto the Claude account. Read the meter with `agent-quota`, including snapshot age and reset
+times, and do not silently shrink a genuinely parallel task to an arbitrary two or three workers.
+The dispatcher's own quota route, described under dispatch-task usage, already stops a unit from
+launching into an empty group.
 
 ## When to use
 
@@ -62,46 +52,45 @@ or a unit's result cannot be checked without redoing it.
 
 | Executor | Quota | Notes |
 |---|---|---|
-| Sonnet subagent | Current Claude account; check Settings > Usage for the applicable limits or credits | **In-session executor.** The only route to session-internal tools (MCP / email / Artifacts), and the fallback when the Agy pool is the constraint. |
-| Agy (`agy`) | Google AI plan authenticated in Antigravity | **Takes the larger share.** Gemini 3.8 Flash High at `high` effort; fast, separately funded, and dispatched with full unattended tool permission inside a scratch dir or throwaway clone. |
+| Agy (`agy`) | Google AI plan authenticated in Antigravity | **The only worker.** Gemini 3.8 Flash High at `high` effort; fast, separately funded, and dispatched with full unattended tool permission inside a scratch dir or throwaway clone. |
 | Claude session (this session) | Current Claude account; check Settings > Usage for the applicable limits or credits | Coordinator and integrator only, on whatever model is selected. Never a unit. |
 
-Rule: **units never run on the coordinator (the Claude session itself).** The orchestrator picks the
-executor per unit:
+Rules:
 
-- **Session-internal tools stay on Sonnet.** An external Agy process cannot use the coordinator's
-  MCP, email connectors, or Artifact tool. That capability boundary is independent of quota. A
-  Sonnet subagent inherits the session's available tools but starts with fresh context, so put all
-  needed state in its unit prompt.
-- **Agy takes the larger share of everything else** while its pool is healthy: research,
-  verification, extraction, cross-checks, and code-writing units in a throwaway clone. It is fast,
-  its quota is separate from the Claude plan, and the dispatcher gives it the same unattended
-  capability as the `/vet` Agy reviewer, so a unit can verify numbers, run experiments, and fetch
-  the web. Agy defaults to `gemini-3.8-flash-high` at the CLI's maximum `high` effort. Route a
-  unit to Sonnet instead when the Agy pool is the constraint, when the unit needs a Claude-side
-  tool, or when the user or a project-local routing policy says so.
-- **Keep the Agy pool busy with follow-up turns.** Agy units usually return well before the Sonnet
-  ones. When one returns while others are still running, dispatch a follow-up Agy unit rather than
-  idling, provided the follow-up discharges real work: an acceptance criterion the result left
-  open, a claim it made without evidence, a source it cited but did not fetch, a check it proposed
-  but did not run, or the next independent unit in the queue. A slower sibling is not by itself a
-  reason to invent work. `--continue-from <state-dir>` resumes the same conversation, so the
-  follow-up keeps the earlier context; a fresh prompt with a fresh result path is the alternative.
-  Record each follow-up in the ledger like any other unit.
+- **Every unit runs on Agy.** Research, verification, extraction, cross-checks, and code-writing
+  units in a throwaway clone all go through `dispatch-task-agy`. The dispatcher gives a unit the
+  same unattended capability as the `/vet` Agy reviewer, so it can verify numbers, run experiments,
+  and fetch the web. Agy defaults to `gemini-3.8-flash-high` at the CLI's maximum `high` effort.
+- **Never a Claude-side worker.** Do not spawn an Agent-tool subagent (Sonnet or any other model)
+  or a Workflow agent for a unit, including as a fallback when the Agy pool is short. Those workers
+  spend the coordinating session's own Claude account. When Agy cannot take a batch, queue it or
+  tell the user.
 - **Codex is excluded from prun.** Its quota is intentionally reserved for the `/vet` reviewer
   role. Do not route a prun unit to `codex exec`, even if a legacy dispatcher remains on disk for
   compatibility with old state directories.
-- **When in doubt: session tools to Sonnet, everything else to Agy.** An explicit user instruction
-  or a project-local routing policy may change the split for a run.
-- **The Claude session stays the coordinator, never a unit.** A single small session-tool action
-  may stay inline; independent substantive work belongs in workers.
+- **Session-internal tools stay outside the fan-out.** An Agy process cannot use the coordinator's
+  MCP, email connectors, or Artifact tool. Gather what a unit needs from those tools in the
+  coordinating session before dispatch, and put it in the unit prompt; leave a small action that
+  needs them to the coordinator as one inline step. A task whose substantive work needs those tools
+  throughout is not a `prun` task.
+- **Keep the Agy pool busy with follow-up turns.** Units return at different times. When one returns
+  while others are still running, dispatch a follow-up unit rather than idling, provided the
+  follow-up discharges real work: an acceptance criterion the result left open, a claim it made
+  without evidence, a source it cited but did not fetch, a check it proposed but did not run, or
+  the next independent unit in the queue. A slower sibling is not by itself a reason to invent
+  work. `--continue-from <state-dir>` resumes the same conversation, so the follow-up keeps the
+  earlier context; a fresh prompt with a fresh result path is the alternative. Record each
+  follow-up in the ledger like any other unit.
+- **The Claude session stays the coordinator, never a unit.** Independent substantive work belongs
+  in Agy workers.
 
-**Why the split is Sonnet plus Agy.** They draw on separate subscription pools and provide model-
-family diversity without spending the higher-cost Codex pool used by `/vet`. Agy carries the larger
-share because it is fast and its pool is large; that is a routing and cost decision, not a
-universal quality ranking, and the coordinator still reviews every result and every diff. Check
-current quota before a large batch, but do not convert changing meter readings into an arbitrary
-low worker cap.
+**Why Agy alone.** Its pool is separate from the Claude plan, it is fast, and it adds an independent
+model family without spending the higher-cost Codex pool used by `/vet`. The earlier split put
+Sonnet beside Agy on the grounds that the two draw on separate pools. They do, but Sonnet's pool is
+the coordinator's own Claude account, so every Sonnet worker spent the quota the coordinating
+session runs on, and a wide fan-out consumed it quickly. The coordinator still reviews every result
+and every diff. Check current quota before a large batch, but do not convert changing meter
+readings into an arbitrary low worker cap.
 
 ## Concurrency
 
@@ -112,8 +101,8 @@ target a fixed number, and do not cap artificially. A dozen-plus in parallel is 
 task genuinely decomposes that way.
 
 Two soft bounds, not hard rules: local CPU/RAM (enough concurrent workers eventually contend and
-the excess queues) and the headroom of the Claude and Agy pools. `agent-quota` reads current
-snapshots for both. The usual real ceiling is
+the excess queues) and the headroom of the Agy pool. `agent-quota` reads the current snapshot of
+both Agy groups. The usual real ceiling is
 **integration bandwidth**, since the orchestrator must read and reconcile every result, so
 prefer fewer well-scoped units over many tiny ones. Over-splitting into trivial units wastes
 worker startup and tends to produce thin results. Dispatch in batches that fit the runtime's
@@ -150,29 +139,17 @@ real remotes, and the Claude session plus the user are the integration gate. Tha
 2. **Decompose**: write one prompt per unit. State the task; for a code-writing unit, that the
    working dir is a throwaway clone to edit freely but **not** commit or push; that the unit writes
    a result summary to its result file (a fresh path, in one write).
-3. **Assign**: apply the Executors rule (session tools to Sonnet, the larger share of the rest to
-   Agy) and record the routing reason in the ledger. Also pick read-only (scratch) or code-writing
-   (clone) mode. For a web-heavy unit, "Web access" below covers which executor fits.
-4. **Dispatch in parallel**:
-   - Agy unit: run `<python> scripts/dispatch-task-agy.py` in the background. With no `--mode`
-     it runs `accept-edits` with `--dangerously-skip-permissions` in a scratch directory it
-     creates. A caller-supplied workspace, meaning `PRUN_SCRATCH_CWD` (a throwaway clone for a
-     code-writing unit) or `--add-dir` (a clone or snapshot the unit should see), requires an
-     explicit `--mode accept-edits` or `--mode plan`, so the write-capable mode is a named choice
-     for any directory the dispatcher did not create. `--continue-from <state-dir>` resumes an
-     earlier unit's conversation for a follow-up turn.
-   - Sonnet unit: spawn a background Agent subagent with `model: sonnet`. It inherits the session's
-     available tools, including MCP and connector tools; if you set a `tools` allowlist, include every
-     connector, Artifact, file, shell, and web tool the unit needs. The subagent starts with fresh
-     context, so put any needed state in its prompt. For code-writing it works in a clone too, under
-     Claude's `guard.py`, which already gates commit/push.
-5. **Monitor (do not go idle)**: the shell monitor covers **Agy** units only. It reads the
-   `dispatch-task-agy` state markers (`tail`, `dispatch-pid`, `result-file`) that a Sonnet Agent
-   invocation never writes, and it takes no Agent identifier. For **Sonnet** units, track the Agent
-   identifiers recorded in the ledger and use the runtime's own task-status and completion tools,
-   checking again on a schedule while any unit is outstanding. Result-file validation and the
-   step-6 reconciliation are common to both. For the Agy units, launch
-   `scripts/monitor.{sh,ps1} <state-dir> ...` in the background
+3. **Assign**: every unit goes to Agy. Gather anything a unit needs from session-internal tools
+   first and write it into that unit's prompt. Pick read-only (scratch) or code-writing (clone)
+   mode, and record the mode in the ledger.
+4. **Dispatch in parallel**: run `<python> scripts/dispatch-task-agy.py` in the background for each
+   unit. With no `--mode` it runs `accept-edits` with `--dangerously-skip-permissions` in a scratch
+   directory it creates. A caller-supplied workspace, meaning `PRUN_SCRATCH_CWD` (a throwaway clone
+   for a code-writing unit) or `--add-dir` (a clone or snapshot the unit should see), requires an
+   explicit `--mode accept-edits` or `--mode plan`, so the write-capable mode is a named choice for
+   any directory the dispatcher did not create. `--continue-from <state-dir>` resumes an earlier
+   unit's conversation for a follow-up turn.
+5. **Monitor (do not go idle)**: launch `scripts/monitor.{sh,ps1} <state-dir> ...` in the background
    (`run_in_background=true`) and wait on its completion. It wakes you on the first actionable event:
    all done, any unit **stalled** (tail no-growth for `PRUN_STALL_THRESHOLD`, default 10 min), or any
    unit **failed** (`FALLBACK` result or dead dispatch), printing a per-unit digest. On a stall,
@@ -183,11 +160,10 @@ real remotes, and the Claude session plus the user are the integration gate. Tha
    (`gather.{sh,ps1}` remains for the plain wait-for-all case.)
 6. **Reconcile, then integrate**: before integrating, **reconcile the ledger**: every dispatched unit
    must have a non-empty result. If any is missing or empty, do **not** integrate the partial set;
-   recover an Agy worker's output from its `<state-dir>/tail` (dispatch-task-agy also salvages the
-   tail into the result file automatically under a `FALLBACK` header), or retrieve a Sonnet
-   worker's returned output through its recorded Agent identifier using the runtime's
-   completion/output tools. If no usable result can be recovered, re-dispatch that unit or flag the
-   user. Then the coordinator reads each result plus each clone's `git diff`, merges the wanted changes into
+   recover the worker's output from its `<state-dir>/tail` (dispatch-task-agy also salvages the
+   tail into the result file automatically under a `FALLBACK` header). If no usable result can be
+   recovered, re-dispatch that unit or flag the user. Then the coordinator reads each result plus
+   each clone's `git diff`, merges the wanted changes into
    the real tree, runs verification, and **asks the user before any commit**.
 
 Resolve scripts via this order, first hit wins: `skills/prun/scripts/`, then
@@ -208,7 +184,8 @@ Resolve scripts via this order, first hit wins: `skills/prun/scripts/`, then
   the second group below rather than having Agy reject the whole call.
 - Agy Ultra exposes a second quota group for `claude-sonnet-4-6`,
   `claude-opus-4-6-thinking`, and `gpt-oss-120b-medium`. Keep Gemini as the
-  default because it adds an independent model family to the Sonnet fan-out.
+  default: it is the larger group, and it keeps a unit's model family
+  independent of the Claude coordinator that reviews the result.
   The second group is an explicit overflow option through
   `ANTIGRAVITY_DISPATCH_MODEL`; it adds quota, not reviewer-family diversity.
   **Naming it is the user's call.** A fan-out that reached for it on its own
@@ -299,15 +276,6 @@ Resolve scripts via this order, first hit wins: `skills/prun/scripts/`, then
   prompt's ban on commit, push, and destructive git.
 - The legacy `dispatch-task.{sh,ps1}` Codex scripts remain shipped only so older deployments and
   state directories retain their recovery tooling. Current `prun` routing never selects them.
-
-## Sonnet usage
-
-Sonnet is the executor for a unit needing session-internal tools (see Executors) and the
-fallback when the Agy pool is the constraint. Spawn an Agent-tool subagent
-with `model: sonnet`. It inherits the session's available tools but starts with **fresh context** (it
-does not see the conversation), so put any needed state in the unit prompt. Give it the same return
-contract and result-file path. For a code-writing unit, point it at a clone dir; commit and push are
-also gated by `guard.py` on the Claude side.
 
 ## gather usage
 
@@ -516,17 +484,14 @@ Verification: <what was run/checked/searched, or "none">
 ## Ledger
 
 Keep a simple run ledger (a file in a scratch area) recording each unit: id, executor, mode, prompt
-file, clone-dir, result file, status (dispatched / done / failed), start/end, and the handle the
-unit is tracked by, meaning its state-dir for an Agy unit and its Agent identifier for a Sonnet
-one. An Agy unit also records the routing reason from the Executors rule, which makes the choice
-reviewable afterwards. Use the ledger to report progress and to
-relaunch only units whose result is missing or fails validation.
+file, clone-dir, result file, status (dispatched / done / failed), start/end, and the unit's
+state-dir. Take the executor column from `<state-dir>/model`, which names the model that actually
+ran, so a quota fallback shows in the ledger. Use the ledger to report progress and to relaunch
+only units whose result is missing or fails validation.
 
 **Where a unit's own files go**: four kinds of file belong under an `agent-io` directory inside the scratch area. They are the per-unit prompt, the result file, the shared-context file every worker reads, and the run ledger. The directory name tells the writing-style hook to skip them, because none of that text is the coordinator's prose to rewrite. A unit prompt is an instruction to a worker, and a result file holds what the worker sent back. Anything the fan-out produces for a human reader stays outside `agent-io`.
 
 ## Web access
-
-Both executors reach the web by different paths, each with its own strengths, so assign per unit.
 
 **Agy** runs on the user's local machine, so its requests leave from the user's local network
 rather than the cloud fetcher's egress IP, often a residential IP. That can reach some pages a cloud
@@ -541,23 +506,15 @@ headless run denies the permission prompt. The process can still exit 0 with a r
 fetch did not happen, so read a plan-mode result's `Verification` and `Open items` fields before
 trusting it.
 
-**Sonnet** units get web from an `agentType` granting built-in `WebSearch` and `WebFetch`, and,
-where the session permits it, the same local shell the curl recipe below uses. Claude's `WebSearch`
-is strong at broad discovery, finding the right page when the URL is unknown, which makes it the
-right default for ordinary web work. A Sonnet worker with local shell access leaves from the same
-local network an Agy worker does, so a cloud `WebFetch` returning `403` does not on its own buy a
-second model run.
+Web units, all on Agy:
 
-Routing heuristic (apply the Executors rule):
-
-- **Discover a page when the URL is unknown**: use a **Sonnet** unit; Claude's `WebSearch` is the
-  stronger discovery tool.
-- **Fetch a known URL**: either executor. An Agy unit fetches unattended through `read_url` or
-  curl in the default mode, and it is the cheaper pool.
-- **A page the Sonnet worker's `WebFetch` is blocked on**: have that same unit retry through its
-  permitted local shell first, then hand the URL to an **Agy** unit, and record which path failed.
-- **A high-stakes fact that might be stale or blocked**: run one executor first, then add the
-  other as a cross-check when the task explicitly calls for a second vendor's read on that claim.
+- **Discover a page when the URL is unknown**: give the unit the question and let it search; ask it
+  to list the candidate URLs it considered, so a thin search shows up in the result.
+- **Fetch a known URL**: the unit fetches unattended through `read_url` or curl in the default mode.
+- **A page that blocks the fetch**: have the unit retry through curl from the local network, and
+  record which path failed and the HTTP status each returned.
+- **A high-stakes fact that might be stale or blocked**: dispatch a second unit that verifies the
+  claim from an independent source, and have the coordinator compare the two results.
 
 An Agy web-fetch unit can use curl in the default mode (`--mode plan` denies it). Report the
 HTTP status per URL so a cloud-vs-local block shows up in the result. In Windows PowerShell, name

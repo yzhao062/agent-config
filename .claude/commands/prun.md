@@ -1,5 +1,5 @@
 ---
-description: "Run prun: parallel delegation fan-out (Sonnet-primary, Opus coordinates)"
+description: "Run prun: parallel delegation fan-out on Agy workers (the session coordinates)"
 argument-hint: "[task description or context]"
 ---
 
@@ -7,4 +7,4 @@ Read and follow the skill definition. Look for it at `skills/prun/SKILL.md` firs
 
 Command arguments from the slash invocation: `$ARGUMENTS`
 
-Treat the command arguments as the task to fan out. prun decomposes the task into independent units and runs many of them in parallel on Sonnet and Agy workers (never on Opus). Sonnet handles units that need session tools; Agy (Gemini through the Antigravity CLI, separate Google AI pool) takes the larger share of the rest, runs unattended in a scratch dir or throwaway clone, and gets follow-up turns while slower units finish. Codex is reserved for `/vet` and is not a prun executor. Units may read or write code; code-writing units run in a throwaway local clone, workers never commit or push, and Opus plus the user are the final integration gate. Opus gathers the results, reviews each diff, and integrates. Choose the worker count from the actual dependency graph; do not impose an arbitrary two- or three-worker cap.
+Treat the command arguments as the task to fan out. prun decomposes the task into independent units and runs many of them in parallel on Agy workers (Gemini through the Antigravity CLI, on the separate Google AI pool), never on this session. Do not spawn Sonnet or any other Claude subagent, or a Workflow, for a unit: those bill the same Claude account this session runs on. Codex is reserved for `/vet` and is not a prun executor. Each unit runs unattended in a scratch dir or throwaway clone and gets follow-up turns while slower units finish. Units may read or write code; code-writing units run in a throwaway local clone, workers never commit or push, and this session plus the user are the final integration gate. This session gathers the results, reviews each diff, and integrates. Choose the worker count from the actual dependency graph; do not impose an arbitrary two- or three-worker cap.

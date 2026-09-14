@@ -246,6 +246,10 @@ strict_test_files=(
   # style-audit.py sits under the STRICT-shared implement-review tree and had
   # no entry here, so its test was kept identical by hand. Same rule, same fix.
   tests/test_style_audit.py
+  # Pins the executor contract in skills/prun/SKILL.md and its OpenAI wrapper,
+  # both STRICT-shared under the recursive prun tree, and reads each repo's own
+  # README and docs. Registered in the commit that adds it, not after drift.
+  tests/test_prun_executors.py
 )
 for f in "${strict_test_files[@]}"; do
   $AA_INTERNAL_ONLY && break
