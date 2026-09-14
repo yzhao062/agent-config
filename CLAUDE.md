@@ -237,6 +237,7 @@ If anything is off, replace `all clear` with a semicolon-separated list of concr
 - The router inspects prompt keywords, file types, and project structure to dispatch automatically. Do not ask the user which skill to use when the routing table provides a clear match.
 - If the `superpowers` plugin is active, the router operates during the execution phase. Superpowers handles the outer workflow (brainstorm, plan, execute, verify); the router handles inner dispatch to the right domain skill.
 - If routing is ambiguous (multiple skills could apply), state the detected context and proposed skill, then ask the user to confirm.
+- Do not fan work out across subagents or a Workflow run on your own initiative. Those workers bill the account the session runs on, and one unrequested fan-out on 2026-09-13 used a large share of a Claude five-hour window. When parallel work would help, propose it and let the user choose between `prun`, whose units run on Agy, and a Workflow. If the user already chose a route for the current task, honor it within its agreed scope without asking again. A single helper agent for a bounded lookup is not a fan-out.
 
 ## Writing Defaults
 
@@ -355,6 +356,8 @@ repositories that prompted this were created.
 **The mandatory risk set (destructive git, destructive/publish gh, package publishes, file/device destruction) is NOT bypassable by ANY env var.** No escape hatch turns the `ask` prompt into pass-through. The guards have no automatic reroute; human approval is the contract. The advertised env-var set lives in `scripts/guard.py:_ESCAPE_HATCH_ENV_NAMES`; a static literal-scan test enforces that no future hook env var can be added without registering it there.
 
 Set a per-guard escape env when a legitimate write has a banned word in *meta-discussion* context (a style-guide document that quotes banned words as examples; a CHANGELOG entry that cites one). Prefer the narrowest env that unblocks (`AGENT_STYLE_HOOK=off` over `AGENT_CONFIG_GATES=off`) so the other gates stay live. Remove the override after the write.
+
+**Fan-out stays a written rule.** No gate enforces the Task Routing rule against unrequested subagents and Workflow runs, by design. Whether the user asked for parallel work is a judgement about the conversation, often made several turns before the launch. A hook that judged it wrong would block a fan-out the user requested. If an agent fans out unasked again, sharpen the prose instead of adding a hook.
 
 ## Shell Command Style
 
