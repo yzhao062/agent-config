@@ -17,6 +17,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 DISPATCH = ROOT / "skills" / "implement-review" / "scripts" / "dispatch-gemini.py"
+HEALTH = ROOT / "skills" / "implement-review" / "scripts" / "health-check.py"
 PYTHON = Path(sys.executable).resolve()
 GIT = shutil.which("git")
 
@@ -34,6 +35,7 @@ import json
 import os
 import re
 import sys
+import time
 from pathlib import Path
 
 log = Path(os.environ["MOCK_AGY_LOG"])
@@ -53,7 +55,7 @@ prompt = event["message"]["content"]
 round_match = re.search(r"<!-- Round (\d+) -->", prompt)
 round_num = round_match.group(1) if round_match else "1"
 padding = "Independent review evidence. " * 24
-response = (
+review = (
     f"<!-- Round {round_num} -->\n\n"
     "## Verification notes\n\n"
     "- `git diff --cached --no-ext-diff` completed successfully.\n\n"
@@ -62,7 +64,61 @@ response = (
     "## Previously raised\n\nNone.\n\n"
     "Commit verdict: PASS\n"
 )
-print(json.dumps({"event": "init", "model": "gemini-3.8-flash-high"}))
+# MOCK_AGY_RESPONSE picks the shape of the final response: a whole review (the
+# default), the opening narration a quota stop leaves behind, a narration
+# followed by the review, or a review missing its verdict or its marker. The
+# last four are the shapes Codex reproduced on 2026-09-15 against the first
+# recovery rule: two carry the review lines only inside quoted code, and two
+# carry them around a review that is not finished.
+kind = os.environ.get("MOCK_AGY_RESPONSE", "review")
+narration = "I will begin by reading the staged diff and running the tests. " * 12
+fence = "`" * 3
+if kind == "narration":
+    response = narration
+elif kind == "preamble":
+    response = "I have started the build and will wait for it.\n\n" + review
+elif kind == "no-verdict":
+    response = review.replace("Commit verdict: PASS\n", "")
+elif kind == "no-marker":
+    response = review.replace(f"<!-- Round {round_num} -->\n\n", "")
+elif kind == "quoted-template":
+    response = (
+        "I will write the review in this shape once the suite finishes:\n\n"
+        f"{fence}markdown\n<!-- Round {round_num} -->\n\n"
+        "## Verification notes\n\n<commands and their results>\n\n"
+        "Verification status: VERIFIED\n\n"
+        "## New\n\n<findings>\n\n"
+        f"Commit verdict: PASS\n{fence}\n\n" + narration
+    )
+elif kind == "quoted-status":
+    response = (
+        f"<!-- Round {round_num} -->\n\n" + narration + "\n\n"
+        f"The review will end like this:\n\n{fence}text\n"
+        f"Verification status: VERIFIED\nCommit verdict: PASS\n{fence}\n"
+    )
+elif kind == "truncated-draft":
+    response = (
+        f"<!-- Round {round_num} -->\n\n"
+        "## Verification notes\n\n"
+        "- `git diff --cached --no-ext-diff` completed successfully.\n\n"
+        "Verification status: VERIFIED\n\n"
+        "Commit verdict: PASS\n\n"
+        "## New\n\n### 1. High: the publication path\n\n" + padding +
+        "The dispatcher then"
+    )
+elif kind == "pending-verdict":
+    response = review.replace(
+        "Commit verdict: PASS\n",
+        "Commit verdict: will be PASS if the remaining checks succeed.\n",
+    )
+else:
+    response = review
+print(json.dumps({"event": "init", "model": "gemini-3.8-flash-high"}), flush=True)
+time.sleep(float(os.environ.get("MOCK_AGY_DELAY_SECONDS", "0")))
+# The working directory is the staged snapshot inside the state directory, so a
+# test can occupy the dispatcher's backend-failure path with a directory.
+if os.environ.get("MOCK_AGY_BLOCK_RECORD"):
+    (Path.cwd().parent / "backend-failure").mkdir()
 payload = {"response": response}
 # Older Antigravity builds omit status, so the fixture carries the field only
 # when a test asks for it.
@@ -106,6 +162,51 @@ class DispatchGeminiUnitTests(unittest.TestCase):
         reason = self.module.failure_reason("ERROR", "Individual quota reached.")
         self.assertIn("ERROR", reason)
         self.assertIn("Individual quota reached.", reason)
+
+    def test_review_structure_reads_the_lines_the_health_check_reads(self) -> None:
+        status = "Verification status: VERIFIED"
+        verdict = "Commit verdict: PASS"
+        whole = f"<!-- Round 6 -->\n\n## Notes\n\n{status}\n\n## New\n\nNone.\n\n{verdict}\n"
+        self.assertTrue(self.module.has_review_structure(whole, 6))
+        self.assertTrue(self.module.has_review_structure("Compiling first.\n\n" + whole, 6))
+        # Bold labels and a heading verdict are both shapes seen in the field.
+        bold = whole.replace(status, f"**{status}**").replace(verdict, f"**{verdict}**")
+        self.assertTrue(self.module.has_review_structure(bold, 6))
+        heading = whole.replace(verdict, "## Commit verdict\n\nBLOCK")
+        self.assertTrue(self.module.has_review_structure(heading, 6))
+        self.assertFalse(self.module.has_review_structure(whole.replace(verdict, ""), 6))
+        self.assertFalse(self.module.has_review_structure(whole.replace(status, ""), 6))
+        self.assertFalse(self.module.has_review_structure(whole, 5))
+        self.assertFalse(
+            self.module.has_review_structure(whole.replace("<!-- Round 6 -->\n", ""), 6)
+        )
+        # A marker quoted inside a sentence is not the review's first line, and
+        # status or verdict lines that come before the marker do not count.
+        quoted = f"I will start with <!-- Round 6 --> and end with {verdict}.\n{status}\n"
+        self.assertFalse(self.module.has_review_structure(quoted, 6))
+        early = f"{status}\n{verdict}\n<!-- Round 6 -->\n\nStill reading.\n"
+        self.assertFalse(self.module.has_review_structure(early, 6))
+        # Quoted code is masked as health-check.py masks it. A fenced template
+        # supplies neither the marker normalize_review would cut at nor the
+        # lines after it, and neither does a fenced or inline example under a
+        # real marker.
+        fence = "`" * 3
+        self.assertFalse(
+            self.module.has_review_structure(f"Plan:\n\n{fence}markdown\n{whole}{fence}\n", 6)
+        )
+        example = f"<!-- Round 6 -->\n\nStill reading.\n\n{fence}text\n{status}\n{verdict}\n{fence}\n"
+        self.assertFalse(self.module.has_review_structure(example, 6))
+        inline = whole.replace(status, f"`{status}`").replace(verdict, f"`{verdict}`")
+        self.assertFalse(self.module.has_review_structure(inline, 6))
+        inline_value = whole.replace(verdict, "Commit verdict: `PASS`")
+        self.assertFalse(self.module.has_review_structure(inline_value, 6))
+        # normalize_review cuts at the first marker line, so a quoted marker
+        # ahead of a real review would publish from inside the quote.
+        quoted_marker = f"{fence}\n<!-- Round 6 -->\n{fence}\n\n{whole}"
+        self.assertFalse(self.module.has_review_structure(quoted_marker, 6))
+        self.assertTrue(
+            self.module.has_review_structure(f"{whole}\n{fence}text\nexample\n{fence}\n", 6)
+        )
 
     def test_extract_result_keeps_a_status_a_later_event_omits(self) -> None:
         # A trailing event without the field must not erase the verdict, and a
@@ -273,6 +374,9 @@ class DispatchGeminiIntegrationTests(unittest.TestCase):
         # cases below are covering, so only a test that asks for one gets it.
         env.pop("MOCK_AGY_STATUS", None)
         env.pop("MOCK_AGY_ERROR", None)
+        env.pop("MOCK_AGY_RESPONSE", None)
+        env.pop("MOCK_AGY_DELAY_SECONDS", None)
+        env.pop("MOCK_AGY_BLOCK_RECORD", None)
         if extra_env:
             env.update(extra_env)
         return subprocess.run(
@@ -355,7 +459,7 @@ class DispatchGeminiIntegrationTests(unittest.TestCase):
         self.assertIn("is not available", result.stderr)
         self.assertFalse((self.log / "prompt.txt").exists())
 
-    def test_error_status_rejects_a_review_that_clears_the_size_floor(self) -> None:
+    def test_error_status_rejects_a_narration_that_clears_the_size_floor(self) -> None:
         review = self.repo / "Review-Antigravity.md"
         review.write_text("<!-- Round 1 -->\n\nEarlier round.\n", encoding="utf-8")
         before = review.read_bytes()
@@ -363,6 +467,7 @@ class DispatchGeminiIntegrationTests(unittest.TestCase):
             {
                 "MOCK_AGY_STATUS": "ERROR",
                 "MOCK_AGY_ERROR": "Quota exceeded for gemini-3.8-flash-high",
+                "MOCK_AGY_RESPONSE": "narration",
             }
         )
         self.assertEqual(
@@ -384,6 +489,175 @@ class DispatchGeminiIntegrationTests(unittest.TestCase):
             len(response.encode("utf-8")), self.module.MIN_REVIEW_BYTES
         )
         self.assertEqual(error, "Quota exceeded for gemini-3.8-flash-high")
+        self.assertFalse((state_dir / "backend-failure").exists())
+
+    def test_error_status_publishes_a_whole_review_and_records_the_error(self) -> None:
+        # Measured on 2026-09-15: four Agy reviews ended this way, each result
+        # holding a whole PASS review, and all four were thrown away.
+        server_error = (
+            "API error (attempt 2): UNAVAILABLE (code 503): "
+            "No capacity available for model gemini-3.8-flash-high on the server"
+        )
+        for shape in ("review", "preamble"):
+            with self.subTest(shape):
+                review = self.repo / "Review-Antigravity.md"
+                review.unlink(missing_ok=True)
+                result = self._run(
+                    {
+                        "MOCK_AGY_STATUS": "ERROR",
+                        "MOCK_AGY_ERROR": server_error,
+                        "MOCK_AGY_RESPONSE": shape,
+                    }
+                )
+                self.assertEqual(
+                    result.returncode,
+                    0,
+                    f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}",
+                )
+                published = review.read_text(encoding="utf-8")
+                self.assertEqual(published.splitlines()[0], "<!-- Round 2 -->")
+                self.assertNotIn("started the build", published)
+                self.assertIn("Commit verdict: PASS", published)
+                self.assertIn("UNAVAILABLE (code 503)", result.stderr)
+                self.assertIn("published", result.stderr)
+                state_dir = Path(result.stdout.strip().split(" ", 1)[1])
+                self.assertIn(
+                    "UNAVAILABLE (code 503)",
+                    (state_dir / "backend-failure").read_text(encoding="utf-8"),
+                )
+
+    def test_error_status_rejects_a_review_missing_its_verdict_or_marker(self) -> None:
+        for shape in ("no-verdict", "no-marker"):
+            with self.subTest(shape):
+                review = self.repo / "Review-Antigravity.md"
+                review.write_text("<!-- Round 1 -->\n\nEarlier round.\n", encoding="utf-8")
+                before = review.read_bytes()
+                result = self._run(
+                    {
+                        "MOCK_AGY_STATUS": "ERROR",
+                        "MOCK_AGY_ERROR": "API error (attempt 2): UNAVAILABLE (code 503)",
+                        "MOCK_AGY_RESPONSE": shape,
+                    }
+                )
+                self.assertEqual(result.returncode, 70, result.stderr)
+                self.assertIn("review rejected", result.stderr)
+                self.assertEqual(review.read_bytes(), before)
+
+    def test_error_status_rejects_review_lines_found_only_in_quoted_code(self) -> None:
+        # Codex reproduced both shapes against the first recovery rule, and each
+        # replaced the prior review and passed every health check. A fenced
+        # template holds the marker, status and verdict; a real marker can sit
+        # above an example that holds the other two.
+        for shape in ("quoted-template", "quoted-status"):
+            with self.subTest(shape):
+                review = self.repo / "Review-Antigravity.md"
+                review.write_text("<!-- Round 1 -->\n\nEarlier round.\n", encoding="utf-8")
+                before = review.read_bytes()
+                result = self._run(
+                    {
+                        "MOCK_AGY_STATUS": "ERROR",
+                        "MOCK_AGY_ERROR": "API error (attempt 2): UNAVAILABLE (code 503)",
+                        "MOCK_AGY_RESPONSE": shape,
+                    }
+                )
+                self.assertEqual(result.returncode, 70, result.stderr)
+                self.assertIn("review rejected", result.stderr)
+                self.assertEqual(review.read_bytes(), before)
+                state_dir = Path(result.stdout.strip().split(" ", 1)[1])
+                self.assertFalse((state_dir / "backend-failure").exists())
+                # Publication alone would have accepted either response: it
+                # clears the size floor and starts with the round marker.
+                _, response, _ = self.module.extract_result(state_dir / "tail")
+                normalized = self.module.normalize_review(response, 2)
+                self.assertEqual(normalized.splitlines()[0], "<!-- Round 2 -->")
+                self.assertGreaterEqual(
+                    len(normalized.encode("utf-8")), self.module.MIN_REVIEW_BYTES
+                )
+
+    def test_a_recovered_draft_is_published_and_health_check_warns(self) -> None:
+        # Structure outside quoted code does not show the findings are finished:
+        # a draft can write its status and verdict before a finding it never
+        # completes, or give a verdict that is still conditional. The dispatcher
+        # keeps the text, and the backend-failure record it leaves is what makes
+        # the health check stop a silent advance. Every other check passes for
+        # these drafts, so the warning is asserted directly.
+        for shape in ("truncated-draft", "pending-verdict"):
+            with self.subTest(shape):
+                review = self.repo / "Review-Antigravity.md"
+                review.unlink(missing_ok=True)
+                result = self._run(
+                    {
+                        "MOCK_AGY_STATUS": "ERROR",
+                        "MOCK_AGY_ERROR": "API error (attempt 2): UNAVAILABLE (code 503)",
+                        "MOCK_AGY_RESPONSE": shape,
+                        # publish_review writes its candidate before it waits
+                        # out the dispatch second, so a result inside that second
+                        # leaves an mtime Check 2 reads as stale. A real review
+                        # takes minutes; the mock waits past the second instead.
+                        "MOCK_AGY_DELAY_SECONDS": "1.2",
+                    }
+                )
+                self.assertEqual(
+                    result.returncode,
+                    0,
+                    f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}",
+                )
+                state_dir = Path(result.stdout.strip().split(" ", 1)[1])
+                self.assertTrue((state_dir / "backend-failure").is_file())
+                checks = self._health_check(state_dir, review)
+                self.assertEqual(checks["check-8"][0], "WARN", checks)
+                self.assertIn("breakdown=recovered:1", checks["check-8"][1])
+                others = {code: kind for code, (kind, _) in checks.items() if code != "check-8"}
+                self.assertEqual(set(others.values()), {"PASS"}, checks)
+                # The tail itself is clean, so the warning is the record's.
+                (state_dir / "backend-failure").unlink()
+                self.assertEqual(self._health_check(state_dir, review)["check-8"][0], "PASS")
+
+    def test_a_recovery_that_cannot_record_the_error_is_not_published(self) -> None:
+        # Check 8 warns on the backend-failure record, so a recovered review
+        # must never land without it. With the record's path occupied, the
+        # prior review has to survive.
+        review = self.repo / "Review-Antigravity.md"
+        review.write_text("<!-- Round 1 -->\n\nEarlier round.\n", encoding="utf-8")
+        before = review.read_bytes()
+        result = self._run(
+            {
+                "MOCK_AGY_STATUS": "ERROR",
+                "MOCK_AGY_ERROR": "API error (attempt 2): UNAVAILABLE (code 503)",
+                "MOCK_AGY_BLOCK_RECORD": "1",
+            }
+        )
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(review.read_bytes(), before)
+        state_dir = Path(result.stdout.strip().split(" ", 1)[1])
+        self.assertTrue((state_dir / "backend-failure").is_dir())
+
+    def _health_check(self, state_dir: Path, review: Path) -> dict[str, tuple[str, str]]:
+        result = subprocess.run(
+            [
+                str(PYTHON),
+                str(HEALTH),
+                "--state-dir",
+                str(state_dir),
+                "--review-file",
+                str(review),
+                "--round",
+                "2",
+            ],
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
+        checks: dict[str, tuple[str, str]] = {}
+        for line in result.stdout.splitlines():
+            parts = line.split(maxsplit=2)
+            if len(parts) >= 2:
+                checks[parts[1]] = (parts[0], parts[2] if len(parts) > 2 else "")
+        self.assertIn("check-8", checks, f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}")
+        return checks
 
     def test_success_status_still_publishes_the_review(self) -> None:
         result = self._run({"MOCK_AGY_STATUS": "SUCCESS"})

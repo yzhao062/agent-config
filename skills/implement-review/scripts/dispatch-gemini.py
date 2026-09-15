@@ -13,6 +13,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -28,6 +29,18 @@ DEFAULT_MODEL = "gemini-3.8-flash-high"
 DEFAULT_EFFORT = "high"
 DEFAULT_TIMEOUT_SECONDS = 2700
 MIN_REVIEW_BYTES = 500
+# The line shapes health-check.py reads for Check 10, so the structure this
+# dispatcher recovers a review on is the structure the health check judges.
+VERIFICATION_STATUS_RE = re.compile(
+    r"^\s*(?:#{1,6}\s+|[-*+]\s+)?(?:\*\*|__)?verification\s+status"
+    r"(?:\*\*|__)?\s*:\s*(?:\*\*|__)?\s*(VERIFIED|UNVERIFIED)\b",
+    re.IGNORECASE | re.MULTILINE,
+)
+VERDICT_LABEL_RE = re.compile(
+    r"^\s*(?:#{1,6}\s+|[-*+]\s+)?(?:\*\*|__)?(?:commit\s+)?verdict\b(?P<rest>.*)$",
+    re.IGNORECASE,
+)
+VERDICT_VALUE_RE = re.compile(r"\b(BLOCK(?:ED)?|PASS(?:ED)?|UNVERIFIED)\b", re.IGNORECASE)
 
 
 def fail(message: str, code: int = 2) -> int:
@@ -366,6 +379,50 @@ def normalize_review(response: str, round_num: int) -> str:
     return "\n".join(lines[marker_index:]).rstrip() + "\n"
 
 
+def has_review_structure(response: str, round_num: int) -> bool:
+    """Return whether the response has this round's review structure outside quoted code.
+
+    The structure is this round's marker on its own line and, after it, a
+    standalone verification status and a commit verdict. Closed triple-backtick
+    blocks and single-line inline code are masked first, the exclusions
+    health-check.py applies, so a template quoted in either cannot supply those
+    lines. A tilde fence or an unclosed fence is not recognized, which is one
+    more reason a recovery is only a candidate. Masking keeps line positions,
+    so the marker normalize_review would cut at must sit outside quoted code.
+    Passing this check makes the response a recovery candidate; it does not
+    show the findings are finished, which is why health-check.py warns on the
+    backend-failure record a recovery leaves.
+    """
+    marker = f"<!-- Round {round_num} -->"
+    text = response.replace("\r\n", "\n").replace("\r", "\n")
+    lines = text.split("\n")
+    try:
+        marker_index = lines.index(marker)
+    except ValueError:
+        return False
+    prose = re.sub(
+        r"```.*?```",
+        lambda match: "\n" * match.group(0).count("\n"),
+        text,
+        flags=re.DOTALL,
+    )
+    prose = re.sub(r"`[^`\n]*`", "", prose)
+    visible_lines = prose.split("\n")
+    if visible_lines[marker_index] != marker:
+        return False
+    body = visible_lines[marker_index + 1:]
+    if not VERIFICATION_STATUS_RE.search("\n".join(body)):
+        return False
+    for index, line in enumerate(body):
+        match = VERDICT_LABEL_RE.match(line)
+        if not match:
+            continue
+        following = next((later for later in body[index + 1:index + 5] if later.strip()), "")
+        if VERDICT_VALUE_RE.search(match.group("rest")) or VERDICT_VALUE_RE.search(following):
+            return True
+    return False
+
+
 def publish_review(
     response: str,
     expected_path: Path,
@@ -569,7 +626,7 @@ def main(argv: list[str] | None = None) -> int:
     if exit_code == 0:
         status, response, error = extract_result(tail_path)
         backend_failure = failure_reason(status, error)
-        if backend_failure:
+        if backend_failure and not (response and has_review_structure(response, args.round)):
             # Antigravity exits 0 when it stops on a quota limit, and that
             # ERROR event still carries the model's opening narration. The
             # prun dispatcher published one of those as a unit result; here it
@@ -583,6 +640,16 @@ def main(argv: list[str] | None = None) -> int:
             )
             exit_code = 70
         else:
+            if backend_failure:
+                # A server error such as UNAVAILABLE (code 503) can end the run
+                # after the whole review is already in the result, and
+                # discarding that text threw away finished reviews. The
+                # structure check cannot tell a finished review from a draft,
+                # so health-check.py Check 8 warns on this record. It is
+                # written first, so a recovered review never lands without it.
+                (state_dir / "backend-failure").write_text(
+                    backend_failure + "\n", encoding="utf-8"
+                )
             published, error = publish_review(
                 response,
                 expected_path,
@@ -593,6 +660,12 @@ def main(argv: list[str] | None = None) -> int:
             if not published:
                 print(f"dispatch-gemini: {error}; review rejected", file=sys.stderr)
                 exit_code = 70
+            elif backend_failure:
+                print(
+                    f"dispatch-gemini: {backend_failure}; the result held this round's "
+                    "review structure, published with a backend-failure record",
+                    file=sys.stderr,
+                )
 
     tail_to_stderr(tail_path)
     tail_to_stderr(stderr_path)

@@ -555,6 +555,15 @@ def emit_check_8(tail_file: Path, tail_stderr_file: Path) -> None:
                         )
                         total_hits += n
 
+        # dispatch-gemini.py writes backend-failure just before it publishes a
+        # review from a result that ended in a backend error. Its structure check
+        # does not show the findings are finished, so the recovery must not
+        # advance silently: count it as a marker and let the WARN checkpoint
+        # surface it.
+        if (tail_file.parent / "backend-failure").exists():
+            total_hits += 1
+            per_pattern_counts["recovered-backend-error"] = 1
+
         if total_hits:
             # Compact per-pattern breakdown so downstream Claude can recognize
             # known-noise shapes (e.g. WSL-stub-bash 1312 burst when Substance

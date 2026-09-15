@@ -653,6 +653,29 @@ class HealthCheckPython(unittest.TestCase):
             self.assertEqual(parsed["check-8"][0], "WARN")
             self.assertIn("missing-dispatch-tail", parsed["check-8"][1])
 
+    def test_check8_warns_on_a_backend_failure_record(self) -> None:
+        # dispatch-gemini.py writes backend-failure just before it publishes a
+        # review from a result that ended in a backend error. Its structure check
+        # does not show the findings are finished, so the record alone must block
+        # a silent advance, with a clean tail and an otherwise valid review.
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            review = td_path / "Review-Antigravity.md"
+            make_review(review)
+            state = make_state_dir(td_path)
+            parsed = parse_output(run_health_py(state, review).stdout)
+            self.assertEqual(parsed["check-8"][0], "PASS")
+            (state / "backend-failure").write_text(
+                "Antigravity reported status ERROR: UNAVAILABLE (code 503)\n",
+                encoding="utf-8",
+            )
+            result = run_health_py(state, review)
+            self.assertEqual(result.returncode, 0)
+            parsed = parse_output(result.stdout)
+            self.assertEqual(parsed["check-8"][0], "WARN")
+            self.assertIn("1 tool-failure-markers", parsed["check-8"][1])
+            self.assertIn("breakdown=recovered:1", parsed["check-8"][1])
+
     # ----- Check 8 Fix A (line-level echo classifier) + Fix B (two-tier) -----
     # Real-failure-wins: a real failure must keep WARNing even when it looks
     # line-numbered or carries a backslash path. Validated live against the
