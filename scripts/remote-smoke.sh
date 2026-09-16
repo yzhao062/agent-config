@@ -96,15 +96,38 @@ git init -q
 next_step "Scaffold temp project at $TMPDIR"
 pass "git-initialized empty project"
 
-# Snapshot ~/.claude/settings.json mtime BEFORE install so the statusLine
-# step below can prove the install actually rewrote the file. Without this
-# guard, a regressed user-level merge would still false-pass on a release-gate
-# machine where a prior smoke run already left a statusLine entry behind.
+# Prove the install actually applied the user-level merge. Without this, a
+# regressed merge would false-pass on a release-gate machine where a prior
+# smoke run already left a statusLine entry behind.
+#
+# Watching the file change stopped answering that question once the merge began
+# skipping a run that changes nothing (anywhere-agents#58): on the second smoke
+# run of the day a healthy merge writes nothing, which looks exactly like a
+# merge that never ran. So give it something to repair. Two trailing newlines
+# parse as the same JSON and cannot survive a publish, because the canonical
+# form ends in exactly one, so a merge that runs takes them back out and a
+# merge that does not leaves them there. Appending two rather than one is what
+# makes the mark visible on a file that ended without a newline at all, where
+# a single one would land on the canonical ending and read as repaired.
+#
+# It is appended rather than composed and renamed, because this is the
+# operator's own settings file and not a fixture. An append cannot truncate the
+# file, cannot lose a write the real helper commits under its lock while the
+# smoke is between a read and a rename, and cannot move a byte-order mark off
+# byte zero, where a prepended byte would leave the file unreadable to a reader
+# that strips a BOM only there. Losing the race the other way costs only this
+# extra assurance: the helper republishes the canonical form, the check below
+# reports the marker missing, and nothing the operator had is gone.
+#
+# A file that exists and cannot be appended to is a failure to prepare, not an
+# absent file. Letting it through would leave the check silently disabled and
+# the step reporting the merge ran, which is the false pass the mark exists to
+# close.
 USER_SETTINGS="$HOME/.claude/settings.json"
+SETTINGS_PROBE=false
 if [ -f "$USER_SETTINGS" ]; then
-  PRE_INSTALL_SETTINGS_MTIME=$(stat -c %Y "$USER_SETTINGS" 2>/dev/null || stat -f %m "$USER_SETTINGS" 2>/dev/null || echo 0)
-else
-  PRE_INSTALL_SETTINGS_MTIME=0
+  printf '\n\n' >> "$USER_SETTINGS" || fail "could not mark $USER_SETTINGS; the user-level merge cannot be verified"
+  SETTINGS_PROBE=true
 fi
 
 # --- 1. Bootstrap via install command ---------------------------------------
@@ -158,13 +181,20 @@ next_step "User-level statusLine deployed"
 STATUSLINE_FILE="$HOME/.claude/statusline.py"
 [ -f "$STATUSLINE_FILE" ] || fail "missing $STATUSLINE_FILE"
 [ -f "$USER_SETTINGS" ] || fail "missing $USER_SETTINGS"
-POST_INSTALL_SETTINGS_MTIME=$(stat -c %Y "$USER_SETTINGS" 2>/dev/null || stat -f %m "$USER_SETTINGS" 2>/dev/null || echo 0)
-if [ "$POST_INSTALL_SETTINGS_MTIME" -le "$PRE_INSTALL_SETTINGS_MTIME" ]; then
-  fail "$USER_SETTINGS mtime did not advance after install (post=$POST_INSTALL_SETTINGS_MTIME, pre=$PRE_INSTALL_SETTINGS_MTIME); statusLine entry below may be stale from a prior smoke run"
+# The canonical form ends in exactly one newline. Finding the second one this
+# script appended means the merge never rewrote the file, so the statusLine
+# entry below is whatever a previous run left behind. An mtime comparison
+# cannot stand in for this: stat reports whole seconds, and a fast install
+# lands in the one its own snapshot was taken in.
+# The bytes are read through od because command substitution strips trailing
+# newlines, so comparing the tail as a string compares two empty strings.
+SETTINGS_TAIL=$(tail -c 2 "$USER_SETTINGS" | od -An -tx1 | tr -d ' \n')
+if $SETTINGS_PROBE && [ "$SETTINGS_TAIL" = "0a0a" ]; then
+  fail "$USER_SETTINGS still carries the pre-install marker; the user-level merge did not rewrite it, so the statusLine entry below may be stale from a prior smoke run"
 fi
 grep -q '"statusLine"' "$USER_SETTINGS" || fail "missing statusLine entry in $USER_SETTINGS"
 grep -q '\.claude/statusline\.py' "$USER_SETTINGS" || fail "statusLine command in $USER_SETTINGS does not reference ~/.claude/statusline.py"
-pass "$STATUSLINE_FILE + settings entry (post-install mtime advanced)"
+pass "$STATUSLINE_FILE + settings entry (merge rewrote the file)"
 
 # --- 3. Generated-file header --------------------------------------------
 next_step "Generated per-agent files carry the GENERATED FILE header"

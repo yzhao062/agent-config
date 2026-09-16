@@ -751,6 +751,34 @@ function Close-SettingsLock($Stream) {
 # does the same, so whichever path ran, the recovery material looks alike. The
 # loss this guards against went unnoticed for 78 days, so the history is bounded
 # by count rather than by age.
+# True when the file already holds exactly the bytes a publish would write.
+function Test-SettingsUnchanged([string]$Path, [string]$Text) {
+  try {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
+    $current = [System.IO.File]::ReadAllBytes($Path)
+    $next = (New-Object System.Text.UTF8Encoding $false).GetBytes($Text)
+    if ($current.Length -ne $next.Length) { return $false }
+    for ($i = 0; $i -lt $current.Length; $i++) {
+      if ($current[$i] -ne $next[$i]) { return $false }
+    }
+    return $true
+  } catch {
+    return $false
+  }
+}
+
+# Publish a merge result, unless the file already holds those bytes. The merge
+# helper applies the same rule: a run that changes nothing writes nothing and
+# copies nothing aside, because 27 consumer bootstraps otherwise leave 27
+# identical backups and push the recovery history out of the capped window
+# (anywhere-agents#58). Returns whether the file was written.
+function Publish-SettingsIfChanged([string]$Path, [string]$Text, [switch]$KeepBackup) {
+  if (Test-SettingsUnchanged $Path $Text) { return $false }
+  if ($KeepBackup) { Backup-SettingsFile $Path }
+  Write-JsonFileAtomic $Path $Text
+  return $true
+}
+
 function Backup-SettingsFile([string]$Path) {
   if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return }
   try {
@@ -1178,7 +1206,7 @@ if (Test-Path .agent-config/repo/.claude/settings.json) {
         if (@($project.PSObject.Properties).Count -eq 0) {
           throw 'refusing to write an empty object'
         }
-        Write-JsonFileAtomic (Join-Path (Get-Location).Path '.claude/settings.json') (ConvertTo-CanonicalJson $project)
+        [void](Publish-SettingsIfChanged (Join-Path (Get-Location).Path '.claude/settings.json') (ConvertTo-CanonicalJson $project))
       } catch {
         $script:SettingsMergeReason = "could not merge .claude/settings.json: $($_.Exception.Message)"
         [Console]::Error.WriteLine("warning: $script:SettingsMergeReason")
@@ -1256,8 +1284,7 @@ if (Test-Path .agent-config/repo/user/settings.json) {
             if (@($existing.PSObject.Properties).Count -eq 0) {
               throw 'refusing to write an empty object'
             }
-            Backup-SettingsFile $userSettings
-            Write-JsonFileAtomic $userSettings (ConvertTo-CanonicalJson $existing)
+            [void](Publish-SettingsIfChanged $userSettings (ConvertTo-CanonicalJson $existing) -KeepBackup)
           } catch {
             $script:SettingsMergeReason = "could not merge ${userSettings}: $($_.Exception.Message)"
             [Console]::Error.WriteLine("warning: $script:SettingsMergeReason")

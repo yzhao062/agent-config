@@ -3465,6 +3465,63 @@ class SettingsMergeEncodingTests(unittest.TestCase):
                             f"{label}: the fallback rewrote a target the helper refused",
                         )
 
+    def test_the_fallback_publish_skips_a_file_it_would_not_change(self) -> None:
+        # The in-shell merge runs where the helper cannot, so it needs the same
+        # rule: identical bytes are not republished and not copied aside
+        # (anywhere-agents#58). `Publish-SettingsIfChanged` is the call site, so
+        # the driver runs that rather than a copy of it.
+        shells = powershell_editions_or_fail(self) if sys.platform.startswith("win") else []
+        source = self.BOOTSTRAP_PS1.read_text(encoding="utf-8")
+        names = ("Publish-SettingsIfChanged", "Test-SettingsUnchanged",
+                 "Backup-SettingsFile", "Write-JsonFileAtomic", "Write-JsonFileUtf8")
+        bodies = "\n".join(
+            RulePacksConfigStateTests._powershell_function(source, name) for name in names
+        )
+        driver_text = (
+            bodies
+            + "\n$target = $args[0]\n$text = [System.IO.File]::ReadAllText($args[1])\n"
+            "$wrote = Publish-SettingsIfChanged $target $text -KeepBackup\n"
+            "Write-Output ([string]$wrote)\n"
+        )
+        for shell in shells:
+            with self.subTest(entrypoint=Path(shell).stem):
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    work = Path(tmpdir)
+                    driver = work / "driver.ps1"
+                    driver.write_text(driver_text, encoding="utf-8")
+                    target = work / "settings.json"
+                    payload = work / "payload.json"
+                    text = '{\n  "env": {\n    "KEEP": "1"\n  }\n}\n'
+                    payload.write_bytes(text.encode("utf-8"))
+                    target.write_bytes(text.encode("utf-8"))
+                    stamp = target.stat().st_mtime_ns
+
+                    def run() -> subprocess.CompletedProcess:
+                        return subprocess.run(
+                            [shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy",
+                             "Bypass", "-File", str(driver), str(target), str(payload)],
+                            capture_output=True, text=True, timeout=120,
+                        )
+
+                    result = run()
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn("False", result.stdout)
+                    self.assertEqual(target.stat().st_mtime_ns, stamp, "the target was rewritten")
+                    copies = [p.name for p in work.iterdir()
+                              if p.name.startswith("settings.json.bak-")]
+                    self.assertEqual(copies, [], f"a no-op run left a backup: {copies}")
+
+                    # A real change still publishes and still keeps a copy.
+                    payload.write_bytes('{\n  "env": {\n    "KEEP": "2"\n  }\n}\n'.encode("utf-8"))
+                    result = run()
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn("True", result.stdout)
+                    self.assertEqual(target.read_bytes(), payload.read_bytes())
+                    copies = [p for p in work.iterdir()
+                              if p.name.startswith("settings.json.bak-")]
+                    self.assertEqual(len(copies), 1, "a changed file kept no copy")
+                    self.assertEqual(copies[0].read_bytes(), text.encode("utf-8"))
+
     def test_a_mixed_array_is_reported_rather_than_traced(self) -> None:
         # The branch that chooses dedup over replace reads the incoming list's
         # first element alone, which is deliberate parity with the inline
@@ -3725,6 +3782,73 @@ class SettingsPublicationTests(unittest.TestCase):
         self.assertEqual(newest["env"]["ROUND"], str(keep + 2),
                          "the newest backup is not the content the last run replaced")
 
+    def test_a_run_that_changes_nothing_writes_nothing(self) -> None:
+        # Bootstrap runs on every session, and a consumer loop runs it 27 times
+        # in a row. Republishing identical bytes each time left 198 backups
+        # across those repos, every one of them a copy of the live file, which
+        # pushed the recovery history out of the capped window
+        # (anywhere-agents#58).
+        merged = {"permissions": {"allow": ["Bash(git:*)"]}, "env": {"KEEP": "1"}}
+        self.target.write_bytes(self.module.canonical_bytes(merged))
+        before = self.target.read_bytes()
+        stamp = self.target.stat().st_mtime_ns
+        result = self._run_helper()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.target.read_bytes(), before)
+        self.assertEqual(self.target.stat().st_mtime_ns, stamp, "the target was rewritten")
+        copies = [p.name for p in self.home.iterdir()
+                  if p.name.startswith("settings.json.bak-")]
+        self.assertEqual(copies, [], f"a no-op run left a backup: {copies}")
+
+    def test_a_run_that_changes_something_still_keeps_a_copy(self) -> None:
+        before = self._write_target({"env": {"KEEP": "1"}})
+        result = self._run_helper()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        copies = [p for p in self.home.iterdir()
+                  if p.name.startswith("settings.json.bak-")]
+        self.assertEqual(len(copies), 1, "a merge that changed the file kept no copy")
+        self.assertEqual(copies[0].read_bytes(), before)
+        merged = json.loads(self.target.read_text(encoding="utf-8"))
+        self.assertEqual(merged["permissions"]["allow"], ["Bash(git:*)"])
+        self.assertEqual(merged["env"]["KEEP"], "1")
+
+    def test_a_target_in_another_shape_is_rewritten_once(self) -> None:
+        # Canonicalizing is a real change, so the first run publishes and keeps
+        # a copy. The second sees its own bytes and stops.
+        merged = {"permissions": {"allow": ["Bash(git:*)"]}, "env": {"KEEP": "1"}}
+        self.target.write_bytes(
+            (json.dumps(merged, indent=4) + "\n").encode("utf-8")
+        )
+        self.assertEqual(self._run_helper().returncode, 0)
+        after_first = self.target.read_bytes()
+        self.assertEqual(after_first, self.module.canonical_bytes(merged))
+        self.assertEqual(
+            len([p for p in self.home.iterdir() if p.name.startswith("settings.json.bak-")]), 1
+        )
+        stamp = self.target.stat().st_mtime_ns
+        self.assertEqual(self._run_helper().returncode, 0)
+        self.assertEqual(self.target.read_bytes(), after_first)
+        self.assertEqual(self.target.stat().st_mtime_ns, stamp,
+                         "the second run rewrote bytes it did not change")
+        self.assertEqual(
+            len([p for p in self.home.iterdir() if p.name.startswith("settings.json.bak-")]), 1,
+            "the second run kept another copy of bytes it did not change",
+        )
+
+    def test_a_target_the_serializer_cannot_encode_is_reported(self) -> None:
+        # `{"BAD": "\ud800"}` parses back and then fails to encode, so the
+        # comparison's own call to canonical_bytes raises. That failure used to
+        # land in the publish handler and print a diagnostic; a guard catching
+        # only OSError would turn the same input into a traceback.
+        self.target.write_bytes(b'{\n  "env": {\n    "BAD": "\\ud800"\n  }\n}\n')
+        before = self.target.read_bytes()
+        result = self._run_helper()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("merge_settings: cannot publish", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(self.target.read_bytes(), before,
+                         "a target the serializer refused was modified anyway")
+
     def test_the_user_settings_target_takes_the_lock_the_composer_takes(self) -> None:
         # The composer's permission handler stages a merge into this same file
         # and publishes it under the per-user lock. A sibling lock would not
@@ -3970,8 +4094,161 @@ class SettingsPublicationTests(unittest.TestCase):
         )
         self.assertIn("function Write-JsonFileAtomic", ps1,
                       "bootstrap.ps1 has no atomic JSON writer")
-        self.assertIn("Write-JsonFileAtomic $userSettings", ps1,
+        # The user phase publishes through the one call site that also decides
+        # whether there is anything to write, and that helper is the only thing
+        # between the merge and the atomic writer.
+        self.assertIn("Publish-SettingsIfChanged $userSettings", ps1,
                       "bootstrap.ps1 still publishes user settings in place")
+        self.assertIn("  Write-JsonFileAtomic $Path $Text\n", ps1,
+                      "Publish-SettingsIfChanged does not reach the atomic writer")
+
+    def test_both_settings_call_sites_decide_before_they_publish(self) -> None:
+        # The project phase rewrites .claude/settings.json in every consumer on
+        # every session, and the user phase copies the old content aside first.
+        # Neither may reach the writer on its own, or a run that changed nothing
+        # republishes and keeps a copy of what it did not change
+        # (anywhere-agents#58).
+        ps1 = self.BOOTSTRAP_PS1.read_text(encoding="utf-8")
+        self.assertIn(
+            "Publish-SettingsIfChanged (Join-Path (Get-Location).Path '.claude/settings.json')", ps1,
+            "the project phase publishes without deciding whether anything changed",
+        )
+        calls = [line.strip() for line in ps1.splitlines()
+                 if "Write-JsonFileAtomic" in line and not line.startswith("function")]
+        self.assertEqual(calls, ["Write-JsonFileAtomic $Path $Text"],
+                         f"a settings write bypasses Publish-SettingsIfChanged: {calls}")
+        copies = [line.strip() for line in ps1.splitlines()
+                  if "Backup-SettingsFile" in line and not line.startswith("function")]
+        self.assertEqual(copies, ["if ($KeepBackup) { Backup-SettingsFile $Path }"],
+                         f"a copy is kept outside Publish-SettingsIfChanged: {copies}")
+
+    SMOKE_MARK = (
+        'USER_SETTINGS="$HOME/.claude/settings.json"\n'
+        "SETTINGS_PROBE=false\n"
+        'if [ -f "$USER_SETTINGS" ]; then\n'
+        '  printf \'\\n\\n\' >> "$USER_SETTINGS"'
+        ' || fail "could not mark $USER_SETTINGS;'
+        ' the user-level merge cannot be verified"\n'
+        "  SETTINGS_PROBE=true\n"
+        "fi\n"
+    )
+    SMOKE_CHECK = (
+        'SETTINGS_TAIL=$(tail -c 2 "$USER_SETTINGS" | od -An -tx1 | tr -d \' \\n\')\n'
+        'if $SETTINGS_PROBE && [ "$SETTINGS_TAIL" = "0a0a" ]; then\n'
+    )
+
+    def _run_smoke_probe(self, settings: bytes | None, preamble: str = "", *, install: str):
+        """Run the smoke's own mark and check lines around a stand-in install.
+
+        Returns the completed process and the bytes the settings file was left
+        holding, read before the temporary home goes away.
+        """
+        if not BASH:
+            self.skipTest("bash not available")
+        smoke = (ROOT / "scripts" / "remote-smoke.sh").read_text(encoding="utf-8")
+        for fragment in (self.SMOKE_MARK, self.SMOKE_CHECK):
+            self.assertIn(fragment, smoke,
+                          "remote-smoke.sh no longer carries the fragment this test runs")
+        # Git for Windows' bash can still hold the directory when it exits, and
+        # the probe's own result is what this reads, not the tree it ran in.
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
+            work = Path(tmpdir)
+            home = work / "home"
+            (home / ".claude").mkdir(parents=True)
+            target = home / ".claude" / "settings.json"
+            if settings is not None:
+                target.write_bytes(settings)
+            script = work / "probe.sh"
+            _write_text_lf(script, (
+                "fail() { echo \"FAIL $*\"; exit 1; }\n"
+                + preamble
+                + self.SMOKE_MARK
+                + install
+                + self.SMOKE_CHECK
+                + '  fail "stale"\nfi\necho OK\n'
+            ))
+            # HOME in forward slashes, because Git for Windows' bash does not
+            # treat a backslash in it as a separator and every path built from
+            # it would then miss. bash's own directory joins PATH because
+            # earlier tests in this class leave a fixture PATH behind, and the
+            # fragment needs the coreutils that ship beside bash.
+            env = {**os.environ, "HOME": home.as_posix()}
+            env["PATH"] = os.pathsep.join(
+                [str(Path(BASH).resolve().parent), env.get("PATH", "")])
+            result = subprocess.run(
+                [BASH, str(script)], capture_output=True, text=True, timeout=120,
+                env=env,
+            )
+            return result, (target.read_bytes() if target.is_file() else None)
+
+    def test_the_release_smoke_catches_an_install_that_did_not_merge(self) -> None:
+        # The smoke proved the install applied the user-level merge by watching
+        # the file change. A healthy merge now writes nothing when it changes
+        # nothing, so on a release-gate machine that already ran the smoke once,
+        # watching alone stopped telling a healthy merge from a regressed one.
+        # The script marks the file first; an install that never rewrote it
+        # gives the mark back.
+        canonical = b'{\n  "env": {\n    "KEEP": "1"\n  }\n}\n'
+        stale, _ = self._run_smoke_probe(
+            canonical, install=": # an install that writes nothing\n")
+        self.assertEqual(stale.returncode, 1, stale.stdout)
+        self.assertIn("FAIL stale", stale.stdout)
+
+        # A merge that republishes the canonical form takes the mark away, and
+        # it passes even though both runs land in the same whole second, which
+        # is the resolution `stat` reports.
+        healthy, _ = self._run_smoke_probe(
+            canonical,
+            install='printf \'{\\n  "env": {\\n    "KEEP": "1"\\n  }\\n}\\n\' > "$USER_SETTINGS"\n',
+        )
+        self.assertEqual(healthy.returncode, 0, healthy.stdout + healthy.stderr)
+        self.assertIn("OK", healthy.stdout)
+
+        # First install: no file to mark, so the check has nothing to say and
+        # the statusLine assertions after it carry the step on their own.
+        first, _ = self._run_smoke_probe(
+            None, install='printf \'{}\\n\' > "$USER_SETTINGS"\n')
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+
+    def test_the_release_smoke_stops_when_it_cannot_mark_the_file(self) -> None:
+        # A file that exists and refuses the append is a failure to prepare, and
+        # a read-only settings file is how it happens. Carrying on would leave
+        # the check disabled and the step reporting that the merge ran, which is
+        # the false pass the mark exists to close. `printf` is overridden rather
+        # than the file's permissions, so the branch is reached the same way on
+        # every platform and under an elevated account.
+        result, marked = self._run_smoke_probe(
+            b'{\n  "env": {\n    "KEEP": "1"\n  }\n}\n',
+            "printf() { return 1; }\n",
+            install="echo INSTALLED\n",
+        )
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("FAIL could not mark", result.stdout)
+        self.assertEqual(marked, b'{\n  "env": {\n    "KEEP": "1"\n  }\n}\n',
+                         "a probe that could not mark the file changed it anyway")
+        self.assertNotIn("INSTALLED", result.stdout,
+                         "the install ran although the probe could not be prepared")
+
+    def test_the_release_smoke_mark_leaves_the_settings_readable(self) -> None:
+        # It is appended rather than composed and renamed, because this is the
+        # operator's own file. A prepended byte would push a byte-order mark off
+        # byte zero, where `utf-8-sig` stops stripping it, and the helper would
+        # then refuse the file on every later run.
+        for label, settings in (
+            ("plain", b'{\n  "env": {\n    "KEEP": "1"\n  }\n}\n'),
+            ("bom", '\ufeff{\n  "env": {\n    "KEEP": "1"\n  }\n}\n'.encode("utf-8")),
+            # A file ending without a newline is why the mark is two of them:
+            # one would land on the canonical ending and read as repaired.
+            ("no trailing newline", b'{"env": {"KEEP": "1"}}'),
+        ):
+            with self.subTest(settings=label):
+                result, marked = self._run_smoke_probe(
+                    settings, install=": # install fails before the merge\n")
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertEqual(
+                    json.loads(marked.decode("utf-8-sig")), {"env": {"KEEP": "1"}},
+                    f"{label}: a failed install left settings the helper cannot read",
+                )
 
 
 @unittest.skipUnless(POWERSHELL, "pwsh/powershell not available")

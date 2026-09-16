@@ -303,6 +303,11 @@ def _replace_with_retry(source: pathlib.Path, target: pathlib.Path) -> None:
             time.sleep(REPLACE_RETRY_INTERVAL)
 
 
+def canonical_bytes(data) -> bytes:
+    """The exact bytes a publish writes: UTF-8, no BOM, LF, trailing newline."""
+    return (json.dumps(data, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+
+
 def write_json(path: pathlib.Path, data) -> None:
     """Publish the canonical form by rename: UTF-8, no BOM, LF, trailing newline.
 
@@ -311,8 +316,7 @@ def write_json(path: pathlib.Path, data) -> None:
     in place. The temporary file is a sibling, because rename is atomic only
     within one filesystem.
     """
-    text = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
-    payload = text.encode("utf-8")
+    payload = canonical_bytes(data)
     json.loads(payload.decode("utf-8"))
     tmp = path.with_name(".%s.merge-%d.tmp" % (path.name, os.getpid()))
     try:
@@ -367,6 +371,22 @@ def merge_into(target: pathlib.Path, shared: pathlib.Path) -> int:
         # persisting; leaving the file alone keeps the old content readable.
         sys.stderr.write("merge_settings: refusing to write an empty object to %s\n" % target)
         return 1
+    try:
+        if target.read_bytes() == canonical_bytes(target_data):
+            # The merge reproduced the bytes already on disk, so there is
+            # nothing to publish and nothing worth keeping a copy of. Writing
+            # anyway is how 27 consumer bootstraps left 27 identical backups
+            # and pushed the recovery history #32 asked for out of the
+            # BACKUP_KEEP window (anywhere-agents#58).
+            return 0
+    except (OSError, ValueError):
+        # Unreadable or absent: fall through and publish, which is the path a
+        # first install takes. ValueError covers the serializer as well, since
+        # a target holding an escaped unpaired surrogate parses back and then
+        # fails to encode. Before this guard existed that failure landed in the
+        # publish handler below and printed a diagnostic, so catching only
+        # OSError here would turn it into a traceback.
+        pass
     snapshot(target)
     try:
         write_json(target, target_data)
