@@ -39,7 +39,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, NamedTuple
 
 
 DEFAULT_MODEL = "gemini-3.8-flash-high"
@@ -59,6 +59,37 @@ SECOND_POOL_PREFIXES = ("claude-", "gpt-")
 GEMINI_POOL_PREFIX = "gemini-"
 QUOTA_CACHE_MAX_AGE_SECONDS = 900
 QUOTA_EXHAUSTED_EXIT = 75
+# A unit is shallow work that any of these models handles, so the meter decides
+# rather than the model: a unit that named no model goes to whichever group has
+# the freer meter. The margin makes that a preference rather than a race on the
+# last point. It is not an assurance that the chosen meter is still the fuller
+# one: a reading may be QUOTA_CACHE_MAX_AGE_SECONDS old, and a 198-unit batch on
+# 2026-09-15 drained near 6 points of a five-hour meter every five minutes.
+# Each unit decides on its own, so successive readings can pick either group.
+# The second group's model is the mid-priced one, because quota there is spent
+# in proportion to token cost and the largest model would drain the smaller
+# meter this routing exists to use.
+BALANCE_MARGIN = 0.15
+# Two readings 15 points apart in decimal can subtract to slightly less in
+# binary floating point, which decided 0.20/0.35 and 0.50/0.65 differently.
+MARGIN_TOLERANCE = 1e-9
+SECOND_MODEL = "claude-sonnet-4-6"
+# The windows Agy meters. A group's entry in a snapshot is its emptiest bucket,
+# so a group that reports one window says nothing about the other.
+REQUIRED_WINDOWS = frozenset({"5h", "weekly"})
+
+
+class PoolState(NamedTuple):
+    """One quota group as a snapshot reports it.
+
+    `remaining` and `reset` come from the group's emptiest bucket. `windows`
+    names the metered windows that bucket set was read from, which the minimum
+    alone cannot tell apart from a group that reported only one of them.
+    """
+
+    remaining: float
+    reset: str
+    windows: frozenset[str]
 
 
 def fail(message: str, code: int = 2) -> int:
@@ -253,15 +284,31 @@ def still_empty(reset: str, now: float) -> bool:
     return parsed.timestamp() > now
 
 
-def read_pool_states() -> dict[str, tuple[float, str]] | None:
-    """Remaining fraction and reset hint per group, or None when unreadable.
+def bucket_window(bucket: dict) -> str:
+    """The metered window a bucket reports, or an empty string.
+
+    The `id` carries the same thing (`gemini-5h`, `3p-weekly`), and is the
+    fallback for a build that omits the field.
+    """
+    identifier = str(bucket.get("id", "")).rsplit("-", 1)[-1]
+    for value in (bucket.get("window"), identifier):
+        text = str(value or "").strip().lower()
+        if text in REQUIRED_WINDOWS:
+            return text
+    return ""
+
+
+def read_pool_states() -> dict[str, PoolState] | None:
+    """Remaining fraction, reset hint and covered windows per group, or None.
 
     The lowest bucket decides a group: a full weekly allowance is no help to a
     unit that the 5-hour bucket stops, and the 5-hour bucket is the one that
-    emptied on 2026-09-11. A bucket whose reset time has passed is dropped
-    first, and a snapshot still older than the refresh threshold after a
-    refresh attempt is treated as unreadable, so neither one keeps refusing
-    work on a reading that has expired.
+    emptied on 2026-09-11. That minimum hides which windows the snapshot
+    actually carried, so the windows are kept beside it for a caller that needs
+    positive evidence rather than an absence of bad news. A bucket whose reset
+    time has passed is dropped first, and a snapshot still older than the
+    refresh threshold after a refresh attempt is treated as unreadable, so
+    neither one keeps refusing work on a reading that has expired.
     """
     path, may_refresh = quota_cache_path()
     if may_refresh:
@@ -283,7 +330,7 @@ def read_pool_states() -> dict[str, tuple[float, str]] | None:
     if not isinstance(groups, list):
         return None
     now = time.time()
-    states: dict[str, tuple[float, str]] = {}
+    readings: dict[str, list[tuple[float, str, str]]] = {}
     for group in groups:
         if not isinstance(group, dict):
             continue
@@ -308,31 +355,77 @@ def read_pool_states() -> dict[str, tuple[float, str]] | None:
             reset = str(bucket.get("reset_time") or "").strip()
             if float(remaining) <= 0 and not still_empty(reset, now):
                 continue
-            current = states.get(pool)
-            if current is None or float(remaining) < current[0]:
-                states[pool] = (float(remaining), reset)
+            readings.setdefault(pool, []).append(
+                (float(remaining), reset, bucket_window(bucket))
+            )
+    states: dict[str, PoolState] = {}
+    for pool, entries in readings.items():
+        remaining, reset, _ = min(entries, key=lambda entry: entry[0])
+        states[pool] = PoolState(
+            remaining, reset, frozenset(window for _, _, window in entries if window)
+        )
     return states or None
 
 
-def both_exhausted(states: dict[str, tuple[float, str]]) -> str:
+def both_exhausted(states: dict[str, PoolState]) -> str:
     gemini = states.get("gemini")
     second = states.get("second")
     return (
         "both Agy quota groups are exhausted (Gemini resets "
-        f"{(gemini[1] if gemini else '') or 'later'}, Claude and GPT resets "
-        f"{(second[1] if second else '') or 'later'})."
+        f"{(gemini.reset if gemini else '') or 'later'}, Claude and GPT resets "
+        f"{(second.reset if second else '') or 'later'})."
     )
 
 
-def quota_route(model: str) -> tuple[str, str, str]:
+def balance_pool(model: str, states: dict[str, PoolState]) -> tuple[str, str]:
+    """Return the model for an unpinned unit, moving it to the freer group.
+
+    Each unit decides on its own, so successive readings can pick either group.
+    Both groups must be readable, because a group the snapshot does not report
+    says nothing about its headroom.
+
+    A unit whose own group still has quota moves only on a lead of
+    BALANCE_MARGIN and a destination that reports both metered windows. A group
+    entry is its emptiest bucket, so a destination reporting one window may be
+    empty in the other, and the move would strand a unit its own group could
+    have run. An own group that is empty moves the unit on any positive reading
+    of the other, windows covered or not, because the alternative is not
+    running at all.
+    """
+    pool = model_pool(model) or ""
+    other_pool = "second" if pool == "gemini" else "gemini"
+    own = states.get(pool)
+    other = states.get(other_pool)
+    if own is None or other is None:
+        return model, ""
+    target = SECOND_MODEL if other_pool == "second" else DEFAULT_MODEL
+    note = (
+        f"MODEL-BALANCE from={model} to={target} reason=freer-meter "
+        f"own={own.remaining:.0%} other={other.remaining:.0%}"
+    )
+    if own.remaining <= 0 < other.remaining:
+        return target, note
+    if other.remaining - own.remaining < BALANCE_MARGIN - MARGIN_TOLERANCE:
+        return model, ""
+    if not REQUIRED_WINDOWS <= other.windows:
+        return model, ""
+    return target, note
+
+
+def quota_route(model: str, pinned: bool = False) -> tuple[str, str, str]:
     """Return the model to dispatch, a swap note, and a blocking reason.
+
+    A unit that named no model routes on the meters: `balance_pool` sends it to
+    whichever group has the headroom, including the second group when the
+    Gemini meter is the empty one. A unit that named its model keeps it, and
+    the rules below are all that apply to it.
 
     An exhausted second group falls back to the Gemini default, because that
     default is what the unit would have used anyway and the swap is recorded
-    rather than silent. An exhausted Gemini group does not escalate the other
-    way. Spending the smaller metered group is the user's call: an agent that
-    took it unasked is what left it at 60% after one day, and a fan-out that
-    escalates on its own would empty it without anyone choosing to.
+    rather than silent. An exhausted Gemini group does not escalate a named
+    model the other way. Spending the smaller metered group on a model someone
+    chose is that person's call: an agent that took it unasked is what left it
+    at 60% after one day.
 
     A group the snapshot does not report is unknown rather than empty. The
     gate stops a dispatch only into a group it read as empty; everything else
@@ -346,23 +439,27 @@ def quota_route(model: str) -> tuple[str, str, str]:
     states = read_pool_states()
     if states is None:
         return model, "", ""
+    note = ""
+    if not pinned and model == DEFAULT_MODEL:
+        model, note = balance_pool(model, states)
+        pool = model_pool(model) or pool
     own = states.get(pool)
-    if own is None or own[0] > 0:
-        return model, "", ""
+    if own is None or own.remaining > 0:
+        return model, note, ""
     other = states.get("second" if pool == "gemini" else "gemini")
-    other_may_serve = other is None or other[0] > 0
+    other_may_serve = other is None or other.remaining > 0
     if pool == "second":
         if other_may_serve:
             return (
                 DEFAULT_MODEL,
                 f"MODEL-FALLBACK from={model} to={DEFAULT_MODEL} "
-                f"reason=claude-and-gpt-quota-exhausted resets={own[1] or 'later'}",
+                f"reason=claude-and-gpt-quota-exhausted resets={own.reset or 'later'}",
                 "",
             )
         return model, "", both_exhausted(states)
-    if other is not None and other[0] <= 0:
+    if other is not None and other.remaining <= 0:
         return model, "", both_exhausted(states)
-    reason = f"the Agy Gemini quota group is exhausted (resets {own[1] or 'later'})."
+    reason = f"the Agy Gemini quota group is exhausted (resets {own.reset or 'later'})."
     if other is not None:
         # Spending the smaller metered group is the user's call, so the
         # message names the escalation instead of taking it.
@@ -676,6 +773,8 @@ def main(argv: list[str] | None = None) -> int:
     if not executable:
         return fail("no runnable Antigravity CLI found; install agy or set ANTIGRAVITY_BIN", 70)
     model = os.environ.get("ANTIGRAVITY_DISPATCH_MODEL", DEFAULT_MODEL).strip()
+    # A model the caller named is a choice the meters do not overrule.
+    pinned_model = bool(os.environ.get("ANTIGRAVITY_DISPATCH_MODEL", "").strip())
     effort = os.environ.get("ANTIGRAVITY_DISPATCH_EFFORT", DEFAULT_EFFORT).strip()
     if not model or not effort:
         return fail("model and effort overrides must be non-empty")
@@ -711,7 +810,7 @@ def main(argv: list[str] | None = None) -> int:
 
     tail_path = state_dir / "tail"
     stderr_path = state_dir / "tail.stderr-tmp"
-    model, quota_note, quota_block = quota_route(model)
+    model, quota_note, quota_block = quota_route(model, pinned_model)
     if quota_block:
         stderr_path.write_text(quota_block + "\n", encoding="utf-8")
         publish_fallback(

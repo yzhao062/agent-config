@@ -183,29 +183,47 @@ Resolve scripts via this order, first hit wins: `skills/prun/scripts/`, then
   `--effort` for its Gemini models only, so the dispatcher omits the flag for
   the second group below rather than having Agy reject the whole call.
 - Agy Ultra exposes a second quota group for `claude-sonnet-4-6`,
-  `claude-opus-4-6-thinking`, and `gpt-oss-120b-medium`. Keep Gemini as the
-  default: it is the larger group, and it keeps a unit's model family
-  independent of the Claude coordinator that reviews the result.
-  The second group is an explicit overflow option through
-  `ANTIGRAVITY_DISPATCH_MODEL`; it adds quota, not reviewer-family diversity.
-  **Naming it is the user's call.** A fan-out that reached for it on its own
-  spent 646 generations of that group in a day, on units a Gemini worker would
-  have taken, and the group is the smaller of the two.
+  `claude-opus-4-6-thinking`, and `gpt-oss-120b-medium`, metered apart from the
+  Gemini group. **A unit that names no model goes to whichever group has the
+  freer meter**, with `claude-sonnet-4-6` as the second group's model. A unit is
+  shallow work that either group handles, so the meter decides rather than the
+  model family. The worker is the Agy CLI either way, so a Claude model here
+  spends Agy quota and never the Claude account the coordinator runs on. This is
+  a routing policy the user set on 2026-09-15, after a 198-unit batch spent 77
+  points of the Gemini five-hour meter in an hour while the second group sat
+  untouched. An agent still does not reach for that group on its own outside
+  this rule: one that did spent 646 generations of it in a day.
+  `ANTIGRAVITY_DISPATCH_MODEL` disables headroom balancing for the run. The
+  exhaustion rules below still apply to the model it names, including the
+  fallback from an exhausted Claude and GPT group to Gemini.
 - **The dispatcher checks group quota before launching.** The two groups are
   metered separately, and one dispatch names one model, so a batch aimed at an
   empty group fails once per unit: on 2026-09-11 four units of a seven-unit
   fan-out died in a row, each carrying `Individual quota reached ... Resets in
   34m`. Before launching, the dispatcher reads the snapshot `agent-quota`
   maintains and decides:
-  - The Claude and GPT group is empty and Gemini is not: dispatch the Gemini
-    default instead, and record the swap. The line `MODEL-FALLBACK from=... to=...
-    reason=claude-and-gpt-quota-exhausted resets=...` goes to stderr and to
-    `<state-dir>/quota-note`. `<state-dir>/model` always names the model that
-    actually ran, so the ledger's executor column is not the model the caller
-    asked for when the two differ.
-  - The Gemini group is empty: exit `75` without launching, and say so. It does
-    not escalate into the metered group on its own; the message names
-    `ANTIGRAVITY_DISPATCH_MODEL` for the operator who wants that.
+  - No model was named: each unit starts from the Gemini default. When both
+    groups are reported, it moves to `claude-sonnet-4-6` if the second group's
+    lowest remaining fraction is at least 15 points higher, or if Gemini is
+    empty and the second group has quota left. A move on headroom also needs
+    both metered windows of the destination present in the snapshot, since a
+    group entry is its emptiest bucket and an unreported window may be the
+    empty one. An empty own group moves the unit without that evidence, because
+    the alternative is not running at all. Units decide independently, so
+    successive readings can switch the group a batch is using. The line
+    `MODEL-BALANCE from=... to=... reason=freer-meter own=... other=...` goes to
+    stderr and to `<state-dir>/quota-note`.
+  - A named model in the Claude and GPT group, with that group empty and Gemini
+    not: dispatch the Gemini default instead, and record the swap. The line
+    `MODEL-FALLBACK from=... to=... reason=claude-and-gpt-quota-exhausted
+    resets=...` goes to stderr and to `<state-dir>/quota-note`.
+    `<state-dir>/model` always names the model that actually ran, so the
+    ledger's executor column is not the model the caller asked for when the two
+    differ.
+  - A named Gemini model whose group is empty: exit `75` without launching, and
+    say so. A model someone chose is not escalated into the metered group on its
+    own; the message names `ANTIGRAVITY_DISPATCH_MODEL` for the operator who
+    wants that.
   - Both groups are empty: exit `75` with both reset times.
   - A group the snapshot does not report is unknown rather than empty, and an
     unreadable snapshot skips the check entirely. The gate stops a dispatch

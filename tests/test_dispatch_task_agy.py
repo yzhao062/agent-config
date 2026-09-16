@@ -132,7 +132,10 @@ class DispatchTaskAgyUnitTests(unittest.TestCase):
         os.environ["AGY_QUOTA_CACHE"] = str(cache)
         self.addCleanup(os.environ.pop, "AGY_QUOTA_CACHE", None)
         states = self.module.read_pool_states()
-        self.assertEqual(states["gemini"], (0.1, "5h"))
+        self.assertEqual(states["gemini"].remaining, 0.1)
+        self.assertEqual(states["gemini"].reset, "5h")
+        # Neither bucket names its window, so the reading carries no coverage.
+        self.assertEqual(states["gemini"].windows, frozenset())
 
     def test_an_unreported_group_is_unknown_rather_than_empty(self) -> None:
         # The gate stops a dispatch only into a group it read as empty. A
@@ -164,6 +167,109 @@ class DispatchTaskAgyUnitTests(unittest.TestCase):
         self.assertEqual(model, self.module.DEFAULT_MODEL)
         self.assertIn("MODEL-FALLBACK", note)
         self.assertEqual(blocked, "")
+
+    def _snapshot(self, **fractions: float | dict[str, float]) -> None:
+        """Point the module at a snapshot carrying the named groups.
+
+        A plain number reports that fraction in both metered windows. A dict
+        reports only the windows it names, which is the partial snapshot the
+        routing has to treat as evidence about one window alone.
+        """
+        names = {"gemini": "Gemini Models", "second": "Claude and GPT models"}
+        groups = []
+        for pool, value in fractions.items():
+            per_window = value if isinstance(value, dict) else {"5h": value, "weekly": value}
+            groups.append(
+                {
+                    "name": names[pool],
+                    "buckets": [
+                        {"remaining_fraction": share, "reset_time": "r", "window": window}
+                        for window, share in per_window.items()
+                    ],
+                }
+            )
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        cache = Path(temp.name) / "quota.json"
+        cache.write_text(json.dumps({"usage": {"groups": groups}}), encoding="utf-8")
+        os.environ["AGY_QUOTA_CACHE"] = str(cache)
+        self.addCleanup(os.environ.pop, "AGY_QUOTA_CACHE", None)
+
+    def test_an_unpinned_unit_routes_to_the_group_with_the_freer_meter(self) -> None:
+        # A unit is shallow work either group handles, so the meter decides.
+        self._snapshot(gemini=0.2, second=1.0)
+        model, note, blocked = self.module.quota_route(self.module.DEFAULT_MODEL)
+        self.assertEqual(model, self.module.SECOND_MODEL)
+        self.assertIn("MODEL-BALANCE", note)
+        self.assertEqual(blocked, "")
+        # A model the caller named is a choice the meters do not overrule.
+        self.assertEqual(
+            self.module.quota_route(self.module.DEFAULT_MODEL, True),
+            (self.module.DEFAULT_MODEL, "", ""),
+        )
+
+    def test_the_lead_a_move_needs_is_fifteen_points(self) -> None:
+        # Literal fractions, so a change to BALANCE_MARGIN fails here rather
+        # than moving the expectation with it. 20/35 and 50/65 are both exactly
+        # fifteen points and subtract to either side of it in binary floating
+        # point, so both have to decide the same way.
+        for gemini, second, expected in (
+            (0.20, 0.34, "gemini"),
+            (0.20, 0.35, "second"),
+            (0.20, 0.36, "second"),
+            (0.50, 0.65, "second"),
+        ):
+            with self.subTest(gemini=gemini, second=second):
+                self._snapshot(gemini=gemini, second=second)
+                model, _, blocked = self.module.quota_route(self.module.DEFAULT_MODEL)
+                self.assertEqual(blocked, "")
+                self.assertEqual(
+                    model,
+                    self.module.SECOND_MODEL if expected == "second" else self.module.DEFAULT_MODEL,
+                )
+
+    def test_an_empty_own_group_moves_an_unpinned_unit_under_the_margin(self) -> None:
+        self._snapshot(gemini=0.0, second=0.1)
+        model, note, blocked = self.module.quota_route(self.module.DEFAULT_MODEL)
+        self.assertEqual(model, self.module.SECOND_MODEL)
+        self.assertIn("MODEL-BALANCE", note)
+        self.assertEqual(blocked, "")
+
+    def test_a_healthy_unit_needs_both_windows_of_the_destination(self) -> None:
+        # A group entry is its emptiest bucket, so a destination that reports
+        # only the weekly window may be empty in the five-hour one. Moving a
+        # unit its own group could have run would strand it there.
+        self._snapshot(gemini={"5h": 0.4, "weekly": 0.8}, second={"weekly": 1.0})
+        self.assertEqual(
+            self.module.quota_route(self.module.DEFAULT_MODEL),
+            (self.module.DEFAULT_MODEL, "", ""),
+        )
+        # The same destination with both windows read is evidence of headroom.
+        self._snapshot(gemini={"5h": 0.4, "weekly": 0.8}, second={"5h": 1.0, "weekly": 1.0})
+        self.assertEqual(
+            self.module.quota_route(self.module.DEFAULT_MODEL)[0], self.module.SECOND_MODEL
+        )
+        # An own group that is empty stops the unit outright, so a partly read
+        # destination still beats not running.
+        self._snapshot(gemini={"5h": 0.0, "weekly": 0.8}, second={"weekly": 1.0})
+        self.assertEqual(
+            self.module.quota_route(self.module.DEFAULT_MODEL)[0], self.module.SECOND_MODEL
+        )
+
+    def test_balancing_needs_both_groups_in_the_snapshot(self) -> None:
+        # A group the snapshot does not report says nothing about its headroom.
+        self._snapshot(gemini=0.2)
+        self.assertEqual(
+            self.module.quota_route(self.module.DEFAULT_MODEL),
+            (self.module.DEFAULT_MODEL, "", ""),
+        )
+
+    def test_both_groups_empty_still_block_an_unpinned_unit(self) -> None:
+        self._snapshot(gemini=0.0, second=0.0)
+        model, note, blocked = self.module.quota_route(self.module.DEFAULT_MODEL)
+        self.assertEqual(model, self.module.DEFAULT_MODEL)
+        self.assertEqual(note, "")
+        self.assertIn("both Agy quota groups are exhausted", blocked)
 
     def test_the_gate_is_switchable_off(self) -> None:
         temp = tempfile.TemporaryDirectory()
@@ -385,18 +491,20 @@ class DispatchTaskAgyIntegrationTests(unittest.TestCase):
                                 "name": "Gemini Models",
                                 "buckets": [
                                     {
-                                        "id": "gemini-5h",
+                                        "id": f"gemini-{window}",
                                         "remaining_fraction": gemini,
                                     }
+                                    for window in ("5h", "weekly")
                                 ],
                             },
                             {
                                 "name": "Claude and GPT models",
                                 "buckets": [
                                     {
-                                        "id": "3p-5h",
+                                        "id": f"3p-{window}",
                                         "remaining_fraction": second,
                                     }
+                                    for window in ("5h", "weekly")
                                 ],
                             },
                         ]
@@ -735,16 +843,56 @@ class DispatchTaskAgyIntegrationTests(unittest.TestCase):
         )
         self.assertTrue(target.is_file())
 
-    def test_an_exhausted_gemini_group_does_not_escalate_on_its_own(self) -> None:
-        # Spending the smaller metered group is the user's call. An agent took
-        # it unasked once and left it at 60% in a day.
+    def test_a_named_gemini_model_is_not_escalated_when_its_group_empties(self) -> None:
+        # Spending the smaller metered group on a model someone chose is that
+        # person's call. An agent took it unasked once and left it at 60% in a
+        # day. An unpinned unit routes on the meters instead; see below.
         result, target = self._run(
-            extra_env={"AGY_QUOTA_CACHE": self._quota(gemini=0.0, second=1.0)}
+            extra_env={
+                "AGY_QUOTA_CACHE": self._quota(gemini=0.0, second=1.0),
+                "ANTIGRAVITY_DISPATCH_MODEL": "gemini-3.8-flash-high",
+            }
         )
         self.assertEqual(result.returncode, 75, result.stderr)
         self.assertIn("ANTIGRAVITY_DISPATCH_MODEL", result.stderr)
         self.assertFalse((self.log / "args.json").is_file())
         self.assertIn("FALLBACK", target.read_text(encoding="utf-8"))
+
+    def test_an_unpinned_unit_runs_on_the_group_with_the_freer_meter(self) -> None:
+        # A unit is shallow work that either group handles, so on 2026-09-15 the
+        # rule became "whichever meter has room". The Gemini five-hour bucket
+        # was at 20% that afternoon while the second group had not been touched.
+        result, target = self._run(
+            extra_env={
+                "AGY_QUOTA_CACHE": self._quota(gemini=0.2, second=1.0),
+                "MOCK_AGY_MODELS": "gemini-3.8-flash-high\nclaude-sonnet-4-6",
+            }
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        argv = json.loads((self.log / "args.json").read_text(encoding="utf-8"))
+        self.assertIn("claude-sonnet-4-6", argv)
+        self.assertNotIn("--effort", argv)
+        self.assertIn("MODEL-BALANCE", result.stderr)
+        state_dir = Path(result.stdout.split("STATE-DIR ", 1)[1].strip())
+        self.assertEqual(
+            (state_dir / "model").read_text(encoding="utf-8").strip(), "claude-sonnet-4-6"
+        )
+        self.assertIn("MODEL-BALANCE", (state_dir / "quota-note").read_text(encoding="utf-8"))
+        self.assertTrue(target.is_file())
+
+    def test_an_empty_gemini_group_moves_an_unpinned_unit_rather_than_stopping_it(self) -> None:
+        # The lead here is under the margin, so only the empty own group moves
+        # the unit. This is the case that used to exit 75 and stall a batch.
+        result, target = self._run(
+            extra_env={
+                "AGY_QUOTA_CACHE": self._quota(gemini=0.0, second=0.1),
+                "MOCK_AGY_MODELS": "gemini-3.8-flash-high\nclaude-sonnet-4-6",
+            }
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        argv = json.loads((self.log / "args.json").read_text(encoding="utf-8"))
+        self.assertIn("claude-sonnet-4-6", argv)
+        self.assertTrue(target.is_file())
 
     def test_both_groups_exhausted_stops_the_dispatch(self) -> None:
         result, _ = self._run(
