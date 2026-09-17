@@ -26,7 +26,7 @@ Read before touching either repo:
 
 Other project repos bootstrap from this repo to get shared agent defaults and skills. The bootstrap script (defined in `AGENTS.md`) fetches:
 
-- **`AGENTS.md`** — user profile, writing/formatting defaults, environment notes, skill-sharing rules
+- **`AGENTS.md`** — the shared rule baseline (bootstrap, precedence, agent roles, git safety and the mechanical gates, shell style, writing and formatting defaults, skills, environment, session banner); byte-identical to the `anywhere-agents` copy, with the maintainer's own lines in `AGENTS.local.md`
 - **`CLAUDE.md` and `agents/codex.md`** — regenerated on every bootstrap run from `AGENTS.md` via `scripts/generate_agent_configs.py`
 - **`skills/`** — shared skills (e.g., `dual-pass-workflow`, `bibref-filler`)
 - **`.claude/commands/`** — Claude Code pointer commands for shared skills
@@ -99,9 +99,9 @@ Other precedence:
 
 See `AGENTS.md` "Configuration Precedence" for full details.
 
-## Codex MCP Integration
+## Codex
 
-Codex can be used from within Claude Code as an MCP server. See [AGENTS.md — Codex MCP Integration](AGENTS.md#codex-mcp-integration) for full setup instructions (registration, Windows path, approval policy, Bitdefender workarounds).
+Codex is the `/vet` gatekeeper. On the Auto-terminal channel, `implement-review` dispatches it headless through `codex exec` with `-c project_doc_max_bytes=262144`, so the whole composed `AGENTS.md` reaches the reviewer rather than Codex's default first 32 KiB, and with `--ignore-user-config` by default (`CODEX_DISPATCH_ISOLATE_MCP=off` opts out); Terminal-relay, where a person carries the prompt, remains the skill's default channel. The recommended `~/.codex/config.toml` values (model, effort, tier, `project_doc_max_bytes`) are in `AGENTS.md` "Environment"; the longer configuration notes live in the `anywhere-agents` docs linked from its "Reference" section. The Codex MCP server route from Claude Code was retired in the 2026-09 rewrite: it had gone unused since the review loop started calling `codex exec` directly.
 
 ## Shared Skills
 

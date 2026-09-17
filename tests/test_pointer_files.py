@@ -22,6 +22,7 @@ _SKILLS_DIR = _REPO_ROOT / "skills"
 
 _FRONTMATTER_RE = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)
 _ALIAS_RE = re.compile(r"^alias-of:[ \t]*(\S+)[ \t]*$", re.MULTILINE)
+_DESCRIPTION_RE = re.compile(r"^description:[ \t]*(.+?)[ \t]*$", re.MULTILINE)
 
 
 def _alias_target(text: str) -> str | None:
@@ -142,6 +143,40 @@ class PointerLookupOrderTests(unittest.TestCase):
         text = pf.read_text(encoding="utf-8")
         self.assertEqual(_alias_target(text), "implement-review")
         self.assertIn("implement-review", text)
+
+
+class PointerDescriptionTests(unittest.TestCase):
+    """Every pointer carries a one-sentence `description:` in its frontmatter.
+
+    Claude Code lists each command in the system prompt by its description.
+    Without one, the listing shows the first body line, "Read and follow the
+    skill definition. Look for it at ...", which says nothing about what the
+    skill does. Eight of the eleven pointers shipped that way until the
+    2026-09 rewrite. The composer's generated pointers get theirs from the
+    skill's own frontmatter; these committed files are the fallback when
+    PyYAML is missing, so they carry one by hand.
+    """
+
+    def test_every_pointer_has_a_one_sentence_description(self):
+        for pf in sorted(_COMMANDS_DIR.glob("*.md")):
+            with self.subTest(pointer=pf.name):
+                text = pf.read_text(encoding="utf-8")
+                frontmatter = _FRONTMATTER_RE.match(text)
+                self.assertIsNotNone(
+                    frontmatter, f"{pf.name}: no frontmatter block")
+                found = _DESCRIPTION_RE.findall(frontmatter.group(1))
+                self.assertEqual(
+                    len(found), 1, f"{pf.name}: expected one description: line")
+                description = found[0].strip('"')
+                self.assertTrue(description, f"{pf.name}: empty description")
+                # One sentence: no sentence end followed by another sentence,
+                # and short enough to read in a listing.
+                self.assertNotRegex(
+                    description, r"[.!?]\s+[A-Z]",
+                    f"{pf.name}: description runs to a second sentence")
+                self.assertLessEqual(
+                    len(description), 160,
+                    f"{pf.name}: description longer than 160 characters")
 
 
 if __name__ == "__main__":

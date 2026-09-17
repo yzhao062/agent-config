@@ -201,8 +201,11 @@ def _build_fake_tree(base: pathlib.Path):
         (ac / f"skills/{skill}/SKILL.md").write_text(f"# {skill}\n")
         (aa / f"skills/{skill}/SKILL.md").write_text(f"# {skill}\n")
 
+    # AGENTS.md moved from BY-DESIGN to STRICT at the 2026-09 rewrite: one
+    # shared baseline, byte-identical on both sides.
+    (ac / "AGENTS.md").write_text("# shared AGENTS\n")
+    (aa / "AGENTS.md").write_text("# shared AGENTS\n")
     by_design = {
-        "AGENTS.md": ("# ac AGENTS (USC section)\n", "# aa AGENTS\n"),
         "user/settings.json": ("{\"additionalDirectories\": []}\n", "{}\n"),
     }
     for rel, (ac_content, aa_content) in by_design.items():
@@ -346,10 +349,21 @@ class CheckParityBehavior(unittest.TestCase):
     def test_missing_by_design_file_exits_1(self):
         with tempfile.TemporaryDirectory() as d:
             ac, aa = _build_fake_tree(pathlib.Path(d))
-            (aa / "AGENTS.md").unlink()
+            (aa / "user/settings.json").unlink()
+            rc, out = _run(ac, aa)
+            self.assertEqual(rc, 1, f"expected 1, got {rc}; output:\n{out}")
+            self.assertIn("user/settings.json", out)
+
+    def test_agents_md_drift_exits_1(self):
+        # AGENTS.md is STRICT since the 2026-09 rewrite. A one-line delta
+        # that the old BY-DESIGN row would have summarized now fails the run.
+        with tempfile.TemporaryDirectory() as d:
+            ac, aa = _build_fake_tree(pathlib.Path(d))
+            (ac / "AGENTS.md").write_text("# shared AGENTS\n\nac-only line\n")
             rc, out = _run(ac, aa)
             self.assertEqual(rc, 1, f"expected 1, got {rc}; output:\n{out}")
             self.assertIn("AGENTS.md", out)
+            self.assertIn("DRIFT: AGENTS.md", out)
 
     def test_missing_my_router_dir_exits_1(self):
         with tempfile.TemporaryDirectory() as d:

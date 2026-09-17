@@ -553,7 +553,8 @@ $pwshInstruction = if ($pwshBin) {
 }
 $childSessionInstructions = "The parent agent session already completed the repository bootstrap at startup. Skip bootstrap and shared configuration refresh commands in this child review session. Skip the session-start banner as well: no human reads a dispatched child's terminal, so rendering it only spends shell spawns. Use the shared configuration currently on disk. Follow all other project instructions. $pythonInstruction $pwshInstruction Before issuing a PASS or BLOCK commit verdict, execute relevant verification commands. In $ExpectedReviewFile, add one standalone line exactly 'Verification status: VERIFIED' if at least one relevant verification command completed, otherwise add 'Verification status: UNVERIFIED'. If the status is UNVERIFIED, write 'Commit verdict: UNVERIFIED'; never issue PASS or BLOCK. Verification notes must list the exact commands and outcomes."
 $childSessionInstructionsEsc = $childSessionInstructions -replace '%', '%%'
-$childSessionArg = "-c ""developer_instructions=$childSessionInstructionsEsc"" "
+# project_doc_max_bytes raises Codex's 32 KiB instruction budget with isolation on or off (see dispatch-codex.sh).
+$childSessionArg = "-c ""developer_instructions=$childSessionInstructionsEsc"" -c project_doc_max_bytes=262144 "
 $cmdBody = "@echo off`r`nchcp 65001 >NUL`r`n""$codexBinEsc"" exec --sandbox $sandboxModeEsc $isolateArg$childSessionArg- > ""$tailPathEsc"" 2>&1 < ""$promptFileEsc""`r`n"
 $utf8NoBom = New-Object System.Text.UTF8Encoding $false
 [System.IO.File]::WriteAllText($cmdHelper, $cmdBody, $utf8NoBom)

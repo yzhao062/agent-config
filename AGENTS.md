@@ -1,21 +1,18 @@
-<!-- Quick start: In Claude Code, read @AGENTS.md to run bootstrap, session checks, and task routing -->
+# Shared agent rules (anywhere-agents)
 
-> **Claude Code / Codex / other agents -- determine your context before proceeding:**
+This file holds rules. A rule says what to do, plus one clause on why when the rule is counter-intuitive. Longer rationale, measurements, version history, and how-to material go to the docs linked at the end or to `CHANGELOG.md`, never here. Tests enforce the size of this file.
+
+<!-- Byte-identical in anywhere-agents and agent-config (check-parity STRICT); size gate in tests/test_bootstrap_size.py; maintainer-only lines go in AGENTS.local.md. -->
+
+> **Determine your context before proceeding.**
 >
-> **Source repo test:** If `bootstrap/bootstrap.sh`, `bootstrap/bootstrap.ps1`, and `reference-skills/` all exist at the repo root, you are in the `agent-config` source repo (or a fork with the same layout). **Skip the bootstrap block below** and proceed directly to `## Session Start Check`. Do not execute the bootstrap script in the source repo; it would try to bootstrap itself.
+> **Source repo test:** If `bootstrap/bootstrap.sh`, `bootstrap/bootstrap.ps1`, `scripts/generate_agent_configs.py`, and `skills/` all exist at the repo root, you are in a source repo (`anywhere-agents`, `agent-config`, or a fork with the same layout). Skip the bootstrap block below and proceed directly to `## Session Start Check`. Do not execute the bootstrap script in a source repo; it would try to bootstrap itself.
 >
-> **Consumer repo path:** Otherwise, you are in a project that consumes the shared config. **You MUST execute the matching bootstrap block below at the start of every session, before responding to any user request or running session checks.** Use the PowerShell block on Windows and the Bash block on macOS/Linux. Bootstrap is idempotent: run it every session even if `.agent-config/` already exists, so shared config, skills, and settings are refreshed from upstream before any work begins. Do not treat the block below as reference documentation -- it is a required runtime command. After running, report the refresh result in one line (for example, "bootstrap: refreshed AGENTS.md, skills, settings").
->
-> **Maintainer onboarding (source repo only):** If this is a fresh clone of `agent-config` or a new machine, read [`ONBOARDING.md`](./ONBOARDING.md) at the repo root. It is the one-page index pointing at `anywhere-agents.md` (two-repo relationship), `../anywhere-agents/RELEASING.md` (release runbook), and `../anywhere-agents/CHANGELOG.md` (current version). This line is `agent-config` only and is stripped when sanitizing for `anywhere-agents`.
+> **Consumer repo path:** Otherwise, you are in a project that consumes the shared config. **You MUST execute the matching bootstrap block below at the start of every session, before responding to any user request or running session checks.** Use the PowerShell block on Windows and the Bash block on macOS/Linux. Bootstrap is idempotent: run it every session even if `.agent-config/` already exists, so shared config, skills, and settings are refreshed from upstream before any work begins. After running, report the refresh result in one line (for example, "bootstrap: refreshed AGENTS.md, skills, settings").
 
-## Bootstrap: Shared Config and Skills
+## Bootstrap
 
-This file is the shared agent configuration hosted at `https://github.com/yzhao062/agent-config`.
-Project repos should include the following bootstrap block in their own `AGENTS.md` so that agents automatically pull the latest shared defaults and skills before starting any task. Because bootstrap rewrites the consumer's root `AGENTS.md` from this source on every run, the block below ends up serving two roles in consumer repos: it is both the embedded reference for how the setup works and the runtime command the agent executes each session (see the top-of-file note for the source-vs-consumer test that decides which role applies in the current repo).
-
-### Bootstrap block for project repos
-
-Copy the block below into the top of each project repo's `AGENTS.md`. Because bootstrap rewrites `AGENTS.md` on every run, put project-local overrides in `AGENTS.local.md`.
+Project repos carry this block at the top of their `AGENTS.md`; bootstrap rewrites it there on every run, so it is both the reference and the runtime command.
 
 ````
 ## Shared Agent Config (auto-fetched)
@@ -26,7 +23,7 @@ PowerShell (Windows):
 
 ```powershell
 New-Item -ItemType Directory -Force -Path .agent-config, .claude, .claude/commands | Out-Null
-Invoke-WebRequest -UseBasicParsing -Uri https://raw.githubusercontent.com/yzhao062/agent-config/main/bootstrap/bootstrap.ps1 -OutFile .agent-config/bootstrap.ps1
+Invoke-WebRequest -UseBasicParsing -Uri https://raw.githubusercontent.com/yzhao062/anywhere-agents/main/bootstrap/bootstrap.ps1 -OutFile .agent-config/bootstrap.ps1
 & .\.agent-config\bootstrap.ps1
 ```
 
@@ -34,466 +31,152 @@ Bash (macOS/Linux):
 
 ```bash
 mkdir -p .agent-config .claude/commands
-curl -sfL https://raw.githubusercontent.com/yzhao062/agent-config/main/bootstrap/bootstrap.sh -o .agent-config/bootstrap.sh
+curl -sfL https://raw.githubusercontent.com/yzhao062/anywhere-agents/main/bootstrap/bootstrap.sh -o .agent-config/bootstrap.sh
 bash .agent-config/bootstrap.sh
 ```
 
-This bootstrap flow rewrites the consuming repo's root `AGENTS.md` on every run. It starts from the shared copy, then composes in the blocks of any configured passive rule packs. One case leaves the file alone: if packs are configured but composition cannot run, an existing composed `AGENTS.md` is preserved rather than replaced by the bare shared copy. That run warns on stderr and records `completed: false`. If a project later needs repo-local overrides, put them in `AGENTS.local.md`.
-
 Read and follow the rules in `.agent-config/AGENTS.md` as baseline defaults. Any rule in `AGENTS.local.md` overrides the shared default.
-When a skill is invoked, resolve its `SKILL.md` using this order, first hit wins: `skills/<skill-name>/SKILL.md` (project-local), then `.claude/skills/<skill-name>/SKILL.md` (pack-deployed by `anywhere-agents pack install`; `.claude/` prefix is a historical Claude Code convention but the contents are agent-agnostic), then `.agent-config/repo/skills/<skill-name>/SKILL.md` (bootstrapped from upstream).
-Copying `.agent-config/repo/.claude/commands/*.md` only overwrites command files with the same name as the shared repo and does not delete unrelated project-local commands.
-Merge shared Claude project defaults (e.g., `permissions`, `attribution`) from `.agent-config/repo/.claude/settings.json` into the project `.claude/settings.json`. Shared keys are updated on every bootstrap run; project-only keys are preserved. The merge runs `scripts/merge_settings.py`, so the Bash entry point needs Python and leaves the file untouched without it. The PowerShell entry point falls back to an in-script merge.
-Add `.agent-config/` and `agent-config.local.yaml` to the project's `.gitignore` so fetched files and machine-local overrides are not committed. The three generated files, `AGENTS.md`, `CLAUDE.md` and `agents/codex.md`, are added as well. Their bytes depend on which packs this machine resolved and on whether composition ran, so two machines that are both current produce different content and each sees the other's as a diff to commit. A repo that already tracks one of them is left alone, because `.gitignore` does not untrack a path git already follows; moving it out of the index is an operator decision, since the resulting commit removes the file for every other clone. Set `AGENT_CONFIG_TRACK_GENERATED` to keep all three out of `.gitignore`.
-Bootstrap also sets up user-level config: it copies `scripts/guard.py` to `~/.claude/hooks/` (a PreToolUse hook that guards against destructive commands) and `scripts/statusline.py` plus `scripts/agent-quota.py` to `~/.claude/` (a statusLine renderer and standalone readout showing Claude, Codex, and Agy quota), and merges `user/settings.json` into `~/.claude/settings.json` (shared permissions, hook wiring, statusLine command, and the `CLAUDE_CODE_EFFORT_LEVEL=max` env entry that sets the default effort level). Remove the user-level section from the bootstrap script if this is not wanted.
-Every run also writes `.agent-config/last-run.json`, a machine-readable record of the phases this bootstrap completed and the files each one wrote; `completed: false` means the run stopped early, and `last_phase` names where. It covers the bootstrap script only, not the wheel-side `pack verify` heal pass, which is recorded in `.agent-config/pack-lock.json`.
 ````
 
-### What gets shared
+Rules that follow from the run:
 
-| Content | Source | How fetched |
-|---------|--------|-------------|
-| User profile, writing defaults, formatting rules, environment notes | `AGENTS.md` (this file) | `curl` raw file |
-| Per-agent rule files (`CLAUDE.md`, `agents/codex.md`) | Generated from `AGENTS.md` by `scripts/generate_agent_configs.py` | Regenerated locally on every bootstrap; hand-authored files preserved + warned |
-| Shared skills (`bibref-filler`, `bibref-verify`, `ci-mockup-figure`, `dual-pass-workflow`, `editable-figure`, `figure-prompt-builder`, `implement-review`, `my-router`, `prun`, `readme-polish`) | `skills/` directory (committed only) | sparse `git clone` |
-| Claude pointer commands for shared skills | `.claude/commands/` | sparse `git clone` plus non-destructive copy into the project `.claude/commands/` |
-| Claude project defaults (`permissions`, `attribution`, etc.) | `.claude/settings.json` | sparse `git clone` plus key-level merge into the project `.claude/settings.json` on every run |
-| User-level scripts (`guard.py`, `session_bootstrap.py`, `statusline.py`) + settings | `scripts/` + `user/settings.json` | Hooks copied to `~/.claude/hooks/`, statusline to `~/.claude/statusline.py`; settings merged into `~/.claude/settings.json` (shared permissions, PreToolUse guard, SessionStart bootstrap hook, statusLine command, `CLAUDE_CODE_EFFORT_LEVEL=max`) |
-
-### Override rules
-
-- If `AGENTS.local.md` exists in the project root, read and follow it after `AGENTS.md`. Rules in `AGENTS.local.md` override the shared defaults.
-- Rules in `AGENTS.local.md` always win over shared defaults. Do not edit the root `AGENTS.md` for local overrides, as bootstrap will overwrite it.
-- Project-local `skills/<name>/SKILL.md` always wins over pack-deployed and bootstrapped copies of the same skill.
-- Shared keys in `.claude/settings.json` are updated on every bootstrap run. Project-only keys are preserved. To override a shared key locally, use `.claude/settings.local.json`.
-- If no project-local copy exists, use `.claude/skills/<name>/SKILL.md` when present; otherwise use the fetched shared copy from `.agent-config/repo/skills/`.
+- Bootstrap rewrites the consuming repo's root `AGENTS.md` on every run, composing the shared copy with the configured passive packs (by default `agent-style`, which needs Python 3 and PyYAML), then regenerates `CLAUDE.md` and `agents/codex.md` from it. When packs are configured but composition cannot run, an existing composed `AGENTS.md` is preserved rather than replaced by the bare shared copy; that run warns and records `completed: false` in `.agent-config/last-run.json`.
+- Put repo-local overrides in `AGENTS.local.md`, never in the generated files. Read `AGENTS.local.md` after `AGENTS.md`; its rules win. Codex does not discover it on its own, which is why this sentence exists.
+- Shared command pointers are copied into `.claude/commands/`; the copy overwrites same-named files only and does not delete unrelated project-local commands.
+- Shared keys of `.claude/settings.json` (`permissions`, `attribution`, `effortLevel`, and the like) are merged on every run and project-only keys are preserved. Override a shared key locally in `.claude/settings.local.json`.
+- Bootstrap also refreshes user-level files: `~/.claude/hooks/guard.py` (PreToolUse), `~/.claude/hooks/session_bootstrap.py` (SessionStart), the statusline scripts, and the shared `env` entries of `~/.claude/settings.json`, including `CLAUDE_CODE_EFFORT_LEVEL=max`.
+- `.agent-config/`, `agent-config.local.yaml`, and the three generated files (`AGENTS.md`, `CLAUDE.md`, `agents/codex.md`) are gitignored in a consumer; a generated file is never untracked automatically once a repo tracks it; moving one out of the index is an operator decision. `agent-config.yaml` selects packs under the `packs:` key (`rule_packs:` is deprecated). `todo/` holds files a person drops in for an agent; what an agent generates goes to the session scratchpad, not there.
 
 ### Configuration Precedence
 
-Three independent configuration layers, each with its own precedence rules. When two rules conflict, the more specific source wins.
-
-**1. Agent rule files (Markdown)** — most specific wins:
+Rule files, most specific wins:
 
 | Layer | File | Scope |
 |---|---|---|
-| 1 | `CLAUDE.local.md` / `agents/codex.local.md` | Per-agent + project-local. Hand-authored; never touched by bootstrap. |
-| 2 | `AGENTS.local.md` | Cross-agent + project-local. Hand-authored; never touched by bootstrap. |
-| 3 | `CLAUDE.md` / `agents/codex.md` | Per-agent, generated from `AGENTS.md` by `scripts/generate_agent_configs.py`. |
-| 4 | `AGENTS.md` | Cross-agent, synced from upstream on every bootstrap. |
+| 1 | `CLAUDE.local.md` / `agents/codex.local.md` | Per-agent, project-local, hand-authored; bootstrap never touches it |
+| 2 | `AGENTS.local.md` | Cross-agent, project-local, hand-authored; bootstrap never touches it |
+| 3 | `CLAUDE.md` / `agents/codex.md` | Per-agent, generated from `AGENTS.md` by `scripts/generate_agent_configs.py` |
+| 4 | `AGENTS.md` | Cross-agent, synced from upstream on every bootstrap |
 
-The generated `CLAUDE.md` and `agents/codex.md` carry a `GENERATED FILE` header. If a consumer project has a hand-authored `CLAUDE.md` (or `agents/codex.md`) without that header, the generator preserves it and warns loudly — it never silently overrides user work. To adopt upstream rules in that case, rename the hand-authored file to `CLAUDE.local.md` (which still wins via layer 1).
-
-**2. Claude Code settings (`settings.json`)** — follow Claude Code's own precedence: `managed policy` > `command-line arguments` > `.claude/settings.local.json` > `.claude/settings.json` > `~/.claude/settings.json`. Bootstrap only writes to the project-shared and user-level layers, and merges shared keys while preserving project-only keys.
-
-**3. Environment variables** — for effort level specifically: `managed policy > CLAUDE_CODE_EFFORT_LEVEL env var > persisted effortLevel > default`.
-
----
-
-<!-- Everything above this line is bootstrap setup instructions. -->
-<!-- Everything below this line contains the shared rules that agents should read and follow. -->
-
-## Consumer Repo Layout
-
-Bootstrap maintains this layout on every run, so a new project inherits it on its
-first session rather than by copying files from an older one.
-
-| Path | State | Who writes it |
-|---|---|---|
-| `AGENTS.md`, `CLAUDE.md`, `agents/codex.md` | untracked, gitignored | regenerated by bootstrap every run |
-| `AGENTS.local.md`, `CLAUDE.local.md`, `agents/codex.local.md` | tracked | hand-authored; bootstrap never touches them |
-| `agent-config.yaml` | tracked | the project's pack selection |
-| `agent-config.local.yaml` | untracked, gitignored | machine-local override |
-| `.agent-config/` | untracked, gitignored | fetched upstream copy |
-| `todo/README.md` | tracked | seeded by bootstrap when absent |
-| `todo/` contents | untracked, gitignored | whatever a person drops in |
-
-Three of these are worth stating as rules rather than as a table row.
-
-**The three generated files are not tracked.** Their bytes depend on which packs the
-machine resolved and on whether composition ran, so two machines that are both current
-produce different content and each sees the other's as a diff to commit. Committing them
-also trains a reader to skim diffs in exactly the files where a degraded run shows up. A
-repo that already tracks one is left alone, because `.gitignore` does not untrack a path
-git already follows; moving it out of the index is an operator decision, since the
-resulting commit removes the file for every other clone.
-
-**`agent-config.yaml` uses the `packs:` key.** `rule_packs:` is a deprecated alias whose
-warning reads "accepted through v0.6.x", and the composer hard-fails on it at v1.0.0.
-The two are equivalent until then, and `packs:` wins when a file carries both.
-
-**`todo/` is the drop box for handing files to an agent.** A person copies something in,
-points an agent at it with `@todo/<name>`, and the agent reads it, moves it to where it
-belongs in the repo, or deletes it. The resting state is empty. Its own `README.md`
-carries the full convention. Bootstrap creates the folder and seeds that README when it
-is missing, and never rewrites one that is already there, so a repo whose filing rules
-are specific to its own work can say so in place. Set `AGENT_CONFIG_NO_TODO_DROPBOX=1`
-before bootstrap to suppress the folder and the gitignore entries. Agents: this folder
-holds what a person put there. What an agent generates on its own belongs in the session
-scratchpad, not here.
-
-## Session Start Check
-
-**Mandatory turn-start procedure.** Before generating the first content of any response, apply the branch that matches your runtime.
-
-**In Claude Code:** the flag files are per-project. `<project-root>` is the consumer-repo root: walk up from `cwd` until a directory with `.agent-config/bootstrap.sh` or `.agent-config/bootstrap.ps1` is found. Read `<project-root>/.agent-config/session-event.json` and `<project-root>/.agent-config/banner-emitted.json`.
-
-1. If `session-event.json.ts > banner-emitted.json.ts`, OR `session-event.json` exists but `banner-emitted.json` does not: emit the session start banner as the **literal first content of your response**, then write the event `ts` into `<project-root>/.agent-config/banner-emitted.json`. Only after the banner text may you address the user's request on the same turn.
-2. Otherwise (emitted `ts` is already current, or neither file exists): skip the banner this turn.
-
-`session_bootstrap.py` writes `session-event.json` on SessionStart hook fires whose `source` is `startup`, `resume`, or `clear`, so the banner reappears across the three lifecycle events that reset conversation context. On `source: compact`, the prior banner ack survives in the summarized context, so the hook skips the event write and the banner does not re-fire. A 10-second debounce suppresses duplicate event writes when the hook fires twice in rapid succession for the same lifecycle event. Flag files are per-project, so opening multiple Claude Code windows in different consumer repos does not cause cross-session interference.
-
-**In a source repo (`agent-config` or `anywhere-agents`, no `.agent-config/` at the root):** the banner gate in `guard.py` is not active and the flag-file mechanism does not apply. Emit the banner on the first response of the session (turn with no prior assistant turns in context); skip on subsequent turns. Compact / resume / clear cannot be mechanically distinguished here.
-
-**In Codex:** Codex has no `SessionStart` hook equivalent; `session-event.json` is not written during a Codex invocation. Each Codex invocation is a new session. Emit the banner as the literal first content of your response on the turn where there are no prior assistant turns in context (i.e., the first response of the invocation). On subsequent turns in the same invocation, skip. No flag files are involved for Codex.
-
-**Both runtimes:** this procedure overrides any other "skill-first" or "task-first" behavior. Even when the user's first message is a task prompt like "read the project" or "fix this bug," or when a skill such as `superpowers:using-superpowers` would otherwise fire before the response, emit the banner first; the task response or skill output comes after the banner on the same turn. Do not let task pressure, skill invocations, or brevity guidance suppress the banner.
-
-### Format
-
-```
-📦 agent-config active
-   ├── OS: <platform>
-   ├── Claude Code: <version>[ → <latest>] (auto-update: <on|off>) · <model> · effort=<level>
-   ├── Codex: <version>[ → <latest>] · <model> · <reasoning> · <tier> · fast_mode=<bool>
-   ├── Skills: <N> local (<names>) + <P> pack (<names>) + <M> shared (<names>)
-   ├── Hooks: PreToolUse <guard.py>, SessionStart <session_bootstrap.py>
-   └── Session check: all clear
-```
-
-If anything is off, replace `all clear` with a semicolon-separated list of concrete issues, each actionable in one short clause (e.g., `⚠ actions/checkout@v4 in .github/workflows/validate.yml:17 — bump to v5; Codex config.toml missing model key`). Keep the whole banner to six lines plus the check line. The skills row may wrap visually when many names are present; do not omit a local, pack, or shared bucket just to preserve terminal width.
-
-### How to populate each field
-
-1. **OS** — read from the session environment (`win32`, `darwin`, `linux`). Use this elsewhere to pick platform-specific behavior (terminal review path on Windows, MCP on macOS/Linux, `.ps1` vs `.sh`).
-2. **Claude Code** — format: `Claude Code <current>[ → <latest>] (auto-update: <on|off>) · <model> · effort=<level>`. Current version comes from Claude Code's startup header or `claude --version`. Read `~/.claude/hooks/version-cache.json` for `claude_latest`; render ` → <latest>` **only when current differs** from latest. Determine `auto-update: on` when `DISABLE_AUTOUPDATER` is not `1` in the effective env (OS env or `env` block in `~/.claude/settings.json`) AND `~/.claude.json` top-level `autoUpdates` is not explicitly `false` — a missing key counts as `on` because native installs auto-update by default. Only explicit `autoUpdates: false` (which bootstrap heals on the next run) or the disable env var means `off`. User prefers the highest available model at max effort; flag any drift once in the banner, not every turn.
-3. **Codex** — format: `Codex <current>[ → <latest>] · <model> · <reasoning> · <tier> · fast_mode=<bool>`. Current version from `codex --version`. Latest from `~/.claude/hooks/version-cache.json` `codex_latest` (render ` → <latest>` only when current differs). Config from `~/.codex/config.toml` (or `%USERPROFILE%\.codex\config.toml` on Windows): `model` · `model_reasoning_effort` · `service_tier` · `[features].fast_mode`. Expected policy (intent, not a frozen pin): `gpt-6-astra` at `service_tier = "standard"` with `fast_mode = false` is the current interactive default and is NOT drift. Codex serves only the `/vet` gatekeeper role, and that role gets the flagship: the cost reduction came from dropping Codex out of `prun` fan-out, not from running the gatekeeper on a cheaper model. `model_reasoning_effort = "xhigh"` as the default, with `max` an equally valid dial-up when a task earns the extra depth; do NOT flag either as drift; `ultra` is an opt-in mode (GPT-6 Astra, and GPT-5.6 Sol and Terra) that keeps maximum reasoning and additionally enables automatic task delegation, so it is not simply "more effort"; `service_tier = "fast"` with `[features] fast_mode = true` remains the documented dial-up for a session where latency is worth the 2.5x rate. Report the model and tier as rendered and do NOT flag `gpt-6-astra` at `standard` or at `fast` as drift; the banner already shows `<model>` · `<tier>` · `fast_mode=<bool>` every session, which is the whole reminder needed. Each model generation carries a CLI floor and returns an upgrade-required HTTP `400` below it. GPT-5.6 requires **0.144.0 or newer** (0.142.5 and 0.143.0 fail). GPT-6 Astra requires a build newer than **0.149.0-alpha.4.3**, which fails; 0.153.3 works, and the exact floor between them is unpinned. Flag only an old CLI paired with a newer model generation, or a model older than the GPT-5.6 family, as an actionable issue. If the binary is not on PATH, show `Codex: not installed`. If the binary exists but `config.toml` is missing, show version + `not configured` in place of the config summary.
-4. **Skills** — list all active skill buckets. Count directories under `skills/` (project-local), `.claude/skills/` (pack-deployed by `anywhere-agents pack install`), and `.agent-config/repo/skills/` (bootstrapped from upstream). Apply the lookup precedence from "Local Skills Precedence" when counting: exclude pack-deployed names that are shadowed by a project-local skill, and exclude bootstrapped names that are shadowed by either a project-local or a pack-deployed skill. Format: `<N> local (<names>) + <P> pack (<names>) + <M> shared (<names>)`. Omit empty buckets (e.g., `2 pack (...) + 4 shared (...)` when the consumer has no project-local skills, or `4 shared (...)` when only the bootstrapped bucket is non-empty).
-5. **Hooks** — check `~/.claude/hooks/` for `guard.py` (PreToolUse) and `session_bootstrap.py` (SessionStart). If one is missing, include it in the Session check line as an issue.
-6. **Session check** — scan `.github/workflows/*.yml` for action version pins below the minimums in the GitHub Actions Standards section. Combine with any Codex-config or hook drift detected above. Emit `all clear` only when nothing needs attention.
-
-7. **Pack deployment** — compute two counts:
-
-    **a. user_packs**: read `%APPDATA%\anywhere-agents\config.yaml` (Windows) or `$XDG_CONFIG_HOME/anywhere-agents/config.yaml` / `~/.config/anywhere-agents/config.yaml` (POSIX); empty list if absent. `AGENT_CONFIG_PACKS` env var is excluded. A user row that names a bundled default (`agent-style`, `aa-core-skills`) without a `source` is `(name, bundled:aa, bundled)`; the identity inheritance in step b applies to project rows only.
-
-    **b. project_packs**: read `AGENT_CONFIG_HOST`; `claude-code` and `codex` are the accepted values, and an unset or unrecognized value means `claude-code`. Seed the list with the bundled defaults: `agent-style`, plus `aa-core-skills` under `claude-code`. Process `agent-config.yaml`, then `agent-config.local.yaml`. Each layer replaces earlier entries of the same name, seeded defaults included. An explicit empty or null `packs:` clears every entry accumulated so far, and a later layer can add entries again. When both files are absent, the seed stands alone. A seeded default, or a project entry naming a bundled default without a `source`, takes the identity recorded for it in `.agent-config/pack-lock.json` (`source_url`, `requested_ref`). If the lock has no entry for it, read `.agent-config/repo/bootstrap/packs.yaml` and use `source.repo` with `source.ref`. Use `(name, bundled:aa, bundled)` for a lock entry whose `source_url` is `bundled:aa` and for a manifest entry without a `source` (`aa-core-skills`). `anywhere-agents pack verify` seeds the same defaults. It resolves them from the installed package's own copy of the manifest before the clone copy, so that its view matches the lock the composer wrote. The lock is the passive stand-in for a manifest the agent cannot locate. Without the seed, the user-level `agent-style` row that `pack add` writes on first use counts as a gap in every project that relies on the bundled default. Bundled-default names are excluded from cross-layer reconciliation by `pack verify --fix`, so that warning would recur.
-
-    **c. gap_count**: for each `u` in user_packs, normalize `(name, normalize_pack_source_url(url), ref)`. Increment if no matching `p` in project_packs by case-sensitive name, OR if `p`'s normalized tuple differs from `u`'s.
-
-    **d. update_count**: for each entry in `.agent-config/pack-lock.json` `data.packs`, increment when both `latest_known_head` and `resolved_commit` are non-empty AND they differ. (Lock entries predating v0.5.2 lack these fields and contribute zero.)
-
-    **e. emit**: each non-zero count contributes a half-clause to the Session check line (semicolon-separated; `all clear` when both zero):
-    - gap_count > 0 → ``⚠ <gap_count> user-level pack(s) not deployed (run `anywhere-agents pack verify --fix`)``
-    - update_count > 0 → ``ℹ <update_count> pack update(s) available (run `anywhere-agents pack verify --fix`)``
-
-## User Profile
-
-- These are user-level defaults that can be reused across projects unless a local repo rule or task-specific instruction is stricter.
-- The user is a computer scientist and professor working in machine learning and AI.
-- Common tasks include research papers, funding proposals, scientific writing, and administrative writing.
+A hand-authored `CLAUDE.md` or `agents/codex.md` without the `GENERATED FILE` header is preserved with a warning, never overwritten; to adopt the upstream rules, rename it to the layer-1 file. Claude Code loads `CLAUDE.md` and `CLAUDE.local.md` itself; Codex loads only `AGENTS.override.md` or `AGENTS.md` per directory, so the `agents/codex*.md` files apply only where a rule or a person points at them. Claude Code settings follow Claude Code's own order (managed policy, command line, `.claude/settings.local.json`, `.claude/settings.json`, `~/.claude/settings.json`). Effort level: managed policy, then `CLAUDE_CODE_EFFORT_LEVEL`, then the persisted `effortLevel`, then the default.
 
 ## Agent Roles
 
 - **Claude Code** is the primary workhorse: drafting, implementation, research, and heavy-lifting tasks.
-- **Codex** is the gatekeeper: review, feedback, and quality checks on work produced by Claude Code or the user.
-- When both agents are available, default to this division of labor unless the user overrides it.
+- **Codex** is the gatekeeper: review, feedback, and quality checks on work produced by Claude Code or the user, reached through `/vet`.
+- This division is a default. The user may reverse it, and two scenarios must stay workable: one agent absent (outage, quota, regional block) and roles deliberately reversed to test drift. Core functions (the review loop, structured dispatch, the health check) must work either way, even where an ergonomic helper exists for one agent only.
+- A skill, hook, or script that hard-codes one agent's CLI (`codex exec`, `claude -p`) documents or wires the other side's equivalent at the same time, even if that half ships later. A doc that names one agent in its steps names the cross-vendor equivalent once near the top. When the deferred half ships later, the principle is satisfied; do not block the primary half on parity.
 
-## Agent Fungibility
+## Git Safety and Mechanical Gates
 
-- The default routing (Claude Code primary, Codex gatekeeper) is a default, not a hard requirement. Two scenarios must remain workable: (1) **absence**, when one agent is unavailable (service outage, regional block, quota exhaustion, hardware-induced refusal); (2) **reversal testing**, when the user deliberately swaps primary and gatekeeper roles to evaluate quality drift.
-- **Principle**: not 1:1 replication. Core functions must work when either agent is absent or when roles are reversed. Where an ergonomic helper exists for one agent only (e.g., a hand-crafted slash command), the function must still be reachable via underlying primitives. Define "core function" by user value (review loop, structured dispatch, health check), not by surface convenience.
-- **How to apply** when designing or refactoring agent-facing skills, scripts, or docs:
-  - Default routing is fine; just make the alternative reachable.
-  - A skill, hook, or script that hard-codes one agent's CLI (`codex exec`, `claude -p`) should document or wire the other side's equivalent at the same time, even if the implementation is deferred.
-  - Docs that name one agent in step instructions should call out the cross-vendor equivalent at least once near the top, so a session reading the doc under role reversal can still proceed.
-  - When the deferred half ships later, the principle is satisfied; do not block the primary half on simultaneous parity.
+**Never run `git commit` or `git push` without explicit user approval.** Show the proposed command and ask first. This covers every variant: `git commit -m`, `git commit --amend`, `git push`, `git push --force`, `gh pr create` (which pushes), and the rest. Approval in one context does not carry to the next.
 
-## Memory and Persistence
-
-- This configuration targets multi-agent use (Claude Code, Codex, and others). A single agent's private memory is therefore not a reliable home for durable context: one agent's per-account memory is not readable by the other agents, and it does not travel across accounts or machines.
-- Prefer version-controlled local files for anything that must persist across agents, sessions, accounts, or machines: the project `README`, a `docs/` note, a `PLAN-*.md` or notes file, a `CHANGELOG`, or `AGENTS.local.md`. Version control is the portable, agent-independent memory.
-- Use an agent's built-in memory only for short, agent-local convenience, and treat the version-controlled copy as authoritative. Do not record project state, decisions, or records solely in agent memory.
-
-## Task Routing
-
-- Before starting a task, read the router skill to determine which domain skill to use. Look for it in this order: `skills/my-router/SKILL.md` (repo-local), then `.claude/skills/my-router/SKILL.md` (pack-deployed), then `.agent-config/repo/skills/my-router/SKILL.md` (bootstrapped from shared config).
-- The router inspects prompt keywords, file types, and project structure to dispatch automatically. Do not ask the user which skill to use when the routing table provides a clear match.
-- If the `superpowers` plugin is active, the router operates during the execution phase. Superpowers handles the outer workflow (brainstorm, plan, execute, verify); the router handles inner dispatch to the right domain skill.
-- If routing is ambiguous (multiple skills could apply), state the detected context and proposed skill, then ask the user to confirm.
-- Do not fan work out across subagents or a Workflow run on your own initiative. Those workers bill the account the session runs on, and one unrequested fan-out on 2026-09-13 used a large share of a Claude five-hour window. When parallel work would help, propose it and let the user choose between `prun`, whose units run on Agy, and a Workflow. If the user already chose a route for the current task, honor it within its agreed scope without asking again. A single helper agent for a bounded lookup is not a fan-out.
-
-<!-- agent:codex -->
-## Codex MCP Integration
-
-- Codex can run as an MCP server callable from Claude Code. Register at user scope (NOT project scope; project-scoped entries do not propagate across directories):
-  ```
-  claude mcp add codex -s user -- codex mcp-server -c approval_policy=never
-  ```
-  Writes to `~/.claude.json` `mcpServers`; session restart required for `/mcp` to pick it up. Available MCP tools after registration: `codex` (new prompt) and `codex-reply` (continue an existing session).
-- Prerequisites: Node.js + Codex CLI (`npm install -g @openai/codex`) + `OPENAI_API_KEY`.
-- **Recommended Codex defaults** (added to `~/.codex/config.toml` on POSIX or `%USERPROFILE%\.codex\config.toml` on Windows; the MCP server reads the same file as interactive sessions):
-  ```toml
-  model = "gpt-6-astra"
-  model_reasoning_effort = "xhigh"
-  service_tier = "standard"
-
-  [features]
-  fast_mode = false
-
-  [desktop]
-  conversationDetailMode = "DEFAULT"
-  ```
-  **Every model generation carries its own CLI floor.** Below it the model is rejected with a hard `400` that names it: `The '<model>' model requires a newer version of Codex.`
-  GPT-6 Astra (`gpt-6-astra`) fails at 0.149.0-alpha.4.3 and works at 0.153.3. No build between those two was tested, so its exact floor is unpinned. The GPT-5.6 family (`gpt-5.6-sol` flagship, `gpt-5.6-terra` mid, `gpt-5.6-luna` cheapest) has a floor of **0.144.0**: 0.142.5 and 0.143.0 fail, 0.144.0 and 0.144.1 work. If the model errors, run `npm install -g @openai/codex@latest` first. `gpt-6-astra` is the current flagship and suits the gatekeeper role. Codex is reserved for `/vet`; `prun` uses Agy alone, because bulk Codex fan-out is too expensive at the current credit rate and Sonnet workers bill the same Claude account the coordinating session runs on.
-  **`service_tier` buys latency, never quality.** It selects the serving queue only: the model, its weights, and `model_reasoning_effort` are identical across tiers, so `standard` returns the same answer `fast` would, just generated more slowly. The three tiers are `flex` (lower-priority queue, roughly half rate, availability not guaranteed), `standard` (the tier used when the key is unset, at normal priority and rate), and `fast` (faster generation at a higher credit rate). For ChatGPT auth, `fast` bills at **2.5x** the standard credit rate on GPT-6 Astra, GPT-5.6, and GPT-5.5, and 2x on GPT-5.4 (API-key auth uses API token pricing for the selected processing tier; ChatGPT credit multipliers do not apply). Earlier revisions of this file said 2x for all models, which was wrong for the 5.6 family. OpenAI publishes the 1.5x speed figure for GPT-5.6, GPT-5.5, and GPT-5.4. The cited speed page gives no multiplier for Astra. Sources: [pricing](https://learn.chatgpt.com/docs/pricing) and [speed](https://learn.chatgpt.com/docs/agent-configuration/speed). Local probes confirmed that Codex 0.153.3 accepts the priority tier for `gpt-6-astra` without a service-tier warning; they measured neither billing nor speed. The older 0.149.0-alpha.4.3 warns that the tier is not advertised there. That warning is stale client metadata rather than a server rule.
-  **Default to `gpt-6-astra` at `standard`; dial the tier up to `fast` only for a session where the latency is worth the 2.5x rate.** The gatekeeper is where model quality pays off, so the flagship is the default there; the cost reduction came from dropping Codex out of `prun` fan-out instead. Codex now serves only the `/vet` role, so there is no longer a human waiting on `fast` tokens by default; `standard` returns the same answer as `fast` would, just generated more slowly, at the normal rate. When a task does earn the 2.5x, for example because a second Codex account absorbs the rate or an interactive session is time-critical, dial up with `/fast on` mid-session. A V2 profile is the persistent form: mirror the existing `std` one with `service_tier = "fast"`, selected by `codex -p <name>`. The `implement-review` Codex dispatcher is unaffected by either setting: it passes `--ignore-user-config` to `codex exec` for MCP isolation (agent-config#1), so neither the configured model nor the configured tier reaches it. `CODEX_DISPATCH_ISOLATE_MCP=off` lifts the isolation and restores the full user config, model and tier included; hardcoding `fast` into the isolated path is avoided deliberately, since it would fail every round for a consumer whose account lacks the tier. The interactive `model` and `service_tier` above therefore govern interactive and MCP sessions only. With default MCP isolation enabled, a dispatched `/vet` review uses Codex's built-in default model and tier, regardless of the interactive settings above. Current `prun` routing never selects its legacy Codex dispatcher. `fast` is the current config spelling and maps to the request value `priority`; a config already reading `priority` is the same tier.
-  Codex does **not** validate `model_reasoning_effort` client-side. An unknown value reaches the service, which rejects the first turn with HTTP `400` and exits nonzero, so a typo fails loudly rather than degrading silently. **Do not treat that error's enumerated list as complete**: it names only `none` / `minimal` / `low` / `medium` / `high` / `xhigh`, yet `max` and `ultra` are also accepted on GPT-5.6.
-  **`ultra` is not simply more reasoning than `max`.** For GPT-6 Astra and GPT-5.6 Sol the single-agent reasoning ladder ends at `max`; `ultra` keeps that same maximum reasoning and additionally switches the harness into automatic task delegation (the rollout records `multi_agent_mode: proactive` for `ultra` versus `explicitRequestOnly` for `max`). Astra was measured directly on 0.153.3: `xhigh` and `max` both record `explicitRequestOnly`, and `ultra` records `proactive`. GPT-5.6 Terra also exposes `ultra`; GPT-5.6 Luna tops out at `max`. Use `xhigh` as the shared default and `max` when the task earns the extra depth; choose `ultra` only when proactive delegation is actually wanted. Confirm which mode landed by reading `~/.codex/sessions/**/rollout-*.jsonl` (`payload.model`, `payload.effort`, and the collaboration-mode fields) rather than trusting the config file. Read `multi_agent_mode` specifically. A sibling `collaboration_mode` block records `mode: default` at every effort and does not carry the delegation signal. `service_tier` is not recorded there.
-  The `implement-review` dispatcher keeps `xhigh` (`CODEX_DISPATCH_REASONING`) as a deliberate cross-model compatibility default, because models older than GPT-5.6 reject `max` and `ultra`; that is a compatibility floor, not a claim that `xhigh` is full strength.
-  `conversationDetailMode = "DEFAULT"` keeps Codex terminal output concise; avoid `STEPS_PROSE` / Coding mode unless you explicitly want command-level progress shown during turns.
-- **Windows PATH note**: Claude Code launches MCP servers through bash, not cmd or PowerShell, so `.cmd` wrappers and `$env:APPDATA` do not work. If `codex` is not on bash PATH, register with the full path using forward slashes and NO `.cmd` extension (e.g., `C:/Users/<you>/AppData/Roaming/npm/codex`). Run `where codex` (cmd) or `Get-Command codex` (PowerShell) to find it.
-- **`approval_policy=never` rationale**: without it, MCP shell commands trigger "MCP server requests your input" dialogs in Claude Code. With it, failures return to Codex/Claude as tool errors. Claude Code's PreToolUse hooks still gate the outer MCP tool call. For interactive Codex terminal sessions (NOT MCP), prefer `approval_policy = "on-request"` in `config.toml`.
-- **Windows recommendation: prefer the terminal path over MCP.** On Windows (11 Build 26200+), MCP has residual rough edges (approval prompts, AV false positives). The terminal path (Codex interactive window for reviews) avoids both. Prefer terminal on Windows; MCP is smoother on macOS/Linux.
-<!-- /agent:codex -->
-
-## Writing Defaults
-
-- Use scientifically accessible language.
-- Do not oversimplify unless the user asks for simplification.
-- Keep meaningful technical detail.
-- Keep factual accuracy and clarity high in scientific contexts.
-- Use consistent terms. If an abbreviation is defined once, do not define it again later.
-- If citing papers, verify that they exist.
-- When paper citations are requested, provide BibTeX entries that can be copied into a `.bib` file.
-- Provide code only when necessary. Confirm that the code is correct and can run as written.
-- For NSF or other federal proposal work, do not introduce DEI-related terms unless the solicitation explicitly requires them.
-- For non-federal proposals or calls that explicitly request DEI framing or terminology, follow the call requirements instead of applying a blanket ban.
-- Avoid the following words and close variants unless the user explicitly asks for them: `encompass`, `burgeoning`, `pivotal`, `realm`, `keen`, `adept`, `endeavor`, `uphold`, `imperative`, `profound`, `ponder`, `cultivate`, `hone`, `delve`, `embrace`, `pave`, `embark`, `monumental`, `scrutinize`, `vast`, `versatile`, `paramount`, `foster`, `necessitates`, `provenance`, `multifaceted`, `nuance`, `obliterate`, `articulate`, `acquire`, `underpin`, `underscore`, `harmonize`, `garner`, `undermine`, `gauge`, `facet`, `bolster`, `groundbreaking`, `game-changing`, `reimagine`, `turnkey`, `intricate`, `trailblazing`, `unprecedented`.
-
-## Formatting Defaults
-
-- Preserve the original format when the input is in LaTeX, Markdown, or reStructuredText.
-- Do not convert paragraphs into bullet points unless the user asks for that format.
-- Prefer full forms such as `it is` and `he would` rather than contractions.
-- `e.g.,` and `i.e.,` are fine when appropriate.
-- Do not use Unicode character `U+202F`.
-- Avoid heavy dash use. Do not use em dashes (`—`) or en dashes (`–`) as casual sentence punctuation. Prefer commas, semicolons, colons, or parentheses instead. En dashes in numeric ranges (e.g., `1–3`, `2020–2025`), paired names, or citations are fine. Normal hyphenation in compound words and technical terms (e.g., `command-line`, `co-PI`, `zero-shot`) is fine and should not be avoided.
-- Break extremely long or complex sentences into shorter, more readable ones. If a sentence has multiple clauses or nested qualifications, split it.
-- Vary sentence length and structure. Prefer not to start several consecutive sentences with the same word or phrase. Avoid overusing transition words like "Additionally" or "Furthermore." Not every paragraph needs a tidy summary sentence at the end. Mix short, direct sentences with longer ones to keep the writing natural.
-- Do not stage claims as "X, not Y" antithesis for emphasis (also "not just X, but Y"; "it is not X, it is Y"). State the claim directly. Keep the negation only when the rejected alternative is specific and the contrast informs the reader (e.g., "the bottleneck is disk I/O, not CPU").
-- Some text you show the user is meant to be copied into an external destination: an email reply, a chat message, a spreadsheet or table cell, a document. Present that text in a fenced code block, which keeps it copyable and stops the client from rendering the markup away. This applies to copy-paste-destined drafts, not to ordinary explanatory answers. Inside such a block, treat hard line breaks as semantic. One paragraph, or one list item, is a single unbroken line however long it runs. Do not wrap to a display width, and do not indent continuation lines. The block looks wide while you compose it, and that is correct. Each destination applies its own wrapping, so a newline added for terminal readability becomes a permanent break there. Keep a blank line between paragraphs, and keep the breaks that carry meaning, such as the lines of a postal address or a signature block.
-- A draft long enough to be a document, such as an email, a letter, or a passage of prose, goes in a `.md` file rather than in the terminal. Give the path in your reply and say what the file holds. A terminal block that size is awkward to select and easy to truncate. The same semantic-line-break rule applies inside the file. Markdown source pasted as plain text arrives in Outlook or Gmail as literal `**` and `-` characters, because neither client renders markdown. When the formatting matters, say so and point the user at a rendered view of the file to copy from. An artifact serves the same purpose: copying from the rendered page carries bold, lists, and links onto the clipboard.
-
-## Git Safety
-
-- **Never run `git commit` or `git push` without explicit user approval.** Always show the proposed action and ask for confirmation before executing.
-- This rule is non-negotiable and applies to all projects that consume this shared config.
-- This includes any variant: `git commit -m`, `git commit --amend`, `git push`, `git push --force`, `gh pr create` (which pushes), etc.
-
-## Mechanical Enforcement
-
-Bootstrap deploys `scripts/guard.py` to `~/.claude/hooks/guard.py` and wires it as a `PreToolUse` hook in `~/.claude/settings.json`. The hook runs before every tool call and mechanically enforces the following:
+`scripts/guard.py`, deployed by bootstrap as a `PreToolUse` hook, enforces these gates before every tool call:
 
 | Gate | Tool scope | Trigger | Action |
 |---|---|---|---|
-| Writing-style | `Write`, `Edit`, `MultiEdit` on `.md` / `.tex` / `.rst` / `.txt`, excluding an `agent-io` path under a temp root | Outgoing content contains a banned AI-tell word (see Writing Defaults list) | **deny** with hit list and inline `Suggested rewrite:` line naming concrete alternatives |
-| agent-style advisory | Same tools and extensions as the row above, excluding an `agent-io` path anywhere | `agent_style` is importable and its mechanical detectors report findings (RULE-05, 06, 12, B, D, I) | **advisory only**, reporting up to 5 findings and a count of any withheld to both the model and the user without setting a permission decision |
-| Banner emission | Any tool except `Read`, `Grep`, `Glob`, `Skill`, `Task`, `TodoWrite`, `BashOutput`, `WebFetch`, `WebSearch`, `ToolSearch`, `LS`, `NotebookRead`; plus `Write`/`Edit`/`MultiEdit` whose target path exactly equals `<project-root>/.agent-config/banner-emitted.json` after absolute-path normalization and Windows case folding | `<project-root>/.agent-config/session-event.json.ts > <project-root>/.agent-config/banner-emitted.json.ts`. `<project-root>` is found by walking up from `cwd` until `.agent-config/bootstrap.{sh,ps1}` is present. Source repos (no `.agent-config/`) and unrelated directories skip the gate entirely | **first arm** (banner-emitted.json absent): **deny** with instruction to emit banner + write acknowledgment to the per-project ack file. **Re-arm** (ack file exists but ts is stale, including malformed JSON): pass-through with a `[banner-gate] SessionStart re-fire detected ...` advisory line on stderr. The agent should still re-emit the banner on its next textual response per the rule in § "Session Start Check", but tool calls are not blocked (issue anywhere-agents#7). |
-| Compound `cd` | `Bash` | Command contains `cd <path> && <cmd>` or `cd <path>; <cmd>` | **deny** with inline `Suggested rewrite:` line (e.g. `git -C <path> <cmd>` for git, or pass the path as an argument) |
-| Nested `git init` | `Bash` + `PowerShell` | A `git init` whose target directory is already inside a git worktree | **deny** with inline `Suggested rewrite:` line pointing at the session scratch directory |
-| Destructive git | `Bash` + `PowerShell` | `git push`, `git commit`, `git merge`, `git rebase`, `git reset --hard`, `git clean`, `git branch -d/-D`, `git checkout --`, `git tag -d`, `git stash drop/clear` | **ask** (user confirms) |
-| Destructive / publish gh | `Bash` + `PowerShell` | `gh pr create/merge/close`, `gh repo delete`, `gh release create/delete/upload/edit` | **ask** (user confirms) |
-| Publish | `Bash` + `PowerShell` | `npm publish`, `npm unpublish`, `twine upload`, `python -m twine upload` | **ask** (user confirms) |
-| File / device destruction | `Bash` + `PowerShell` | Bash `rm -rf`/`-fr`/`-r -f`, `dd`, `mkfs*`, `shred`; PowerShell `Remove-Item` (+ aliases `rm`/`del`/`rd`/`rmdir`) with `-Recurse`/`-r`/`/s` | **ask** (user confirms) |
+| Writing-style | `Write`, `Edit`, `MultiEdit` on `.md` / `.tex` / `.rst` / `.txt`, excluding an `agent-io` path that resolves under a temp root outside any git worktree | Outgoing content contains a banned AI-tell word (see Writing Defaults) | **deny**, with the hit list and an inline `Suggested rewrite:` line |
+| agent-style advisory | Same tools and extensions, excluding an `agent-io` path anywhere | `agent_style` is importable and its mechanical detectors report findings (RULE-05, 06, 12, B, D, I) | **advisory only**: up to 5 findings reported to the model and the user, no permission decision |
+| Banner emission | Any tool except `Read`, `Grep`, `Glob`, `Skill`, `Task`, `TodoWrite`, `BashOutput`, `WebFetch`, `WebSearch`, `ToolSearch`, `LS`, `NotebookRead`, and a `Write`/`Edit`/`MultiEdit` whose target is exactly `<project-root>/.agent-config/banner-emitted.json` | `session-event.json.ts` newer than `banner-emitted.json.ts` in the consumer root found by walking up to `.agent-config/bootstrap.{sh,ps1}`; source repos and unrelated directories are not gated | **deny** on the first arm (no acknowledgement file yet) with the instruction to emit the banner and write the acknowledgement; a stale acknowledgement passes through with a `[banner-gate]` advisory |
+| Compound `cd` | `Bash` | `cd <path> && <cmd>` or `cd <path>; <cmd>` | **deny** with a `Suggested rewrite:` line (`git -C <path>`, or the path as an argument) |
+| Nested `git init` | `Bash`, `PowerShell` | A `git init` whose target is already inside a git worktree | **deny** with a `Suggested rewrite:` line pointing at the session scratch directory |
+| Destructive git | `Bash`, `PowerShell` | `git push`, `git commit`, `git merge`, `git rebase`, `git reset --hard`, `git clean`, `git branch -d/-D`, `git checkout --`, `git tag -d`, `git stash drop/clear` | **ask** |
+| Destructive or publishing gh | `Bash`, `PowerShell` | `gh pr create/merge/close`, `gh repo delete`, `gh release create/delete/upload/edit` | **ask** |
+| Publish | `Bash`, `PowerShell` | `npm publish`, `npm unpublish`, `twine upload`, `python -m twine upload` | **ask** |
+| File or device destruction | `Bash`, `PowerShell` | Bash `rm -rf`/`-fr`/`-r -f`, `dd`, `mkfs*`, `shred`; PowerShell `Remove-Item` and its aliases with `-Recurse`/`-r`/`/s` | **ask** |
 
-**Mandatory risk classification (tool-agnostic):** the four `ask` rows above are one classifier that runs for the `Bash` AND `PowerShell` tools (legacy payloads count as Bash). It keys on the EXACT leading token of each sub-command (split on `;` / `&&` / `||` / `|`), never a substring scan, so quoted strings like `echo "rm -rf"` or `Write-Output "Remove-Item -Recurse"` pass. It strips transparent prefix runners (`sudo`, `doas`, `env`, `command`, `nohup`, `setsid`, inline `VAR=VALUE`) and sees through built-in command-carrying wrappers (`ssh`, `bash`/`sh`/`zsh -c`, `docker exec`/`run`, `pwsh`/`powershell -Command`, Windows `cmd /c`/`/k`, `timeout`, `xargs`) up to `MAX_WRAPPER_DEPTH`, asking when nesting exceeds it. `python -c`, the low-frequency prefixes `nice`/`ionice`/`stdbuf`/`time`, and custom/private wrappers (a personal job-runner, etc.) are treated as **opaque** documented non-goals: their argument semantics are not inferable from the command text, and substring-scanning arbitrary arguments would reintroduce false-positive alarm fatigue. The user-level allow-list pairs `Bash(*)` with `PowerShell(*)`, so the native permission layer is allow-by-default and this hook is the sole risk arbiter on both shells.
+The four `ask` rows are one classifier that keys on the exact leading token of each sub-command, sees through built-in wrappers (`ssh`, `bash -c`, `docker exec`, `pwsh -Command`, `cmd /c`, `timeout`, `xargs`), and treats `python -c` and private wrappers as opaque. It is not bypassable by any env var: those operations have no agent-side reroute, and human approval is the contract. A gate that has an obvious reroute is a `deny` with the reroute inline, because an unattended loop can take it in one turn where an `ask` would stall.
 
-**The agent-style advisory reports; it does not block.** The banned-word gate denies because every hit has a one-word substitution, so an agent can reroute in a single turn. The mechanical rules have no such reroute. RULE-12 fires on any sentence over thirty words, which is a mechanical fix while an agent drafts and a judgement call while a person types. A gate that denied on it would be switched off within a day, so it reports through the hook's JSON response and leaves the permission flow alone. The findings are capped at five with a count of the remainder, because a wall of them is one the reader learns to skip. It runs only when the banned-word gate did not deny, so a blocked write produces one message rather than two, and it shares `AGENT_STYLE_HOOK` rather than adding an env var. A missing or broken `agent_style` degrades silently, since this hook runs in every repository and most have no reason to carry the package.
-
-Two details were settled by measurement rather than by reading the docs. The findings travel in `hookSpecificOutput.additionalContext` and in `systemMessage`, because probing Claude Code 2.1.229 showed those reach the model and the user respectively while stderr on an exit-0 hook reached neither. RULE-G, which asks for title-case headings, is left out. Over the 155 markdown files here it produced 1018 of 2561 findings, and it flagged the sentence-case headings this corpus writes on purpose. It would fill the cap with nothing to act on. The `style-review` skill still runs it.
-
-**Both writing-style guards skip a path a caller marked as agent I/O.** They pick scope by file extension, and extension does not separate prose an agent is writing from text an agent is carrying. A scratch directory holds a dispatch prompt beside a draft proposal section. Measured across 34 local session transcripts, 23% of prose-extension writes landed in a scratch directory. The most frequent names there belonged to the review loop itself: `ir-prompt-r1.txt`, `review-prompt-r1.txt`, `ir-round1.txt`. Findings on that text cannot be acted on. A dispatch prompt is an instruction to another agent, so rewriting it changes what was asked. Captured round output is another agent's words, and rewriting it falsifies the record. So the writer declares the location, by putting the file under a directory named `agent-io`. The two guards then trust that marker to different depths. Anywhere on disk is enough for the advisory, matched case-insensitively and on either separator, because a wrong exemption there costs one message. Only a path under a temp root that encloses no repository satisfies the deny gate, resolved through symlinks first, because CI checks repositories out below temp directories routinely. A marker trusted anywhere would be a one-token bypass: an agent could write `repo/agent-io/proposal.md` and skip the banned-word check on real prose. Carried text belongs in the session scratch directory in any case, which is where `implement-review` and `prun` are documented to write it. An unmarked path is still scanned, so a forgotten marker costs noise instead of silence.
-
-**A `git init` inside a repository is denied rather than asked about.** The
-second repository is invisible from the first: the directory that holds it is
-normally an ignored one, so `git status` in the parent never mentions it again.
-IDEs are where it surfaces. PyCharm and VS Code both scan for nested `.git`
-directories and register each as a VCS root, after which every file staged in
-one appears in the changes view beside real work, separated only by a branch
-label. Measured on one machine: four review packets left in a proposal repo
-over a single day held 85 staged-and-never-committed files across four roots,
-and the commit panel offered all of them under one checkbox. A mis-click there
-commits build artifacts into a repository shared with a co-PI.
-
-It is a deny because the reroute exists and an unattended agent can take it in
-one turn: artifacts an agent generates belong in the session scratch directory,
-which is already where the skills that carry text between agents write. The
-gate answers the question git would answer, so it checks the executable before
-reading a subcommand, follows a global `-C`, resolves `..` and symlinks, and
-skips the values of options that take one. A deliberate inner repository, a
-submodule most often, sets `AGENT_NESTED_GIT_INIT_HOOK=off` for that one call.
-No shipped skill creates such a directory, which is why this is a gate rather
-than a correction to one (anywhere-agents#56).
-
-**The gate declines commands whose shape it cannot account for, and that is
-deliberate.** A command carrying a heredoc is not judged at all, because its
-body is data that reads exactly like commands and deciding where the body ends
-is where two separate defects lived. A single command carrying a redirection is
-not judged either, because its operands are not arguments and reading one as the
-target denied a directory that never existed. A backslash or a backtick
-immediately before a quote declines the whole command: an escape moves where a
-quoted region ends, and the splitter and the tokenizer downstream both assume
-it does not, so recognizing it in one place would leave two others wrong. At a
-possible comment start, the gate declines as well when the boundary character
-before the `#` is itself preceded by either escape character, since an escaped
-operator does not end a word. An escaped hash is not that shape, since an
-escape is not a boundary character, so `\#` stays the literal text a shell
-reads it as and the command after the separator is still judged. Both escape
-checks ignore shell-specific escape rules and escape parity by design, so a
-doubled escape declines like a single one. A PowerShell block
-comment declines for the heredoc's reason, since its body spans lines. Five
-review rounds produced the rule: every widening of the parser closed one gap and
-opened a false positive somewhere adjacent. The two errors are not symmetric. A
-false positive blocks work an agent is entitled to do and no rewrite repairs it,
-while a declined command behaves exactly as it did before this gate existed.
-`git init` reached through any of those shapes is not how the nested
-repositories that prompted this were created.
-
-**Round 6 noise audit (v0.7.0):** Deny messages embed a concrete `Suggested rewrite:` line so an autonomous agent (`/implement-review auto`, headless `claude -p`, any unattended loop) can lift the reroute in one model turn instead of inferring it. Destructive operations stay `ask` because they have no agent-side reroute; human approval is the contract.
-
-**Escape hatches:** set the corresponding env var in the `env` block of `~/.claude/settings.json`. Disable values: `off` / `0` / `disabled` / `false` / `no`.
+Escape hatches, set in the `env` block of `~/.claude/settings.json` (disable values `off` / `0` / `disabled` / `false` / `no`):
 
 | Env var | Disables |
 |---|---|
 | `AGENT_STYLE_HOOK=off` | Writing-style gate and its agent-style advisory |
 | `AGENT_COMPOUND_CD_HOOK=off` | Compound-cd gate only |
-| `AGENT_NESTED_GIT_INIT_HOOK=off` | Nested `git init` gate only |
-| `AGENT_CONFIG_GATES=off` | Legacy blanket: writing-style + banner only (BC-preserved) |
+| `AGENT_NESTED_GIT_INIT_HOOK=off` | Nested `git init` gate only (set it to create a submodule or a deliberate inner repository) |
+| `AGENT_CONFIG_GATES=off` | Legacy blanket: writing-style + banner only |
 
-**The mandatory risk set (destructive git, destructive/publish gh, package publishes, file/device destruction) is NOT bypassable by ANY env var.** No escape hatch turns the `ask` prompt into pass-through. The guards have no automatic reroute; human approval is the contract. The advertised env-var set lives in `scripts/guard.py:_ESCAPE_HATCH_ENV_NAMES`; a static literal-scan test enforces that no future hook env var can be added without registering it there.
-
-Set a per-guard escape env when a legitimate write has a banned word in *meta-discussion* context (a style-guide document that quotes banned words as examples; a CHANGELOG entry that cites one). Prefer the narrowest env that unblocks (`AGENT_STYLE_HOOK=off` over `AGENT_CONFIG_GATES=off`) so the other gates stay live. Remove the override after the write.
-
-**Fan-out stays a written rule.** No gate enforces the Task Routing rule against unrequested subagents and Workflow runs, by design. Whether the user asked for parallel work is a judgement about the conversation, often made several turns before the launch. A hook that judged it wrong would block a fan-out the user requested. If an agent fans out unasked again, sharpen the prose instead of adding a hook.
+Use the narrowest escape only for a legitimate write that quotes a banned word as an example (a style guide, a CHANGELOG entry), and remove the override after the write. Text an agent carries rather than writes, such as a dispatch prompt or a captured review, belongs under an `agent-io` directory in the session scratchpad, which both writing guards skip; an unmarked path is still scanned. Fan-out (unrequested subagents or Workflow runs) is deliberately a written rule with no gate, because whether the user asked is a judgement about the conversation.
 
 ## Shell Command Style
 
-- **Avoid compound `cd <path> && <command>` chains.** Claude Code's hardcoded compound-command protection prompts for approval on these even when both commands are individually allowed. Use alternatives that keep each tool call to a single command:
-  - For git in another repo: use `git -C <path> <subcommand>` instead of `cd <path> && git <subcommand>`.
-  - For non-git commands: pass the target path as an argument (e.g., `ls <path>`, `python <path>/script.py`) or use separate tool calls.
-- Examples of read-only invocations that should not require approval: `git status`, `git diff`, `git log`, `git branch` (no flags), `git show`, `git stash list`, `git remote -v`, `git submodule status`, `git ls-files`, `git tag --list`. Filesystem reads (`ls`, `cat`) and benign local operations (`mkdir`) are also fine.
-- Examples of invocations that always require explicit approval: `git commit`, `git push`, `git reset`, `git checkout`, `git rebase`, `git merge`, `git branch -d`, `git remote add/remove`, `git tag <name>` (creating/deleting), `git stash drop`.
-- Filesystem commands like `cp` and `mv` are fine for scratch and temporary files. Moves or renames that affect git-tracked files should be reviewed before executing.
-- **Do not wrap PowerShell inside PowerShell with inline `-Command` when the payload contains `$` variables.** In a PowerShell shell, run the PowerShell body directly, or write a temporary `.ps1` and invoke it with `-File`. Forms like `pwsh.exe -Command "foreach($f in ...) { ... }"` cause the outer shell to expand `$f`, `$_`, and `$cutoff` before the inner shell runs, producing broken commands.
-- **Do not delete a scratch directory before rewriting it.** The common shape is `rm -rf <dir>; cp -r <src> <dir>`. In Claude Code, `rm -rf` reaches both the native `permissions.ask` rule and the mandatory PreToolUse risk classifier, so it prompts on every run. Copy into a fresh name instead, such as `cp -r <src> <dir>-2`, or let the consuming script create the directory. Scratchpads are per-session temp directories that the harness discards, so a stale sibling costs nothing. Claude Code's "don't ask again" option does not help here. It records the exact command string, and a scratchpad path carries a per-session UUID, so the saved rule never matches another session.
-- **Avoid inline Python with `#` comments in quoted arguments.** Claude Code flags "newline followed by `#` inside a quoted argument" as a path-hiding risk and prompts for approval. Instead, write the code to a `.py` file and run `python <script>.py`.
+- Avoid `cd <path> && <command>` chains. Use `git -C <path> <subcommand>` for git in another repo, and pass the target path as an argument otherwise (`ls <path>`, `python <path>/script.py`), or use separate tool calls.
+- Read-only invocations that need no approval: `git status`, `git diff`, `git log`, `git branch` (no flags), `git show`, `git stash list`, `git remote -v`, `git submodule status`, `git ls-files`, `git tag --list`, filesystem reads (`ls`, `cat`), and benign local operations (`mkdir`).
+- Invocations that always need explicit approval: `git commit`, `git push`, `git reset`, `git checkout`, `git rebase`, `git merge`, `git branch -d`, `git remote add/remove`, `git tag <name>`, `git stash drop`.
+- `cp` and `mv` are fine for scratch and temporary files. A move or rename of a git-tracked file is reviewed before executing.
+- Do not wrap PowerShell inside PowerShell with inline `-Command` when the payload contains `$` variables; run the body directly or write a temporary `.ps1` and invoke it with `-File`. The outer shell expands `$f`, `$_`, and friends first.
+- Do not delete a scratch directory before rewriting it (`rm -rf <dir>; cp -r <src> <dir>` prompts on every run). Copy into a fresh name or let the consuming script create the directory.
+- Avoid inline Python with `#` comments inside quoted arguments; write a `.py` file and run `python <script>.py`.
+
+## Writing Defaults
+
+- Use scientifically accessible language. Do not oversimplify unless asked. Keep meaningful technical detail, factual accuracy, and clarity in scientific contexts.
+- Use consistent terms. If an abbreviation is defined once, do not define it again later.
+- If citing papers, verify that they exist. When citations are requested, provide BibTeX entries that can be copied into a `.bib` file.
+- Provide code only when necessary, and confirm it is correct and runs as written.
+- Avoid the following words and close variants unless the user explicitly asks for them (a default AI-tell list; trim or extend in your fork): `encompass`, `burgeoning`, `pivotal`, `realm`, `keen`, `adept`, `endeavor`, `uphold`, `imperative`, `profound`, `ponder`, `cultivate`, `hone`, `delve`, `embrace`, `pave`, `embark`, `monumental`, `scrutinize`, `vast`, `versatile`, `paramount`, `foster`, `necessitates`, `provenance`, `multifaceted`, `nuance`, `obliterate`, `articulate`, `acquire`, `underpin`, `underscore`, `harmonize`, `garner`, `undermine`, `gauge`, `facet`, `bolster`, `groundbreaking`, `game-changing`, `reimagine`, `turnkey`, `intricate`, `trailblazing`, `unprecedented`.
+
+## Formatting Defaults
+
+- Preserve the original format when the input is LaTeX, Markdown, or reStructuredText. Do not convert paragraphs into bullet points unless asked.
+- Prefer full forms such as `it is` and `he would` over contractions. `e.g.,` and `i.e.,` are fine. Do not use Unicode `U+202F`.
+- Do not use em dashes or en dashes as casual sentence punctuation; prefer commas, semicolons, colons, or parentheses. En dashes in numeric ranges (`1–3`, `2020–2025`), paired names, or citations are fine, and ordinary hyphenation (`command-line`, `co-PI`, `zero-shot`) is fine.
+- Break extremely long or nested sentences into shorter ones. Vary sentence length and structure; do not start several consecutive sentences with the same word; do not overuse transition words such as "Additionally" or "Furthermore"; not every paragraph needs a closing summary sentence.
+- Do not stage claims as "X, not Y" antithesis for emphasis ("not just X, but Y"; "it is not X, it is Y"). State the claim directly; keep the negation only when the rejected alternative is specific and informs the reader.
+- Text meant to be copied into an external destination (an email reply, a chat message, a table cell, a document) goes in a fenced code block. Inside such a block, treat hard line breaks as semantic: one paragraph or one list item is a single unbroken line however long it runs. Do not wrap to a display width, and do not indent continuation lines, because each destination applies its own wrapping and an added newline becomes a permanent break. Keep a blank line between paragraphs and keep the breaks that carry meaning, such as the lines of a postal address or a signature block.
+- A draft long enough to be a document (an email, a letter, a passage of prose) goes in a `.md` file rather than in the terminal; give the path and say what the file holds. The same line-break rule applies inside the file. Markdown pasted as plain text arrives in Outlook or Gmail as literal `**` and `-` characters, so when formatting matters, say so and point the user at a rendered view of the file to copy from; an artifact serves the same purpose.
+
+## Skills
+
+- Resolve a skill by name in this order, first hit wins: `skills/<name>/SKILL.md` (project-local), then `.claude/skills/<name>/SKILL.md` (pack-deployed by `anywhere-agents pack install`; the `.claude/` prefix is historical, the contents are agent-agnostic), then `.agent-config/repo/skills/<name>/SKILL.md` (bootstrapped from upstream). Claude Code plugins add a fourth source; prefer the more specific skill.
+- A project-local skill is the source of truth for that project. Read its local `references/`, `scripts/`, and `assets/` before any global copy, say briefly that the local copy is in use, and do not modify a global copy that a local skill shadows unless asked.
+- `SKILL.md` is the single source for a skill; agent-specific files such as `agents/openai.yaml` are thin wrappers, and there are no agent-specific forks. Edit `SKILL.md` and its `references/` or `scripts/` directly.
+- Claude Code reaches a skill through a slash-command pointer at `.claude/commands/<name>.md` that references the `SKILL.md` and carries a one-sentence `description:`; Codex and other agents reach the same file through the lookup order. A new skill gets both the `skills/<name>/SKILL.md` structure and a pointer. A long-named skill may carry an alias pointer whose frontmatter sets `alias-of: <skill-name>` and whose lookup line names the target's three paths (`vet` is the alias for `implement-review`).
+
+## Task Routing
+
+- Before starting a task, read the router skill (`my-router`, resolved through the lookup order) to pick the domain skill; it inspects prompt keywords, file types, and project structure. Do not ask the user which skill to use when the routing table gives a clear match; when several skills could apply, state the detected context and the proposed skill, then ask. If the `superpowers` plugin is active, it runs the outer workflow and the router dispatches inside the execution phase.
+- `/vet` (alias of `implement-review`) is the review entry point for staged changes and for plan review.
+- Do not fan work out across subagents or a Workflow run on your own initiative; those workers bill the account the session runs on. When parallel work would help, propose it and let the user choose between `prun` (units run on Agy) and a Workflow. Honor a route the user already chose for the current task without asking again. A single helper agent for a bounded lookup is not a fan-out.
+
+## Memory and Persistence
+
+Version-controlled files are the memory that travels across agents, sessions, accounts, and machines: the project README, a `docs/` note, a `PLAN-*.md` file, a `CHANGELOG`, or `AGENTS.local.md`. Use an agent's private memory only for short, agent-local convenience, and never as the sole home of project state, decisions, or records.
 
 ## Tool-Use Reliability
 
-- Treat a tool's "cannot open / encrypted / unreadable / unsupported" report on a file as a possible false positive, not a final verdict. PDFs are the common case: a read may report a PDF as encrypted when it actually opens fine. Before telling the user a file cannot be read, retry once and try an alternate read path (re-read with a page range, `pdftotext`, render to an image, or a different tool). Report failure only after an alternate path also fails, and say which paths were tried.
-- The same caution applies to other transient-looking tool failures: a single failed attempt is weak evidence. Prefer one retry or an alternate route over reporting a blocked result, unless the failure is clearly deterministic.
+Treat a tool's "cannot open / encrypted / unreadable" report on a file as a possible false positive. Before telling the user a file cannot be read, retry once and try an alternate path (a page range, `pdftotext`, render to an image, a different tool), and report failure only after that also fails, naming the paths tried. Apply the same one-retry rule to other transient-looking failures unless the failure is clearly deterministic.
 
-## GitHub Actions Standards
+## Environment
 
-GitHub is deprecating Node.js 20 actions. Runners begin using Node.js 24 by default on June 2, 2026, and GitHub's public changelog currently says Node.js 20 removal will happen later in fall 2026. Keep workflow action pins at or above the first Node.js 24 major for the GitHub-maintained actions below:
+- Prefer a Miniforge-managed Python interpreter. Prefer `mamba` for install and create operations and fall back to `conda` only for commands mamba lacks. If the fork or the project names a preferred interpreter in `AGENTS.local.md`, use it first. Do not conclude that Python is unavailable because `python`, `python3`, or `py` fails in `PATH`; those may be shims or store aliases. Inspect Miniforge environments (`%USERPROFILE%\miniforge3\envs\<env>\python.exe`, `$HOME/miniforge3/envs/<env>/bin/python`) and IDE settings before reporting that Python is missing.
+- GitHub CLI (`gh`) drives PR and issue work. If it is missing, remind the user to install it (`winget install GitHub.cli`, `brew install gh`, or the distribution package) and run `gh auth login`.
+- Claude Code: prefer the native installer, which auto-updates (`claude doctor`, `claude update`). Effort: `CLAUDE_CODE_EFFORT_LEVEL=max` in the `env` block of `~/.claude/settings.json` is the persistent default that bootstrap installs; it outranks `--effort` and `/effort`.
+- Codex: `gpt-6-astra` at `service_tier = "standard"` with `[features] fast_mode = false` is the interactive default; `model_reasoning_effort = "xhigh"` is the default and `max` a valid dial-up, while `ultra` also enables automatic task delegation and is chosen only when that is wanted. `approval_policy = "on-request"` for interactive sessions. Set `project_doc_max_bytes = 262144` in `~/.codex/config.toml`: the default injects only the first 32 KiB of a project's `AGENTS.md` and drops the rest without notice. By default a dispatched `/vet` review runs under `--ignore-user-config` and passes the byte budget and the reasoning floor itself; `CODEX_DISPATCH_ISOLATE_MCP=off` restores the user config while keeping the explicit byte budget.
+- GitHub Actions: keep workflow pins at or above the first Node.js 24 major: `actions/checkout@v5`, `actions/setup-python@v6`, `actions/setup-node@v5`, `actions/upload-artifact@v6`, `actions/download-artifact@v7`. Flag a SHA pin for manual review rather than suggesting a tag, treat a jump to the newest major as a separate manual upgrade, and remind self-hosted runner owners that these actions need a runner that supports Node.js 24.
 
-| Action | Minimum version (Node.js 24) | Replaces |
-|--------|------------------------------|----------|
-| `actions/checkout` | **v5** | v3, v4 |
-| `actions/setup-python` | **v6** | v5 |
-| `actions/setup-node` | **v5** | v4 |
-| `actions/upload-artifact` | **v6** | v4, v5 |
-| `actions/download-artifact` | **v7** | v4, v5, v6 |
+## Session Start Check
 
-When the session start check (item 4) detects older versions, list the affected files and suggest the minimum Node.js 24 version from this table. If a repository intentionally wants the latest major instead of the minimum compatible major, flag that as a separate manual upgrade because later majors can include behavior changes. If a workflow pins a SHA instead of a tag (e.g., `actions/checkout@abc123`), flag it for manual review rather than auto-suggesting a tag. For self-hosted runners, also remind the user that these Node.js 24 actions require an Actions Runner version that supports Node.js 24.
+Before the first content of a reply, resolve the consumer root by walking up to `.agent-config/bootstrap.{sh,ps1}`. In Claude Code, when `.agent-config/session-event.json` is newer than `banner-emitted.json` or has no acknowledgement, read `.agent-config/banner.txt`. Accept it only when its leading metadata comment records the pending event's timestamp and the `run_id` of the current `last-run.json`; then skip that comment, print the banner lines after it verbatim as the first lines of the reply with `<model>` replaced by your model id, and copy the event `ts` into `banner-emitted.json`. Missing, unparseable, or mismatched metadata selects this fallback instead, acknowledged the same way:
 
-## Environment Notes
+```
+📦 anywhere-agents active
+   ├── Agent: <model>
+   └── Session check: checks unavailable (run bootstrap or read .agent-config/last-run.json)
+```
 
-- Prefer a Miniforge-managed Python interpreter. Miniforge ships both `conda` and `mamba`; prefer `mamba` for install and create operations (faster C++ solver) and fall back to `conda` only when a command is not supported by mamba (e.g., `conda rename`).
-- If a `py312` environment or launcher exists, use it first.
-- Do not conclude that Python is unavailable just because `python`, `python3`, or `py` fails in `PATH`; those may resolve to shims, store aliases, or the wrong interpreter.
-- On Windows, a common Miniforge pattern is `%USERPROFILE%\\miniforge3\\envs\\py312\\python.exe`.
-- On macOS or Linux, a common Miniforge pattern is `$HOME/miniforge3/envs/py312/bin/python`.
-- If interpreter selection is still unclear, inspect Miniforge environments and local IDE settings before reporting that Python is missing.
-- **PyCharm default interpreter:** The `py312` conda environment is configured as the default interpreter for new projects via **File > New Projects Setup > Settings for New Projects > Python Interpreter**. Existing cloned repos should also point to this environment unless they require a project-specific venv.
-- GitHub CLI (`gh`) is used for PR and issue workflows. If `gh` is not found, remind the user to install it (`winget install GitHub.cli` on Windows, `brew install gh` on macOS) and authenticate with `gh auth login`.
-- **Console windows flashing during Windows test runs**: a process launched as a background task owns no console. Every console child it spawns therefore asks Windows for one, and that one is shown. A suite that spawns shells continuously flashes a window roughly once a second across whatever else is on screen. The owner varies by depth, so a capture may name `powershell.exe`, `pwsh.exe` or `cmd.exe`. Two measures, both measured against this repository's suite:
-  - **Give the runner process a hidden console**, which every descendant inherits so none of them allocates: launch the suite through `Start-Process -WindowStyle Hidden -Wait -RedirectStandardOutput <file>`. Measured: about one window per second before, zero after. This covers the whole tree and is the one that matters.
-  - **Keep `CREATE_NO_WINDOW` on the shells the suite spawns**, which `tests/_quiet_spawn.py` installs by patching `subprocess.run` and `subprocess.Popen`. Measured on an isolated shell-to-`cmd.exe` chain: three windows over three runs before, zero after. It reaches only the process it is applied to, so it is a second layer rather than a substitute for the first.
-  Setting the Windows default terminal application to **Windows Console Host** is worth doing as well. Windows Terminal turns each allocation into a full terminal window and does not honor `SW_HIDE` on it, whereas `conhost` does. That changes how loud the problem is rather than removing it. Settings, System, For developers, Terminal, or set `DelegationConsole` and `DelegationTerminal` under `HKCU:\Console\%%Startup` to `{B23D10C0-E52E-411E-9D5B-C09FDF709C7D}`. Opening Windows Terminal yourself is unaffected.
-<!-- agent:claude -->
-- **Claude Code installation**: Prefer the **native installer**. Migrate off npm and winget when possible.
-  - macOS: `curl -fsSL https://claude.ai/install.sh | sh`
-  - Windows (PowerShell, no admin): `irm https://claude.ai/install.ps1 | iex` (requires Git for Windows)
-  - To migrate from npm: `npm uninstall -g @anthropic-ai/claude-code` first. From winget: `winget uninstall Anthropic.ClaudeCode` first.
-  - Native installs auto-update in the background by default. Use `/config` inside Claude Code to set the release channel (`latest` or `stable`). Run `claude doctor` to inspect updater status, and `claude update` to force an immediate update check.
-  - To disable auto-updates, set `DISABLE_AUTOUPDATER=1` in the environment or add `"env": {"DISABLE_AUTOUPDATER": "1"}` to `~/.claude/settings.json`. The env var takes precedence regardless of other flags.
-- **Claude Code effort level**: As of Claude Code v2.1.111, the `/effort` slider exposes five levels: `low`, `medium`, `high`, `xhigh`, `max`. The persisted `effortLevel` key in `settings.json` accepts `low`, `medium`, `high`, and `xhigh` (v2.1.111 added `xhigh` as a valid persisted value). `max` remains session-only: selecting `max` via `/effort` silently does not persist. To get `max` as a persistent default across every project and session, set the env var `CLAUDE_CODE_EFFORT_LEVEL=max` in `~/.claude/settings.json` under `"env"`. The shared `user/settings.json` in this repo sets the env var, and bootstrap merges it into `~/.claude/settings.json`, so running bootstrap once on any consuming project lands the user-level default. Runtime precedence: managed policy > `CLAUDE_CODE_EFFORT_LEVEL` env var > persisted `effortLevel` (local > project > user) > Claude Code's built-in default. When the env var is set, it outranks `--effort` at launch and `/effort` inside a session; the slash command prints a warning that the env var is overriding the live effort. When the env var is unset, `--effort <level>` at launch is a session-only override, `/effort low|medium|high|xhigh` updates the persisted user setting, and `/effort max` is session-only.
-<!-- /agent:claude -->
+The `compact` source and the debounce do not re-fire the banner. Codex hooks (0.153.3 and later) are not wired here yet, so Codex and other invocation-based agents print the banner on the first reply after running bootstrap, without touching Claude's acknowledgement file: a failed bootstrap attempt selects the fallback regardless of any existing report, and a completed attempt requires the report carrying that attempt's `run_id`. A report for an incomplete refresh says so in its check line. In a source repo, run `scripts/render_banner.py` with the resolved Python interpreter and print its output on the first reply, or the fallback if it cannot run. A dispatched reviewer told to skip the banner keeps skipping it.
 
-## Submodule Workflow
+## User Profile
 
-- Some projects use git submodules for directories shared with collaborators (e.g., co-PI proposal repos, shared paper repos linked to Overleaf).
-- At session start, if `.gitmodules` exists, run `git submodule status` to check submodule state. If submodules are uninitialized (prefix `-`), warn the user and suggest `git submodule update --init`.
-- Submodule directories have their own `.git` and `origin` remote. Commits and pushes inside a submodule go to the submodule's upstream repo, not the parent.
-- **Submodules are shared repos.** Pushes land directly in a collaborator's Overleaf project or co-PI repo. A careless force-push or overwrite can destroy someone else's work. Treat every write operation inside a submodule as high-risk.
-- When the user asks to push or pull a submodule:
-  1. Before writing, run `git -C <submodule-path> fetch` then `git -C <submodule-path> status` to check for uncommitted local changes. Review recent history with `git -C <submodule-path> log --oneline -5` to see local commits and `git -C <submodule-path> log --oneline -5 --remotes` to see recent remote-tracking activity. This is a quick sanity check, not a full divergence analysis; submodules are often in detached-HEAD state where branch comparisons do not apply cleanly.
-  2. Use `git -C <submodule-path>` for git operations inside the submodule. Always confirm with the user before any commit, push, pull, or reset.
-  3. Back in the parent repo, update the submodule pointer: `git add <submodule-path>` then commit (also requires confirmation).
-- Submodules may have a `.gitignore` that excludes internal-only files (e.g., `.agent/`, `guardrail/`, `figure-spec/`, `figure-src/`). These files exist on disk but are not pushed to the collaborator repo. On a fresh clone, they will be missing. Warn the user if expected internal directories are absent.
-- `context/` is synced to co-PI repos and will be available after submodule init.
-- Project-specific submodule details (which directories, which upstream repos, which files are internal-only) belong in `CLAUDE.md` in each project repo, not here.
+Describe this fork's user here or in `AGENTS.local.md` (role, field, common tasks); the maintainer's profile reaches consumers through the `profile` pack.
 
-### Overleaf merge conflict resolution
+## Reference
 
-Overleaf-synced repos (usually submodules) require special care during merges. Overleaf's git bridge creates branches from its own snapshot, which may lag behind the latest local push. When a collaborator edits on Overleaf while we push structural changes locally, the Overleaf branch is based on the **pre-push** state. In a merge, "theirs" means "older base plus collaborator styling edits," not "collaborator's newer version." Using `git checkout --theirs` on such files silently discards our work.
+Open these when a task touches the mechanism; they carry the rationale this file does not.
 
-**Co-PI changes are the priority.** Our own structural work (compaction, renames) can be redone in minutes because we know exactly what we changed. A co-PI's content changes on Overleaf -- new sentences, rewritten arguments, added references, terminology choices -- represent their intellectual contribution. If we silently drop their edits, we may not even know what was lost, and they may not notice until weeks later. Losing their work is an order of magnitude worse than losing ours. The merge must preserve both sides, but when in doubt, err toward preserving the co-PI's content.
-
-**Rules for merging Overleaf branches with conflicts:**
-
-1. **Never use `git checkout --theirs`** on files where we have local structural changes (compaction, renames, reorganization). This is the single most dangerous command in an Overleaf merge.
-2. **Never use `git checkout --ours` and stop there.** Starting from our version is correct, but the merge is not done until the co-PI's content changes are accounted for. Treating `--ours` as the final answer silently drops their work.
-3. **Inspect what the collaborator actually changed** before resolving. First find the merge base: `git merge-base HEAD <overleaf-branch>`. Then run `git diff <merge-base>..<overleaf-branch> -- <file>` to isolate the co-PI's edits relative to the common ancestor, without mixing in our structural changes. Classify each change as:
-   - **Content** (new sentences, rewritten arguments, added references, deliberate deletions or shortenings, terminology changes) -- must be preserved. Treat co-PI deletions with the same care as additions; if they removed text, that was a deliberate editorial decision, not noise.
-   - **Formatting** (spacing, font commands, styling) -- apply if consistent with our version.
-   - **Stale reversions** (undoes our rename or compaction because they edited the pre-push snapshot) -- discard, but note that the co-PI has not seen our change yet. Be careful: a change that looks like a stale reversion may actually be a deliberate content choice. When ambiguous, ask the user.
-4. **Apply their content changes onto our structural base.** Start from `git checkout --ours <file>`, then manually integrate every content change identified in step 3. Do not skip any co-PI content change without explicit user approval.
-5. **Double-verify before committing** -- check both directions:
-   - `git diff <pre-merge-commit> -- <file>` -- confirm our structural changes survived.
-   - `git diff <overleaf-branch> -- <file>` -- confirm the only differences from the co-PI's version are our intended structural changes, not dropped content.
-   - If the co-PI added entirely new paragraphs or sections, verify they appear in the merged file.
-6. **Screen for binary artifacts before staging.** Overleaf branches often carry compiled PDFs, review screenshots (`out-review/`), or other build artifacts that should not be tracked. Use the same merge-base diff from pre-merge checklist step 2 to spot unexpected large files. Add them to `.gitignore` before staging the merge.
-
-**Pre-merge checklist** (run before `git merge <overleaf-branch>`):
-
-1. `git fetch` to get the latest Overleaf branch.
-2. `git diff --stat $(git merge-base HEAD <overleaf-branch>)..<overleaf-branch>` -- check which files the co-PI actually touched, spot binary artifacts.
-3. `git log --oneline HEAD..<overleaf-branch>` -- understand what the collaborator did.
-4. If any files we modified structurally appear in the diff, plan to resolve those conflicts manually using the rules above.
-5. If the co-PI touched files we did not modify, those should auto-merge cleanly. After the merge, still spot-check them for unintended content loss.
-
-**Recovery if `--theirs` was already used:** Restore our structural version from the pre-merge commit with `git restore --source=<pre-merge-commit> --worktree -- <file>` (avoids encoding and line-ending issues from shell redirection on Windows). Then reapply the collaborator's content and formatting changes on top. Do not skip the reapply step -- their work matters too.
-
-## Local Skills Precedence
-
-- If the workspace contains a `skills/` directory, treat repo-local skills as the default source of truth for that project.
-- **Skill lookup order** for every agent (Claude Code, Codex, or any future agent): when resolving a skill by name, try paths in this order, first hit wins:
-  1. `skills/<skill-name>/SKILL.md`: project-local, hand-authored or vendored.
-  2. `.claude/skills/<skill-name>/SKILL.md`: pack-deployed by `anywhere-agents pack install`. The `.claude/` prefix is a historical Claude Code convention; the SKILL.md contents are agent-agnostic. A v1.0 architecture pass is the right place to revisit the directory name.
-  3. `.agent-config/repo/skills/<skill-name>/SKILL.md`: shared config bootstrapped from upstream.
-  This is the same lookup order encoded in the Claude Code slash-command pointers at `.claude/commands/<name>.md` (per the issue #6 fix), so an agent reading either the pointer file or this rule resolves the same skill the same way.
-- When using a repo-local skill, read `skills/<skill-name>/SKILL.md` and its local `references/`, `scripts/`, and `assets/` before falling back to any globally installed copy.
-- Do not modify a globally installed skill when a repo-local skill of the same name exists, unless the user explicitly asks to update the global copy too.
-- If a repo-local skill overrides a global skill, state briefly that the local project copy is being used.
-
-## Cross-Tool Skill Sharing
-
-- Skills under `skills/` are shared between coding agents (Codex, Claude Code, and any future agent).
-- `skills/<skill-name>/SKILL.md` is the single source of truth for each skill. Agent-specific config files (e.g., `agents/openai.yaml`) are thin wrappers and must not duplicate or override the logic in `SKILL.md`.
-- Claude Code has an ergonomic helper: slash-command pointers in `.claude/commands/<name>.md`. Each pointer file references the corresponding `SKILL.md` rather than duplicating its content. Codex and other agents reach the same `SKILL.md` content via the documented "Local Skills Precedence" lookup order above; no slash-command equivalent is required.
-- Pack-deployed skills (third-party packs installed by `anywhere-agents pack install`) land under `.claude/skills/<name>/` as a cross-agent location. The directory name carries a historical Claude Code prefix; the SKILL.md contents are agent-agnostic and resolvable by Codex through the same lookup order. A future plan-review pass on `pack-architecture.md` is the right place to consider renaming the location to a vendor-neutral path.
-- Bootstrap sync should copy only the shared repo's `.claude/commands/*.md` files into the project `.claude/commands/` directory and should not delete unrelated project-local commands.
-- When editing a skill, modify `SKILL.md` and its `references/` or `scripts/` directly. Do not create agent-specific forks of the same content.
-- If a new skill is added, create both the `skills/<skill-name>/SKILL.md` structure and a matching `.claude/commands/<skill-name>.md` pointer so Claude Code's slash-command surface stays in sync; Codex reaches the same skill through the lookup order without needing a pointer.
-- A skill whose canonical name is long may carry a short **alias pointer**. It is a second `.claude/commands/<alias>.md` whose frontmatter sets `alias-of: <skill-name>`, and whose lookup line names the target skill's three paths rather than the alias's own. `vet` is the alias for `implement-review`. Renaming the skill instead is right only when nothing else depends on its name. `implement-review` is the counter-example: the name is also the dispatch state-directory prefix that `auto-watch` globs for, and the stem of the `IMPLEMENT_REVIEW_*` environment variables. Nothing prunes a skill directory that vanishes upstream either, so the old name would linger in every consumer. `tests/test_pointer_files.py` enforces the rules: the target must exist, and a pointer without the key must still match its own filename.
+- What bootstrap shares, how settings merge, the consumer repo layout, the `todo/` convention, and which files each agent discovers: https://anywhere-agents.readthedocs.io/en/latest/agents-md/
+- Banner fields, the flag-file mechanism, and the fallback: https://anywhere-agents.readthedocs.io/en/latest/session-banner/
+- Why each guard gate exists and how it decides: https://anywhere-agents.readthedocs.io/en/latest/guard-hook/
+- Codex configuration, effort ladder, service tiers, CLI floors, hooks status: https://anywhere-agents.readthedocs.io/en/latest/codex/
+- Installing and updating Claude Code and Codex: https://anywhere-agents.readthedocs.io/en/latest/install/

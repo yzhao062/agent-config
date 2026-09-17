@@ -1,3 +1,7 @@
+---
+description: Build copy-ready prompts for explanatory figures from source text, figure ideas, or rough drafts
+---
+
 Read and follow the skill definition. Look for it at `skills/figure-prompt-builder/SKILL.md` first, then `.claude/skills/figure-prompt-builder/SKILL.md`, then `.agent-config/repo/skills/figure-prompt-builder/SKILL.md`.
 
 Apply it to the user's current task. Also read the supporting files under the skill's references/, scripts/, and assets/ directories as needed.

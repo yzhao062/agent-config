@@ -20,9 +20,10 @@
 #               .github/workflows/validate.yml, bootstrap/bootstrap.sh
 #               and bootstrap/bootstrap.ps1 (promoted from BY-DESIGN
 #               when ac/bootstrap was re-synced to aa's canonical
-#               composer-aware version; ac's bootstrap snippet still
-#               curls from ac but the file served is now byte-identical
-#               to aa and includes the AC->AA migration block),
+#               composer-aware version), AGENTS.md (one shared
+#               baseline since the 2026-09 rewrite; both repos name
+#               the aa raw URLs, and ac-only lines live in
+#               ac/AGENTS.local.md),
 #               skills/{implement-review,ci-mockup-figure,readme-polish,
 #               prun,editable-figure} as recursive trees, and the shared-contract test files
 #               tests/test_{dispatch_codex,dispatch_copilot,dispatch_claude,
@@ -64,10 +65,10 @@
 #               different contents. Reports a +/- line delta per file so
 #               unusual drift is visible. A byte-for-byte match is a
 #               warning (sanitization may have been skipped during
-#               backport). Covers: AGENTS.md (USC / Overleaf / PyCharm
-#               stripping), user/settings.json (additionalDirectories
-#               stripping), skills/my-router (routing-table rewrite
-#               with extension guidance for forks).
+#               backport). Covers: user/settings.json
+#               (additionalDirectories stripping), skills/my-router
+#               (routing-table rewrite with extension guidance for
+#               forks).
 #
 # Usage:
 #   bash scripts/check-parity.sh                           # default sibling path
@@ -145,6 +146,9 @@ fail() {
 # compared with itself.
 $AA_INTERNAL_ONLY || printf '\n== strict byte-identical ==\n'
 strict_files=(
+  # One shared baseline since the 2026-09 rewrite: every consumer
+  # bootstraps it from aa, and the ac-only lines live in ac/AGENTS.local.md.
+  AGENTS.md
   scripts/_python
   scripts/guard.py
   scripts/session_bootstrap.py
@@ -373,7 +377,6 @@ fi
 # ---- BY-DESIGN: files expected to differ (summary only; not blocking unless missing) ----
 $AA_INTERNAL_ONLY || printf '\n== expected to differ by design (summary; eyeball if delta is unusual) ==\n'
 by_design_files=(
-  AGENTS.md
   user/settings.json
 )
 for f in "${by_design_files[@]}"; do

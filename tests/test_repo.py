@@ -313,29 +313,41 @@ class RepoValidationTests(unittest.TestCase):
 
     def render_powershell_smoke_script(self, remote_dir: Path) -> str:
         bootstrap_copy = str((remote_dir / "bootstrap" / "bootstrap.ps1")).replace("'", "''")
-        return self.powershell_bootstrap.replace(
-            "Invoke-WebRequest -UseBasicParsing -Uri https://raw.githubusercontent.com/yzhao062/agent-config/main/bootstrap/bootstrap.ps1 -OutFile .agent-config/bootstrap.ps1",
+        rendered = self.powershell_bootstrap.replace(
+            "Invoke-WebRequest -UseBasicParsing -Uri https://raw.githubusercontent.com/yzhao062/anywhere-agents/main/bootstrap/bootstrap.ps1 -OutFile .agent-config/bootstrap.ps1",
             f"Copy-Item -LiteralPath '{bootstrap_copy}' -Destination .agent-config/bootstrap.ps1",
         )
+        # The substitution keys on the exact download line. If the block's URL
+        # changes, the smoke test would silently fetch the live bootstrap
+        # instead of the candidate, so refuse to render a script that still
+        # downloads anything.
+        self.assertNotIn("Invoke-WebRequest", rendered)
+        self.assertIn(bootstrap_copy, rendered)
+        return rendered
 
     def render_bash_smoke_script(self, remote_dir: Path) -> str:
         bootstrap_copy = shlex.quote((remote_dir / "bootstrap" / "bootstrap.sh").as_posix())
-        return self.bash_bootstrap.replace(
-            "curl -sfL https://raw.githubusercontent.com/yzhao062/agent-config/main/bootstrap/bootstrap.sh -o .agent-config/bootstrap.sh",
+        rendered = self.bash_bootstrap.replace(
+            "curl -sfL https://raw.githubusercontent.com/yzhao062/anywhere-agents/main/bootstrap/bootstrap.sh -o .agent-config/bootstrap.sh",
             f"cp {bootstrap_copy} .agent-config/bootstrap.sh",
         )
+        self.assertNotIn("curl ", rendered)
+        self.assertIn(bootstrap_copy, rendered)
+        return rendered
 
     def test_repo_has_at_least_one_skill(self) -> None:
         self.assertTrue(self.skills, "Expected at least one shared skill in skills/.")
 
     def test_agents_has_fetched_copy_guard(self) -> None:
         # The top-of-file note must distinguish source-repo behavior from
-        # consumer-repo behavior using the three file-existence markers and
-        # an imperative consumer-path instruction.
+        # consumer-repo behavior using file-existence markers that hold in
+        # both source repos (the file is byte-identical in agent-config and
+        # anywhere-agents) and an imperative consumer-path instruction.
         self.assertIn("**Source repo test:**", self.agents_text)
         self.assertIn("`bootstrap/bootstrap.sh`", self.agents_text)
         self.assertIn("`bootstrap/bootstrap.ps1`", self.agents_text)
-        self.assertIn("`reference-skills/`", self.agents_text)
+        self.assertIn("`scripts/generate_agent_configs.py`", self.agents_text)
+        self.assertIn("`skills/`", self.agents_text)
         self.assertIn(
             "proceed directly to `## Session Start Check`",
             self.agents_text,
@@ -348,11 +360,11 @@ class RepoValidationTests(unittest.TestCase):
         required_fragments = [
             "PowerShell (Windows):",
             "```powershell",
-            "Invoke-WebRequest -UseBasicParsing -Uri https://raw.githubusercontent.com/yzhao062/agent-config/main/bootstrap/bootstrap.ps1 -OutFile .agent-config/bootstrap.ps1",
+            "Invoke-WebRequest -UseBasicParsing -Uri https://raw.githubusercontent.com/yzhao062/anywhere-agents/main/bootstrap/bootstrap.ps1 -OutFile .agent-config/bootstrap.ps1",
             "& .\\.agent-config\\bootstrap.ps1",
             "Bash (macOS/Linux):",
             "```bash",
-            "curl -sfL https://raw.githubusercontent.com/yzhao062/agent-config/main/bootstrap/bootstrap.sh -o .agent-config/bootstrap.sh",
+            "curl -sfL https://raw.githubusercontent.com/yzhao062/anywhere-agents/main/bootstrap/bootstrap.sh -o .agent-config/bootstrap.sh",
             "bash .agent-config/bootstrap.sh",
             "rewrites the consuming repo's root `AGENTS.md`",
             # The preservation rule contradicts a plain "always overwritten"
@@ -392,12 +404,10 @@ class RepoValidationTests(unittest.TestCase):
             self.assertIn(fragment, bootstrap_text)
 
     def test_agents_declares_non_destructive_claude_sync(self) -> None:
+        # One retained sentence; the former Cross-Tool Skill Sharing duplicate
+        # ("should not delete ...") merged into it at the 2026-09 rewrite.
         self.assertIn(
-            "does not delete unrelated project-local commands",
-            self.agents_text,
-        )
-        self.assertIn(
-            "should not delete unrelated project-local commands",
+            "overwrites same-named files only and does not delete unrelated project-local commands",
             self.agents_text,
         )
 
@@ -685,11 +695,15 @@ class RepoValidationTests(unittest.TestCase):
     def test_agents_md_has_configuration_precedence_section(self) -> None:
         self.assertIn("Configuration Precedence", self.agents_text)
 
-    def test_agents_md_has_agent_scope_tags(self) -> None:
-        self.assertIn("<!-- agent:claude -->", self.agents_text)
-        self.assertIn("<!-- /agent:claude -->", self.agents_text)
-        self.assertIn("<!-- agent:codex -->", self.agents_text)
-        self.assertIn("<!-- /agent:codex -->", self.agents_text)
+    def test_agents_md_has_no_agent_scope_tags(self) -> None:
+        # The 2026-09 rewrite removed both tagged blocks (Codex MCP
+        # Integration and the Claude install notes). The generator still
+        # supports the tags (tests/test_generator.py exercises them on a
+        # synthetic fixture); the shared file just has nothing agent-specific
+        # left to tag, and a new tagged block would need a reason recorded in
+        # docs/agents-md.md.
+        for tag in ("<!-- agent:claude -->", "<!-- agent:codex -->"):
+            self.assertNotIn(tag, self.agents_text)
 
     def test_bootstrap_scripts_run_generator_and_deploy_session_hook(self) -> None:
         both = self.bootstrap_bash_text + "\n" + self.bootstrap_powershell_text

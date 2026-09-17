@@ -45,15 +45,57 @@ class GeneratorTests(unittest.TestCase):
         text = CODEX_MD.read_text(encoding="utf-8")
         self.assertIn(GENERATED_MARKER, text, "agents/codex.md must carry the GENERATED marker")
 
-    def test_claude_md_strips_codex_block(self) -> None:
-        text = CLAUDE_MD.read_text(encoding="utf-8")
-        self.assertNotIn("Codex MCP Integration", text,
-                         "Codex-tagged content must be stripped from CLAUDE.md")
+    def test_agent_tags_route_blocks_on_synthetic_fixture(self) -> None:
+        """Tagged blocks reach only their agent's file; untagged text reaches both.
 
-    def test_codex_md_strips_claude_block(self) -> None:
-        text = CODEX_MD.read_text(encoding="utf-8")
-        self.assertNotIn("Claude Code effort level", text,
+        The committed AGENTS.md carries no tagged block since the 2026-09
+        rewrite, so the routing is exercised on a synthetic fixture rather
+        than pinned to a heading in the real file.
+        """
+        fixture = "\n".join(
+            [
+                "# Rules",
+                "",
+                "Shared line for every agent.",
+                "",
+                "<!-- agent:claude -->",
+                "## Claude-only section",
+                "",
+                "Only Claude Code reads this.",
+                "<!-- /agent:claude -->",
+                "",
+                "<!-- agent:codex -->",
+                "## Codex-only section",
+                "",
+                "Only Codex reads this.",
+                "<!-- /agent:codex -->",
+                "",
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "AGENTS.md").write_text(fixture, encoding="utf-8")
+            result = run_generator(root, ["--quiet"])
+            self.assertEqual(result.returncode, 0, f"generator failed: {result.stderr}")
+            claude = (root / "CLAUDE.md").read_text(encoding="utf-8")
+            codex = (root / "agents" / "codex.md").read_text(encoding="utf-8")
+        for text in (claude, codex):
+            self.assertIn("Shared line for every agent.", text)
+            self.assertNotIn("<!-- agent:", text, "tag markers must not survive generation")
+        self.assertIn("Claude-only section", claude)
+        self.assertNotIn("Codex-only section", claude,
+                         "Codex-tagged content must be stripped from CLAUDE.md")
+        self.assertIn("Codex-only section", codex)
+        self.assertNotIn("Claude-only section", codex,
                          "Claude-tagged content must be stripped from agents/codex.md")
+
+    def test_committed_agents_md_has_no_tagged_blocks(self) -> None:
+        """The shared baseline is byte-identical in agent-config and
+        anywhere-agents and carries nothing agent-specific to tag. A new tagged
+        block needs a reason recorded in docs/agents-md.md."""
+        text = AGENTS_MD.read_text(encoding="utf-8")
+        self.assertNotIn("<!-- agent:claude -->", text)
+        self.assertNotIn("<!-- agent:codex -->", text)
 
     def test_claude_md_keeps_shared_content(self) -> None:
         text = CLAUDE_MD.read_text(encoding="utf-8")
@@ -75,16 +117,6 @@ class GeneratorTests(unittest.TestCase):
             text = path.read_text(encoding="utf-8")
             self.assertIn("treat hard line breaks as semantic", text,
                           f"{path.name} lost the copy-paste wrapping clause")
-
-    def test_claude_md_keeps_claude_block(self) -> None:
-        text = CLAUDE_MD.read_text(encoding="utf-8")
-        self.assertIn("Claude Code installation", text,
-                     "Claude-tagged content must appear in CLAUDE.md")
-
-    def test_codex_md_keeps_codex_block(self) -> None:
-        text = CODEX_MD.read_text(encoding="utf-8")
-        self.assertIn("Codex MCP Integration", text,
-                     "Codex-tagged content must appear in agents/codex.md")
 
     def test_generator_output_is_up_to_date(self) -> None:
         """Running the generator against the committed AGENTS.md produces the

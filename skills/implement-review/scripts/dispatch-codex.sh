@@ -432,7 +432,14 @@ else
 fi
 
 CHILD_SESSION_INSTRUCTIONS="The parent agent session already completed the repository bootstrap at startup. Skip bootstrap and shared configuration refresh commands in this child review session. Skip the session-start banner as well: no human reads a dispatched child's terminal, so rendering it only spends shell spawns. Use the shared configuration currently on disk. Follow all other project instructions. $PYTHON_INSTRUCTION $PWSH_INSTRUCTION Before issuing a PASS or BLOCK commit verdict, execute relevant verification commands. In $EXPECTED_REVIEW_FILE, add one standalone line exactly 'Verification status: VERIFIED' if at least one relevant verification command completed, otherwise add 'Verification status: UNVERIFIED'. If the status is UNVERIFIED, write 'Commit verdict: UNVERIFIED'; never issue PASS or BLOCK. Verification notes must list the exact commands and outcomes."
-CODEX_CHILD_ARGS=(-c "developer_instructions=$CHILD_SESSION_INSTRUCTIONS")
+# Codex injects at most project_doc_max_bytes of discovered instruction files
+# (AGENTS.md and the like) and silently truncates the rest; the default is
+# 32 KiB, which a consumer's composed AGENTS.md exceeds once the passive packs
+# are in. Raise the budget here, outside the isolation branch, so it reaches
+# the reviewer whether or not --ignore-user-config drops the user's config.
+# 256 KiB is a ceiling for stacked packs plus a large local file, not a size
+# to write toward.
+CODEX_CHILD_ARGS=(-c "developer_instructions=$CHILD_SESSION_INSTRUCTIONS" -c project_doc_max_bytes=262144)
 _archive_stream_attempt() {
     local attempt_number="$1" attempt_dir name
     local active_files="tail tail.stderr-tmp stall-warning stream-death stream-retry-request stream-reap-complete worker-roots reap-targets reap-reason reap-worker.cmd"

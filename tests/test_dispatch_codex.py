@@ -571,6 +571,62 @@ class _DispatchContractMixin:
                 f"override must replace the xhigh default: {args}",
             )
 
+    def _assert_project_doc_budget(self, args: list) -> None:
+        self.assertIn(
+            ("-c", "project_doc_max_bytes=262144"), list(zip(args, args[1:])),
+            f"project_doc_max_bytes=262144 must immediately follow a -c: {args}",
+        )
+        self.assertEqual(args[-1], "-", f"stdin marker must stay the final positional: {args}")
+
+    def test_codex_project_doc_budget_with_isolation_on(self) -> None:
+        """The dispatcher raises Codex's instruction-file byte budget.
+
+        Codex injects at most project_doc_max_bytes (default 32 KiB) of the
+        discovered AGENTS.md and truncates the rest with a tracing-only
+        warning. A consumer's composed AGENTS.md (baseline plus passive packs)
+        exceeds that, so a /vet round used to run without the Git Safety and
+        writing rules its author assumed were injected. The dispatcher passes
+        the budget itself because --ignore-user-config would drop a value set
+        in ~/.codex/config.toml.
+        """
+        with _temp_dir() as td:
+            tmpdir = Path(td)
+            codex, prompt, log_dir = self._fresh_fixture(tmpdir)
+            old = os.environ.pop("CODEX_DISPATCH_ISOLATE_MCP", None)
+            try:
+                result = self._run_dispatch(
+                    tmpdir, prompt, "1", "Review-Codex.md", codex, log_dir
+                )
+            finally:
+                if old is not None:
+                    os.environ["CODEX_DISPATCH_ISOLATE_MCP"] = old
+            self.assertEqual(result.returncode, 0, result.stderr)
+            args = json.loads((log_dir / "args").read_text(encoding="utf-8"))
+            self.assertIn("--ignore-user-config", args, f"isolation must be on here: {args}")
+            self._assert_project_doc_budget(args)
+
+    def test_codex_project_doc_budget_with_isolation_off(self) -> None:
+        """The budget is passed outside the isolation branch, so opting out of
+        isolation (CODEX_DISPATCH_ISOLATE_MCP=off) keeps it."""
+        with _temp_dir() as td:
+            tmpdir = Path(td)
+            codex, prompt, log_dir = self._fresh_fixture(tmpdir)
+            old = os.environ.get("CODEX_DISPATCH_ISOLATE_MCP")
+            os.environ["CODEX_DISPATCH_ISOLATE_MCP"] = "off"
+            try:
+                result = self._run_dispatch(
+                    tmpdir, prompt, "1", "Review-Codex.md", codex, log_dir
+                )
+            finally:
+                if old is None:
+                    os.environ.pop("CODEX_DISPATCH_ISOLATE_MCP", None)
+                else:
+                    os.environ["CODEX_DISPATCH_ISOLATE_MCP"] = old
+            self.assertEqual(result.returncode, 0, result.stderr)
+            args = json.loads((log_dir / "args").read_text(encoding="utf-8"))
+            self.assertNotIn("--ignore-user-config", args, f"isolation must be off here: {args}")
+            self._assert_project_doc_budget(args)
+
     def test_exit_code_zero_propagation(self) -> None:
         with _temp_dir() as td:
             tmpdir = Path(td)
@@ -1108,6 +1164,18 @@ class DispatchMcpIsolationContract(unittest.TestCase):
                       "dispatch-codex.ps1 must isolate via --ignore-user-config")
         self.assertIn("model_reasoning_effort", text,
                       "dispatch-codex.ps1 must re-pass reasoning effort")
+
+    def test_both_shells_raise_the_project_doc_budget(self) -> None:
+        """Both dispatchers pass -c project_doc_max_bytes=262144 outside the
+        isolation branch (the runtime tests above prove it reaches codex with
+        isolation on and off; this freezes the literal so the two shells
+        cannot drift to different budgets)."""
+        for path in (DISPATCH_SH, DISPATCH_PS1):
+            text = path.read_text(encoding="utf-8")
+            self.assertEqual(
+                text.count("project_doc_max_bytes=262144"), 1,
+                f"{path.name} must pass project_doc_max_bytes=262144 exactly once",
+            )
 
 
 # Mock codex that consumes stdin then sleeps (writes nothing to stdout).
