@@ -119,8 +119,11 @@ jobs:
       - name: Multi-host compose smoke (deferred to v0.5.1)
         run: echo "Deferred"
 
-  codex-smoke:
-    name: Codex sees AGENTS.md
+  # The two Codex probes are separate jobs: codex-action's drop-sudo
+  # strategy removes passwordless sudo when it starts and cannot start a
+  # second time in the same job.
+  codex-config-smoke:
+    name: Codex loads AGENTS.md
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -139,6 +142,29 @@ jobs:
           safety-strategy: drop-sudo
           sandbox: read-only
 
+      - name: Verify Codex answered the config probe from AGENTS.md
+        run: |
+          set -euo pipefail
+          if ! grep -q 'is the alias for `implement-review`' AGENTS.md; then
+            echo "SKIP: AGENTS.md does not state the vet alias; config probe skipped"
+            exit 0
+          fi
+          RESP=$(cat codex-config-response.txt)
+          echo "::group::codex config probe response"
+          echo "$RESP"
+          echo "::endgroup::"
+          if ! grep -q "implement-review" <<<"$RESP"; then
+            echo "::error::Codex did not answer implement-review from AGENTS.md (is the file loaded?)"
+            exit 1
+          fi
+          echo "PASS: Codex answered the config probe from AGENTS.md"
+
+  codex-smoke:
+    name: Codex sees AGENTS.md
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
       - name: Codex roster probe via official action
         id: codex
         uses: openai/codex-action@v1
@@ -149,7 +175,7 @@ jobs:
           safety-strategy: drop-sudo
           sandbox: read-only
 
-      - name: Verify Codex loads AGENTS.md and mentions the shipped skill roster
+      - name: Verify Codex response mentions the shipped skill roster
         run: |
           set -euo pipefail
           EXPECTED_SKILLS=()
@@ -160,19 +186,6 @@ jobs:
           if [ "${#EXPECTED_SKILLS[@]}" -eq 0 ]; then
             echo "::error::no shipped skills found under skills/"
             exit 1
-          fi
-          if grep -q 'is the alias for `implement-review`' AGENTS.md; then
-            RESP=$(cat codex-config-response.txt)
-            echo "::group::codex config probe response"
-            echo "$RESP"
-            echo "::endgroup::"
-            if ! grep -q "implement-review" <<<"$RESP"; then
-              echo "::error::Codex did not answer implement-review from AGENTS.md (is the file loaded?)"
-              exit 1
-            fi
-            echo "PASS: Codex answered the config probe from AGENTS.md"
-          else
-            echo "SKIP: AGENTS.md does not state the vet alias; config probe skipped"
           fi
           RESP=$(cat codex-response.txt)
           echo "::group::codex roster response"
