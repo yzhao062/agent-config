@@ -15,11 +15,15 @@
 #   2. Expected files are created: AGENTS.md, CLAUDE.md, agents/codex.md,
 #      .claude/commands/*.md, .agent-config/.
 #   3. User-level hooks land in ~/.claude/hooks/ (guard.py, session_bootstrap.py).
-#   4. Claude Code `claude -p` single-turn call returns a response that
-#      mentions the shipped skills — confirming Claude actually read
-#      CLAUDE.md / AGENTS.md and sees the skill roster.
-#   5. Codex `codex exec` single-turn call does the same — confirming
-#      Codex actually read AGENTS.md / agents/codex.md.
+#   4. Claude Code `claude -p`, two single-turn calls. The config probe
+#      runs with every tool disabled and asks which skill `/vet` aliases;
+#      only the composed CLAUDE.md says `implement-review`, so the answer
+#      proves the file was loaded. The roster probe asks for the
+#      directories under .claude/skills/ that hold a SKILL.md and expects
+#      every shipped skill. The rules file carries no roster since the
+#      2026-09 rewrite; the deployed tree is the source.
+#   5. Codex `codex exec`, the same two probes, the config probe worded
+#      to forbid tool use.
 #
 # Exit code: 0 on full pass, non-zero on any failure. Steps 4 and 5 are
 # skipped (with a SKIP notice) if the corresponding CLI is missing; they
@@ -39,8 +43,9 @@ set -euo pipefail
 
 # --- Configurable ------------------------------------------------------------
 EXPECTED_SKILLS=(implement-review my-router ci-mockup-figure readme-polish)
-CLAUDE_PROMPT='List the shipped skills from AGENTS.md by directory name, comma-separated, no other text.'
-CODEX_PROMPT=$CLAUDE_PROMPT
+CONFIG_PROMPT='Without running any command or reading any file: according to your project instructions (CLAUDE.md or AGENTS.md), /vet is an alias of which skill? Reply with the directory name of that skill only.'
+CONFIG_EXPECT='implement-review'
+ROSTER_PROMPT='List the skills installed in this project, meaning the directories under .claude/skills/ that contain a SKILL.md. Reply with the directory names only, comma-separated, no other text.'
 
 # Pick up user-local bin dirs that non-interactive SSH shells often miss.
 for _d in "$HOME/.local/bin" "$HOME/.npm-global/bin" /usr/local/bin; do
@@ -204,12 +209,20 @@ for f in CLAUDE.md agents/codex.md; do
 done
 
 # --- 4. Claude Code single-turn agent test -----------------------------------
-next_step "Claude Code single-turn: confirm skill roster is visible"
+next_step "Claude Code single-turn: config probe, then skill roster"
 if command -v claude >/dev/null 2>&1; then
   # Redirect stdin from /dev/null so claude -p does not consume the
   # remainder of this script when invoked via `ssh 'bash -s' < script`.
-  resp=$(claude -p "$CLAUDE_PROMPT" </dev/null 2>&1 || true)
-  printf 'response:\n%s\n' "$resp"
+  # --tools "" leaves the model nothing but its loaded instructions; it is
+  # variadic, so it comes after the prompt or it swallows it.
+  resp=$(claude -p "$CONFIG_PROMPT" --tools "" </dev/null 2>&1 || true)
+  printf 'config probe response:\n%s\n' "$resp"
+  if ! grep -q "$CONFIG_EXPECT" <<<"$resp"; then
+    fail "Claude did not answer $CONFIG_EXPECT from CLAUDE.md (is the file loaded?)"
+  fi
+  pass "Claude answered the config probe from CLAUDE.md"
+  resp=$(claude -p "$ROSTER_PROMPT" </dev/null 2>&1 || true)
+  printf 'roster response:\n%s\n' "$resp"
   missing=()
   for s in "${EXPECTED_SKILLS[@]}"; do
     if ! grep -q "$s" <<<"$resp"; then
@@ -225,12 +238,18 @@ else
 fi
 
 # --- 5. Codex single-turn agent test ----------------------------------------
-next_step "Codex single-turn: confirm skill roster is visible"
+next_step "Codex single-turn: config probe, then skill roster"
 if command -v codex >/dev/null 2>&1; then
   # Same stdin-redirect guard as the Claude step; codex exec may also read
   # stdin if not redirected.
-  resp=$(codex exec "$CODEX_PROMPT" </dev/null 2>&1 || true)
-  printf 'response:\n%s\n' "$resp"
+  resp=$(codex exec "$CONFIG_PROMPT" </dev/null 2>&1 || true)
+  printf 'config probe response:\n%s\n' "$resp"
+  if ! grep -q "$CONFIG_EXPECT" <<<"$resp"; then
+    fail "Codex did not answer $CONFIG_EXPECT from AGENTS.md (is the file loaded?)"
+  fi
+  pass "Codex answered the config probe from AGENTS.md"
+  resp=$(codex exec "$ROSTER_PROMPT" </dev/null 2>&1 || true)
+  printf 'roster response:\n%s\n' "$resp"
   missing=()
   for s in "${EXPECTED_SKILLS[@]}"; do
     if ! grep -q "$s" <<<"$resp"; then

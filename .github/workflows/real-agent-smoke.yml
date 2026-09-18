@@ -1,10 +1,15 @@
 name: Real-Agent Smoke
 
 # Invokes Claude Code and Codex non-interactively against the repo's shipped
-# CLAUDE.md / AGENTS.md to verify each agent actually loads the config and
-# sees the skill roster. GitHub Actions runners do not ship the agents;
-# this workflow installs them, uses API key secrets, and spends ~$0.04
-# per run (two short API calls: one claude -p, one codex exec).
+# CLAUDE.md / AGENTS.md. Two probes per agent: a config probe that asks
+# which skill `/vet` aliases, answerable only from the loaded rules file
+# (Claude runs it with every tool disabled; Codex is told not to use one),
+# and a roster probe that asks for the directories under skills/ holding a
+# SKILL.md and expects every shipped skill. The rules file carries no
+# roster since the 2026-09 rewrite, so the tree is the source and the
+# probe shows the agent can reach it. GitHub Actions runners do not ship
+# the agents; this workflow installs them, uses API key secrets, and
+# spends under $0.10 per run (four short API calls).
 #
 # Triggers are intentionally narrow to keep API cost low. This is a setup
 # and behavior verification — it does not need to run on every push:
@@ -20,8 +25,10 @@ name: Real-Agent Smoke
 #   OPENAI_API_KEY    — https://platform.openai.com/api-keys
 #
 # The expected skill list is auto-detected from skills/*/SKILL.md so this
-# workflow is reusable across the public (4 shipped skills) and private
-# (7 shipped skills) repos without per-repo edits.
+# workflow is shared by the public and the source repo without per-repo
+# edits. The config probe's answer is a line of the shared rules file
+# ("`vet` is the alias for `implement-review`"); a fork that drops that
+# line skips the probe instead of failing it.
 
 on:
   release:
@@ -42,7 +49,7 @@ jobs:
       - name: Install Claude Code CLI
         run: npm install -g @anthropic-ai/claude-code
 
-      - name: Verify Claude sees the shipped skill roster
+      - name: Verify Claude loads CLAUDE.md and sees the shipped skill roster
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
@@ -56,12 +63,28 @@ jobs:
             echo "::error::no shipped skills found under skills/"
             exit 1
           fi
-          PROMPT='List the shipped skills from CLAUDE.md by directory name, comma-separated, no other text.'
-          # --model sonnet: handshake probe verifies config loading + skill
+          # --model sonnet: handshake probes verify config loading + skill
           # enumeration, not prose quality; Sonnet is ~5x cheaper than Opus
           # and predictable across Claude Code CLI default-model drift.
-          RESP=$(claude -p --model sonnet "$PROMPT")
-          echo "::group::claude response"
+          if grep -q 'is the alias for `implement-review`' AGENTS.md; then
+            CONFIG_PROMPT='According to CLAUDE.md, /vet is an alias of which skill? Reply with the directory name of that skill only.'
+            # --tools "" leaves the model nothing but its loaded instructions.
+            # It is variadic, so it comes after the prompt or it swallows it.
+            RESP=$(claude -p "$CONFIG_PROMPT" --model sonnet --tools "")
+            echo "::group::claude config probe response"
+            echo "$RESP"
+            echo "::endgroup::"
+            if ! grep -q "implement-review" <<<"$RESP"; then
+              echo "::error::Claude did not answer implement-review from CLAUDE.md (is the file loaded?)"
+              exit 1
+            fi
+            echo "PASS: Claude answered the config probe from CLAUDE.md"
+          else
+            echo "SKIP: AGENTS.md does not state the vet alias; config probe skipped"
+          fi
+          ROSTER_PROMPT='List the skills shipped in this repository, meaning the directories under skills/ that contain a SKILL.md. Reply with the directory names only, comma-separated, no other text.'
+          RESP=$(claude -p --model sonnet "$ROSTER_PROMPT")
+          echo "::group::claude roster response"
           echo "$RESP"
           echo "::endgroup::"
           MISSING=()
@@ -106,17 +129,27 @@ jobs:
       # + direct `codex exec`, because the action starts the Responses API
       # proxy that API-key auth requires. Direct CLI invocation with only
       # OPENAI_API_KEY in env returns 401 Unauthorized from /v1/responses.
-      - name: Run Codex via official action
+      - name: Codex config probe via official action
+        id: codex_config
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          prompt: "Without running any command or reading any file: according to AGENTS.md, /vet is an alias of which skill? Reply with that skill's directory name only."
+          output-file: codex-config-response.txt
+          safety-strategy: drop-sudo
+          sandbox: read-only
+
+      - name: Codex roster probe via official action
         id: codex
         uses: openai/codex-action@v1
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
-          prompt: "List the shipped skills from AGENTS.md by directory name, comma-separated, no other text."
+          prompt: "List the skills shipped in this repository, meaning the directories under skills/ that contain a SKILL.md. Reply with the directory names only, comma-separated, no other text."
           output-file: codex-response.txt
           safety-strategy: drop-sudo
           sandbox: read-only
 
-      - name: Verify Codex response mentions the shipped skill roster
+      - name: Verify Codex loads AGENTS.md and mentions the shipped skill roster
         run: |
           set -euo pipefail
           EXPECTED_SKILLS=()
@@ -128,8 +161,21 @@ jobs:
             echo "::error::no shipped skills found under skills/"
             exit 1
           fi
+          if grep -q 'is the alias for `implement-review`' AGENTS.md; then
+            RESP=$(cat codex-config-response.txt)
+            echo "::group::codex config probe response"
+            echo "$RESP"
+            echo "::endgroup::"
+            if ! grep -q "implement-review" <<<"$RESP"; then
+              echo "::error::Codex did not answer implement-review from AGENTS.md (is the file loaded?)"
+              exit 1
+            fi
+            echo "PASS: Codex answered the config probe from AGENTS.md"
+          else
+            echo "SKIP: AGENTS.md does not state the vet alias; config probe skipped"
+          fi
           RESP=$(cat codex-response.txt)
-          echo "::group::codex response"
+          echo "::group::codex roster response"
           echo "$RESP"
           echo "::endgroup::"
           MISSING=()

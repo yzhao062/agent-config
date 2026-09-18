@@ -8,12 +8,16 @@
 #      temp dir from the committed AGENTS.md and diff against the
 #      committed generated files. Catches stale generator output that
 #      could silently ship.
-#   2. Claude Code roster: if `claude` is on PATH, invoke `claude -p`
-#      from the repo root and assert the response mentions every skill
-#      under skills/. Confirms Claude actually loads the committed
-#      CLAUDE.md and sees the shipped skills.
-#   3. Codex roster: if `codex` is on PATH, invoke `codex exec` from the
-#      repo root with the same assertion against AGENTS.md.
+#   2. Claude Code: if `claude` is on PATH, two single-turn probes from
+#      the repo root. The config probe runs with every tool disabled and
+#      asks which skill `/vet` aliases; only the committed CLAUDE.md says
+#      `implement-review`, so the answer proves the file was loaded. The
+#      roster probe asks for the directories under skills/ that hold a
+#      SKILL.md and asserts every shipped skill is named. The rules file
+#      carries no roster since the 2026-09 rewrite; the tree is the
+#      source, and the probe shows the agent can reach it.
+#   3. Codex: if `codex` is on PATH, the same two probes through
+#      `codex exec`, the config probe worded to forbid tool use.
 #
 # Agent calls are SKIPPED (not failed) when the corresponding CLI is
 # missing, so the script is useful on machines that have only one agent
@@ -51,7 +55,17 @@ if [ "${#EXPECTED_SKILLS[@]}" -eq 0 ]; then
   fail "no shipped skills found under skills/"
 fi
 
-PROMPT="List the shipped skills from your agent config (CLAUDE.md or AGENTS.md) by directory name, comma-separated, no other text."
+# The config probe's answer is stated by the shared rules file ("`vet` is
+# the alias for `implement-review`"), so a fork that drops that line skips
+# the probe instead of failing it.
+CONFIG_PROMPT="Without running any command or reading any file: according to your project instructions (CLAUDE.md or AGENTS.md), /vet is an alias of which skill? Reply with that skill's directory name only."
+CONFIG_EXPECT="implement-review"
+ROSTER_PROMPT="List the skills shipped in this repository, meaning the directories under skills/ that contain a SKILL.md. Reply with the directory names only, comma-separated, no other text."
+if grep -q 'is the alias for `implement-review`' AGENTS.md; then
+  CONFIG_PROBE=1
+else
+  CONFIG_PROBE=0
+fi
 
 echo "== pre-push-smoke in $(pwd) =="
 echo "Expected skills: ${EXPECTED_SKILLS[*]}"
@@ -93,12 +107,24 @@ else
   done
 fi
 
-# --- 2. Claude Code roster ------------------------------------------------
+# --- 2. Claude Code -------------------------------------------------------
 echo ""
-echo "[2/3] Claude Code single-turn: confirm skill roster"
+echo "[2/3] Claude Code single-turn: config probe, then skill roster"
 if command -v claude >/dev/null 2>&1; then
-  resp=$(claude -p "$PROMPT" </dev/null 2>&1 || true)
-  printf 'response:\n%s\n' "$resp"
+  if [ "$CONFIG_PROBE" = 1 ]; then
+    # --tools "" leaves the model nothing but its loaded instructions. It
+    # is variadic, so it comes after the prompt or it swallows it.
+    resp=$(claude -p "$CONFIG_PROMPT" --tools "" </dev/null 2>&1 || true)
+    printf 'config probe response:\n%s\n' "$resp"
+    if ! grep -q "$CONFIG_EXPECT" <<<"$resp"; then
+      fail "Claude did not answer $CONFIG_EXPECT from CLAUDE.md (is the file loaded?)"
+    fi
+    pass "Claude answered the config probe from CLAUDE.md"
+  else
+    skip "AGENTS.md does not state the vet alias; config probe skipped"
+  fi
+  resp=$(claude -p "$ROSTER_PROMPT" </dev/null 2>&1 || true)
+  printf 'roster response:\n%s\n' "$resp"
   missing=()
   for s in "${EXPECTED_SKILLS[@]}"; do
     if ! grep -q "$s" <<<"$resp"; then
@@ -113,12 +139,22 @@ else
   skip "claude CLI not on PATH; skipping Claude agent test"
 fi
 
-# --- 3. Codex roster ------------------------------------------------------
+# --- 3. Codex -------------------------------------------------------------
 echo ""
-echo "[3/3] Codex single-turn: confirm skill roster"
+echo "[3/3] Codex single-turn: config probe, then skill roster"
 if command -v codex >/dev/null 2>&1; then
-  resp=$(codex exec "$PROMPT" </dev/null 2>&1 || true)
-  printf 'response:\n%s\n' "$resp"
+  if [ "$CONFIG_PROBE" = 1 ]; then
+    resp=$(codex exec "$CONFIG_PROMPT" </dev/null 2>&1 || true)
+    printf 'config probe response:\n%s\n' "$resp"
+    if ! grep -q "$CONFIG_EXPECT" <<<"$resp"; then
+      fail "Codex did not answer $CONFIG_EXPECT from AGENTS.md (is the file loaded?)"
+    fi
+    pass "Codex answered the config probe from AGENTS.md"
+  else
+    skip "AGENTS.md does not state the vet alias; config probe skipped"
+  fi
+  resp=$(codex exec "$ROSTER_PROMPT" </dev/null 2>&1 || true)
+  printf 'roster response:\n%s\n' "$resp"
   missing=()
   for s in "${EXPECTED_SKILLS[@]}"; do
     if ! grep -q "$s" <<<"$resp"; then
