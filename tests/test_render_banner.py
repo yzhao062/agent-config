@@ -407,9 +407,13 @@ class CheckTests(unittest.TestCase):
 
 class ModeTests(_HermeticCase):
     def _run(self, *args: str) -> subprocess.CompletedProcess:
+        # The renderer writes UTF-8 whatever the console code page; decode it
+        # as such, because text=True would use the runner's locale (cp1252
+        # on GitHub's Windows image) and turn the title emoji into mojibake.
         return subprocess.run(
             [sys.executable, str(SCRIPTS / "render_banner.py"), *args],
-            capture_output=True, text=True, env=dict(os.environ), timeout=120,
+            capture_output=True, encoding="utf-8", errors="replace",
+            env=dict(os.environ), timeout=120,
         )
 
     def test_consumer_cli_publishes_and_prints_only_with_stdout(self) -> None:

@@ -474,6 +474,17 @@ def _run_bootstrap_ps1_with_ledger(
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def _temp_dir() -> tempfile.TemporaryDirectory:
+    """TemporaryDirectory with ignore_cleanup_errors on Py3.10+ (Py3.9 fallback).
+
+    Git for Windows' bash can still hold a directory when it exits, and the
+    keyword that tolerates that is 3.10+; the validate matrix runs 3.9.
+    """
+    if sys.version_info >= (3, 10):
+        return tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+    return tempfile.TemporaryDirectory()
+
+
 def _write_text_lf(path: Path, content: str) -> None:
     # open(newline=) rather than Path.write_text(newline=), for the reason
     # _write_executable gives just below. The keyword arrived in 3.10 and this
@@ -4151,7 +4162,7 @@ class SettingsPublicationTests(unittest.TestCase):
                           "remote-smoke.sh no longer carries the fragment this test runs")
         # Git for Windows' bash can still hold the directory when it exits, and
         # the probe's own result is what this reads, not the tree it ran in.
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmpdir:
+        with _temp_dir() as tmpdir:
             work = Path(tmpdir)
             home = work / "home"
             (home / ".claude").mkdir(parents=True)

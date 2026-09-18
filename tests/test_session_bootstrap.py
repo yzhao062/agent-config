@@ -67,10 +67,14 @@ def run_session_bootstrap(cwd: str, env_overrides: dict | None = None,
     env = dict(os.environ)
     if env_overrides:
         env.update(env_overrides)
+    # The hook prints the banner as UTF-8 whatever the console code page, so
+    # decode it as such; text=True would use the runner's locale (cp1252 on
+    # GitHub's Windows image) and turn the title emoji into mojibake.
     result = subprocess.run(
         [sys.executable, str(SESSION_BOOTSTRAP)],
         capture_output=True,
-        text=True,
+        encoding="utf-8",
+        errors="replace",
         env=env,
         cwd=cwd,
         stdin=subprocess.DEVNULL,
@@ -97,7 +101,8 @@ def run_session_bootstrap_with_stdin(
         [sys.executable, str(SESSION_BOOTSTRAP)],
         input=stdin_input,
         capture_output=True,
-        text=True,
+        encoding="utf-8",
+        errors="replace",
         env=env,
         cwd=cwd,
         timeout=timeout,
