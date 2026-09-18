@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only pack identity for the session banner (Session check item 7).
+"""Read-only pack identity for the session banner's deployment and update checks.
 
 The renderer (``render_banner.py``) asks two questions of a consumer
 repository: how many user-level packs are not deployed in this project, and

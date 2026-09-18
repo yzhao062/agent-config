@@ -51,7 +51,8 @@
 #               aa). Skipped only when $AA_ROOT lacks the mirror dir.
 #               Covers
 #               compose_packs.py, compose_rule_packs.py,
-#               generate_agent_configs.py, bootstrap/packs.yaml,
+#               generate_agent_configs.py, render_banner.py,
+#               pack_identity.py, bootstrap/packs.yaml,
 #               scripts/packs/ recursive (excluding __pycache__/),
 #               skills/{implement-review,my-router,ci-mockup-figure,
 #               readme-polish,prun,editable-figure}/ recursive, the six
@@ -337,6 +338,10 @@ if [ -d "$AA_ROOT/packages/pypi/anywhere_agents/composer" ]; then
     scripts/compose_packs.py
     scripts/compose_rule_packs.py
     scripts/generate_agent_configs.py
+    # The wheel re-renders the session banner after its heal pass, so it
+    # carries the renderer and the helper beside the composer.
+    scripts/render_banner.py
+    scripts/pack_identity.py
     bootstrap/packs.yaml
     .claude/commands/implement-review.md
     .claude/commands/vet.md
