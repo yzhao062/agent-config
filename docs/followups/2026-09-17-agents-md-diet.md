@@ -144,3 +144,53 @@ Dispositions: **KEPT** (in the shared `AGENTS.md`, section named), **MOVED** (to
 - Test-pinned phrases preserved verbatim: the source-repo and consumer-path markers, the bootstrap commands, "rewrites the consuming repo's root `AGENTS.md`", "an existing composed `AGENTS.md` is preserved", "does not delete unrelated project-local commands", the copy-paste block phrases, the `.md`-file draft phrases, and the headings "Configuration Precedence", "Session Start Check", "Writing Defaults", "Git Safety".
 - The two agent-tagged blocks are gone; the generator still runs and the generated files equal the shared file plus the header.
 - The `agent-config`-specific lines (profile, `py312`, PyCharm, onboarding) are in `agent-config/AGENTS.local.md`.
+
+## Phase 4 closing note (2026-09-17)
+
+Release, consumer refresh, and the Codex probe. Everything below was measured on the maintainer's Windows machine unless a line says otherwise.
+
+### Release
+
+- `anywhere-agents` v0.9.0: tag on `3343cd3`, release notes from `v0.9.0-release-notes.md`. Publish run 35309182403 uploaded `0.9.0` to PyPI and to npm (with the signed build attestation npm records); Package Smoke run 35309182387 green.
+- Validate had been red since `ce6457a` (2026-09-16) for two reasons the release surfaced: `tests/test_bootstrap_preflight.py` passed `TemporaryDirectory(ignore_cleanup_errors=True)`, a 3.10 keyword, on the py3.9 job; and the banner tests decoded the renderer's and the hook's UTF-8 stdout with `text=True`, which is cp1252 on GitHub's Windows image and turned the title emoji into mojibake. Both fixed in `b6c9239` (ac) and `3343cd3` (aa), green on the release commit.
+- Real-Agent Smoke failed on the release: its prompt asked Sonnet to list the shipped skills "from CLAUDE.md", and the rewritten file names the lookup paths and no roster. Codex had passed the same prompt only by listing `skills/` with a tool. `53092c3`/`85edae4` replace the roster question with two probes per agent: a config probe with every tool disabled that asks which skill `/vet` aliases, and a tree probe for `skills/*/SKILL.md`. `20f318f`/`bfbc31d` split the two Codex probes into separate jobs, because `openai/codex-action`'s `drop-sudo` runs once per job. Dispatched run 35311671424 is green on all seven jobs. `scripts/pre-push-smoke.sh` and `scripts/remote-smoke.sh` carry the same two probes.
+
+### Consumer refresh (criterion 8)
+
+`anywhere-agents` 0.9.0 from pipx, run with cwd = consumer root, in every checkout under `PycharmProjects` whose bootstrap fetches from `yzhao062/anywhere-agents`: AutoFigure-Edit, Letter-, NSF-Proposal-Template-Yue, agent-startup-thesis, ai-research-resources, award-travel, csphd, dgx-spark, figwork-advisor, gradient-data, internal-review, internal-writing, meta-finder, pyod, qem-bench, qlab, random, research-impact, teaching-materials, tokyo-relay, trading-doc, usc-admin, usc-email, usc-slides, venture-initiative, vibesignal, yzhao062.github.io (27).
+
+| Measure | Result, identical in all 27 |
+|---|---|
+| CLI exit code; ledger `completed` | 0; `true` |
+| `AGENTS.md` | 55,803 bytes, sha256 `0fe89e75326e307a3df4a0f3e0e843032df2ad22dc1d0b02d7a72ae4105b425b` |
+| `CLAUDE.md`; `agents/codex.md` | 56,531; 56,543 bytes (the fixture in `tests/test_composed_consumer_size.py` measures 55,803 and 56,531) |
+| `agent-style` | `docs/rule-pack-compact.md`, input sha `45bd5e85…`, v0.4.1 at `65ef8c7`, policy `auto` |
+| `profile` | `docs/rule-pack-compact.md`, input sha `dfafb620…`, `main` at `a8f6fa0`, policy `prompt` |
+| `paper-workflow` | `docs/paper-workflow-compact.md`, input sha `f4fcef73…`, `main` at `a8f6fa0`, policy `prompt` |
+| Banner report | `.agent-config/banner.txt` present, metadata carries the ledger's `run_id` and `completed=true`, seven body lines under the title |
+| Session check line | every consumer named `project_doc_max_bytes` as missing from `~/.codex/config.toml` (set below); the other items are each repository's own workflow pins |
+
+No consumer carries a pin, a `locked` policy, or an `agent-config.local.yaml`; there is no intentional exception.
+
+### Codex probe (criterion 2)
+
+In `pyod`. A sentinel section was appended after the last pack section of the composed `AGENTS.md` for the duration of each run (file 55,998 bytes, token at byte 55,909), and the original bytes were restored afterwards. Prompt: reply with the sentinel token, or `ABSENT`, without using any tool. Each run's `--json` event stream held no command or file event.
+
+| Run | `project_doc_max_bytes` | Reply |
+|---|---|---|
+| `codex exec -c project_doc_max_bytes=262144` (the `dispatch-codex` path) | 262,144 on the command line | the token |
+| bare `codex exec`, key absent from `~/.codex/config.toml` | 32 KiB default | `ABSENT` |
+| bare `codex exec` after adding `project_doc_max_bytes = 262144` to `~/.codex/config.toml` | 262,144 from the user config | the token |
+
+After the key was added, the banner's check line for `pyod` dropped the nudge and kept only that repository's workflow pins.
+
+### The ARM64 Ubuntu box
+
+- `~/agent-config` was at `efaa8fb` (2026-09-13) with local edits of prose that later shipped from Windows. Those edits are in `git stash` (`spark-local-edits-before-ff-20260917`), an untracked draft of `tests/test_prun_executors.py` is at `~/agent-config-untracked-20260917/`, and the clone is fast-forwarded to `b6c9239`. The two banner test modules and the settings-publication tests pass there.
+- `scripts/remote-smoke.sh` against the published package (`npx --yes anywhere-agents`, 0.9.0) passes the install, file, pointer, hook, statusline, and marker steps. Its agent steps cannot pass there today: `claude` 2.1.193 is not logged in, and Codex's bubblewrap sandbox fails (`bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`), so the roster probe cannot run a command. The Codex config probe, which needs no tool, answers `implement-review` there.
+
+### Open after this phase
+
+- aa#50 part 2, wiring `session_bootstrap.py` and `guard.py` into Codex hooks, stays out of scope as `docs/codex.md` says.
+- The ARM64 box needs a Claude login and a working Codex sandbox before its remote smoke can exercise the agent steps.
+- The criterion-2 probe is a script in the session scratchpad; a checked-in form would let a release repeat it.
