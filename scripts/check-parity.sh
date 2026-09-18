@@ -158,6 +158,12 @@ strict_files=(
   # Both bootstrap entry points execute this, so it is shared runtime code by
   # the same argument as the helpers above.
   scripts/merge_settings.py
+  # The session banner renderer and the pack-identity helper it imports.
+  # Both entry points and the SessionStart hook run them from the sparse
+  # clone, and the wheel vendors the pair, so the banner is one calculation
+  # wherever it runs.
+  scripts/render_banner.py
+  scripts/pack_identity.py
   scripts/pre-push-smoke.sh
   scripts/remote-smoke.sh
   scripts/check-parity.sh
@@ -214,6 +220,12 @@ strict_test_files=(
   tests/test_health_check.py
   tests/test_guard.py
   tests/test_session_bootstrap.py
+  # Pins the report contract (metadata line, seven lines, acceptance rule)
+  # that AGENTS.md's Session Start Check and both entry points rely on.
+  tests/test_render_banner.py
+  # The shared AGENTS.md is STRICT, and this gate measures it and the two
+  # generated files against the same ceilings in both repos.
+  tests/test_bootstrap_size.py
   tests/test_pointer_files.py
   tests/test_prompt_byte_parity.py
   tests/test_bootstrap_preflight.py

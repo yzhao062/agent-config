@@ -26,6 +26,8 @@ import _quiet_spawn  # noqa: E402,F401  installs a windowless spawn default on W
 
 ROOT = Path(__file__).resolve().parents[1]
 SESSION_BOOTSTRAP = ROOT / "scripts" / "session_bootstrap.py"
+sys.path.insert(0, str(ROOT / "scripts"))
+import render_banner  # noqa: E402  the report contract the lifecycle tests check against
 
 # These 16 tests take about 3 seconds together, and the cap they used to carry
 # was 60 seconds. It aligns with the sibling file v0.7.16 fixed and exposes the
@@ -461,6 +463,224 @@ class TestSessionBootstrapPendingNotice(unittest.TestCase):
         # No pending notice when the file is absent.
         self.assertNotIn("pack update", out)
         self.assertNotIn("packs pending", out)
+
+
+class BannerLifecycleTests(unittest.TestCase):
+    """The report a consumer session reads, across the hook's lifecycle.
+
+    A stub bootstrap stands in for the real one: it writes the ledger the
+    real entry points write (relative to its working directory, which is how
+    the nested-cwd case is told apart) and exits with a chosen status, and
+    it renders nothing, which is what an older bootstrap does. The renderer
+    is planted where a fresh sparse clone would carry it, so every case
+    below exercises the hook's own render step and the acceptance rule the
+    agent applies to the published report.
+    """
+
+    def setUp(self):
+        self.tmp_project = tempfile.mkdtemp(prefix="sb-banner-proj-")
+        self.tmp_home = tempfile.mkdtemp(prefix="sb-banner-home-")
+        self.root = Path(self.tmp_project)
+        self.agent_dir = _make_consumer(self.root)
+        _make_fresh_cache(Path(self.tmp_home) / ".claude" / "hooks")
+        self.env = {"HOME": self.tmp_home, "USERPROFILE": self.tmp_home}
+        self._plant_renderer()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp_project, ignore_errors=True)
+        shutil.rmtree(self.tmp_home, ignore_errors=True)
+
+    # -- fixture helpers -------------------------------------------------
+
+    def _plant_renderer(self, present: bool = True) -> None:
+        scripts = self.agent_dir / "repo" / "scripts"
+        scripts.mkdir(parents=True, exist_ok=True)
+        for name in ("render_banner.py", "pack_identity.py"):
+            target = scripts / name
+            if present:
+                shutil.copy2(ROOT / "scripts" / name, target)
+            elif target.exists():
+                target.unlink()
+
+    def _install_stub_bootstrap(self, run_id: str, completed: bool = True, rc: int = 0,
+                                last_phase: str = "finalize", steps=None) -> None:
+        """A bootstrap that writes a ledger relative to its cwd and exits."""
+        ledger = json.dumps({
+            "schema": 1, "emitted_by": "stub", "run_id": run_id,
+            "started_at": "2026-09-17T00:00:00Z", "upstream": "stub",
+            "completed": completed, "last_phase": last_phase, "steps": steps or [],
+        })
+        ps_lines = [
+            "New-Item -ItemType Directory -Force -Path .agent-config | Out-Null",
+            "$enc = New-Object System.Text.UTF8Encoding $false",
+            "[System.IO.File]::WriteAllText((Join-Path (Get-Location).Path '.agent-config/last-run.json'), '%s', $enc)"
+            % ledger.replace("'", "''"),
+            "exit %d" % rc,
+        ]
+        (self.agent_dir / "bootstrap.ps1").write_text("\n".join(ps_lines) + "\n", encoding="utf-8")
+        sh_lines = [
+            "#!/bin/bash",
+            "mkdir -p .agent-config",
+            "printf '%%s\\n' '%s' > .agent-config/last-run.json" % ledger.replace("'", "'\\''"),
+            "exit %d" % rc,
+        ]
+        (self.agent_dir / "bootstrap.sh").write_text("\n".join(sh_lines) + "\n", encoding="utf-8")
+
+    def _report(self) -> str:
+        path = self.agent_dir / "banner.txt"
+        return path.read_text(encoding="utf-8") if path.exists() else ""
+
+    def _event_ts(self) -> float:
+        return json.loads((self.agent_dir / "session-event.json").read_text(encoding="utf-8"))["ts"]
+
+    def _run(self, source: str = "startup", cwd: str | None = None):
+        return run_session_bootstrap_with_stdin(
+            cwd or self.tmp_project,
+            stdin_input=json.dumps({"source": source}),
+            env_overrides=self.env,
+        )
+
+    # -- cases ------------------------------------------------------------
+
+    def test_startup_resume_and_clear_each_publish_a_matching_report(self):
+        for index, source in enumerate(("startup", "resume", "clear")):
+            self._install_stub_bootstrap(run_id="run-%d" % index)
+            time.sleep(0.01)
+            rc, out, err = self._run(source)
+            self.assertEqual(rc, 0, msg=err)
+            report = self._report()
+            self.assertTrue(
+                render_banner.report_is_current(report, self._event_ts(), "run-%d" % index),
+                msg="%s: report does not match the event and ledger:\n%s" % (source, report),
+            )
+            body = render_banner.banner_body(report)
+            self.assertEqual(len(body), 7)
+            self.assertEqual(body[0], render_banner.TITLE)
+            self.assertIn(render_banner.TITLE, out)
+            self.assertNotIn("bootstrap refreshed", out)
+            # A fresh SessionStart source (clear after startup) advances the
+            # event; the report follows it every time.
+
+    def test_compact_keeps_the_event_and_the_report_stays_current(self):
+        self._install_stub_bootstrap(run_id="run-a")
+        rc, _, err = self._run("startup")
+        self.assertEqual(rc, 0, msg=err)
+        first_ts = self._event_ts()
+        (self.agent_dir / "banner-emitted.json").write_text(json.dumps({"ts": first_ts}))
+        self._install_stub_bootstrap(run_id="run-b")
+        rc, _, err = self._run("compact")
+        self.assertEqual(rc, 0, msg=err)
+        self.assertEqual(self._event_ts(), first_ts, "compact must not advance the event")
+        report = self._report()
+        self.assertTrue(render_banner.report_is_current(report, first_ts, "run-b"))
+        # Nothing re-fires: the acknowledged timestamp is still the event's.
+        ack = json.loads((self.agent_dir / "banner-emitted.json").read_text(encoding="utf-8"))["ts"]
+        self.assertEqual(ack, first_ts)
+
+    def test_nested_cwd_lands_ledger_and_report_at_the_root(self):
+        self._install_stub_bootstrap(run_id="nested-1")
+        nested = self.root / "src" / "deep" / "er"
+        nested.mkdir(parents=True)
+        rc, out, err = self._run("startup", cwd=str(nested))
+        self.assertEqual(rc, 0, msg=err)
+        self.assertTrue((self.agent_dir / "last-run.json").exists(),
+                        "the stub writes its ledger relative to cwd; the hook must launch it from the root")
+        self.assertFalse((nested / ".agent-config").exists())
+        for parent in (nested.parent, nested.parent.parent):
+            self.assertFalse((parent / ".agent-config").exists())
+        self.assertTrue(render_banner.report_is_current(self._report(), self._event_ts(), "nested-1"))
+        self.assertIn(render_banner.TITLE, out)
+
+    def test_upgrade_path_replaces_an_old_format_report(self):
+        """An older bootstrap fetched the new assets but rendered nothing.
+        The hook, running the new renderer from the clone, publishes a
+        current-format report over the old-format one."""
+        (self.agent_dir / "banner.txt").write_text(
+            "📦 agent-config active\n   └── Session check: all clear\n", encoding="utf-8")
+        self._install_stub_bootstrap(run_id="upgrade-1")
+        rc, _, err = self._run("startup")
+        self.assertEqual(rc, 0, msg=err)
+        self.assertTrue(render_banner.report_is_current(self._report(), self._event_ts(), "upgrade-1"))
+
+    def test_upgrade_path_without_the_renderer_leaves_a_report_the_rule_rejects(self):
+        """First session after the upgrade on a consumer whose clone is still
+        old: no renderer, so no report can be published. The old-format or
+        absent report fails the acceptance rule and the fallback applies."""
+        self._plant_renderer(present=False)
+        old = "📦 agent-config active\n   └── Session check: all clear\n"
+        (self.agent_dir / "banner.txt").write_text(old, encoding="utf-8")
+        self._install_stub_bootstrap(run_id="upgrade-2")
+        rc, out, err = self._run("startup")
+        self.assertEqual(rc, 0, msg=err)
+        self.assertEqual(self._report(), old, "nothing may rewrite the report without the renderer")
+        self.assertFalse(render_banner.report_is_current(self._report(), self._event_ts(), "upgrade-2"))
+        self.assertIn("anywhere-agents: bootstrap refreshed", out)
+        (self.agent_dir / "banner.txt").unlink()
+        rc, _, err = self._run("resume")
+        self.assertEqual(rc, 0, msg=err)
+        self.assertFalse(render_banner.report_is_current(self._report(), self._event_ts(), "upgrade-2"))
+
+    def test_failed_refresh_publishes_an_incomplete_report_and_keeps_the_exit_code(self):
+        self._install_stub_bootstrap(run_id="fail-1", completed=False, rc=1, last_phase="fetch")
+        rc, out, err = self._run("startup")
+        self.assertEqual(rc, 1)
+        self.assertIn("bootstrap failed (exit 1)", err)
+        report = self._report()
+        meta = render_banner.parse_metadata(report)
+        self.assertEqual(meta["run_id"], "fail-1")
+        self.assertIs(meta["completed"], False)
+        self.assertTrue(render_banner.report_is_current(report, self._event_ts(), "fail-1"))
+        check = render_banner.banner_body(report)[6]
+        self.assertIn("bootstrap exited 1 at fetch", check)
+        self.assertNotIn("all clear", check)
+        self.assertIn(render_banner.TITLE, out)
+
+    def test_old_all_clear_report_does_not_survive_a_direct_bootstrap_failure(self):
+        """An invocation-based agent (no Claude event) runs bootstrap itself.
+        An older bootstrap that fails writes a new run_id and no report, so
+        the all-clear report from the previous attempt no longer carries the
+        current ledger's run_id and the rule selects the fallback."""
+        old_report = render_banner.metadata_line(None, "earlier-run", True) + "\n" + "\n".join(
+            ["📦 anywhere-agents active"] + ["   ├── x"] * 5 + ["   └── Session check: all clear"]) + "\n"
+        (self.agent_dir / "banner.txt").write_text(old_report, encoding="utf-8")
+        self.assertTrue(render_banner.report_is_current(old_report, None, "earlier-run"))
+        self._install_stub_bootstrap(run_id="direct-fail", completed=False, rc=1, last_phase="fetch")
+        if platform.system() == "Windows":
+            cmd = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+                   str(self.agent_dir / "bootstrap.ps1")]
+        else:
+            cmd = ["bash", str(self.agent_dir / "bootstrap.sh")]
+        result = subprocess.run(cmd, cwd=self.tmp_project, capture_output=True, text=True,
+                                timeout=SUBPROCESS_TIMEOUT)
+        self.assertEqual(result.returncode, 1)
+        ledger = json.loads((self.agent_dir / "last-run.json").read_text(encoding="utf-8"))
+        self.assertEqual(ledger["run_id"], "direct-fail")
+        self.assertEqual(self._report(), old_report)
+        self.assertFalse(render_banner.report_is_current(self._report(), None, ledger["run_id"]))
+
+    def test_exit_zero_incomplete_composition_is_not_all_clear(self):
+        steps = [{"phase": "compose", "scope": "repo", "status": "skipped", "rc": None, "targets": [],
+                  "reason": "no Python 3 interpreter found"}]
+        self._install_stub_bootstrap(run_id="degraded-1", completed=False, rc=0, steps=steps)
+        rc, out, err = self._run("startup")
+        self.assertEqual(rc, 0, msg=err)
+        report = self._report()
+        self.assertIs(render_banner.parse_metadata(report)["completed"], False)
+        check = render_banner.banner_body(report)[6]
+        self.assertIn("bootstrap incomplete: stopped at finalize", check)
+        self.assertIn("compose skipped (no Python 3 interpreter found)", check)
+        self.assertNotIn("all clear", check)
+        self.assertIn("compose skipped", out)
+
+    def test_a_report_for_another_event_or_run_is_rejected(self):
+        self._install_stub_bootstrap(run_id="ident-1")
+        rc, _, err = self._run("startup")
+        self.assertEqual(rc, 0, msg=err)
+        report = self._report()
+        ts = self._event_ts()
+        self.assertTrue(render_banner.report_is_current(report, ts, "ident-1"))
+        self.assertFalse(render_banner.report_is_current(report, ts + 1.0, "ident-1"))
+        self.assertFalse(render_banner.report_is_current(report, ts, "ident-2"))
 
 
 if __name__ == "__main__":

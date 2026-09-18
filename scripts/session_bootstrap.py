@@ -75,8 +75,13 @@ def _cleanup_legacy_flag_files() -> None:
 _SESSION_EVENT_DEBOUNCE_SECONDS = 10.0
 
 
-def write_session_event(consumer_root: str, source: str = "") -> None:
+def write_session_event(consumer_root: str, source: str = ""):
     """Write <consumer_root>/.agent-config/session-event.json with a fresh ts.
+
+    Returns the timestamp the file carries afterwards (the existing one when
+    a same-source duplicate was collapsed), or None when nothing could be
+    read or written. The banner renderer records that value so the agent
+    can match the report to the pending event without a shell.
 
     Duplicate SessionStart fires for the same source within the debounce
     window are collapsed, but a different source (e.g., clear after startup)
@@ -113,7 +118,7 @@ def write_session_event(consumer_root: str, source: str = "") -> None:
             source == existing_source
             and 0 <= age < _SESSION_EVENT_DEBOUNCE_SECONDS
         ):
-            return  # Same-source duplicate within debounce window
+            return existing_ts  # Same-source duplicate within debounce window
 
         os.makedirs(os.path.dirname(path), exist_ok=True)
         payload: dict = {"ts": now}
@@ -121,8 +126,55 @@ def write_session_event(consumer_root: str, source: str = "") -> None:
             payload["source"] = source
         with open(path, "w", encoding="utf-8") as f:
             json.dump(payload, f)
+        return now
     except Exception:
-        pass
+        return None
+
+
+def render_banner_report(consumer_root: str, event_ts, bootstrap_rc: int):
+    """Publish <consumer_root>/.agent-config/banner.txt through the renderer
+    the sparse clone carries, and return its banner lines for stdout.
+
+    Runs after every bootstrap attempt, successful or not, so a failed or
+    degraded refresh produces a report that names the failed phase rather
+    than leaving an older all-clear report in place. The renderer reads the
+    ledger the attempt just finalized. When the renderer itself is absent
+    (a first install whose fetch failed) or fails, nothing is published: the
+    agent's freshness check then rejects any earlier report and prints the
+    fixed fallback banner, which is the designed degradation.
+
+    The interpreter is the one running this hook; bootstrap deploys the
+    _python wrapper for hook commands, so it is already a working Python 3.
+    """
+    renderer = os.path.join(
+        consumer_root, ".agent-config", "repo", "scripts", "render_banner.py"
+    )
+    if not os.path.isfile(renderer):
+        return None
+    cmd = [sys.executable, renderer, "--root", consumer_root,
+           "--bootstrap-rc", str(bootstrap_rc), "--stdout"]
+    if isinstance(event_ts, (int, float)):
+        cmd.extend(["--event-ts", repr(float(event_ts))])
+    try:
+        # The renderer writes UTF-8; decode it as such rather than through
+        # the console code page, which on Windows may not hold the glyphs.
+        result = subprocess.run(
+            cmd, capture_output=True, encoding="utf-8", errors="replace",
+            cwd=consumer_root, timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"anywhere-agents: banner render failed: {exc}", file=sys.stderr)
+        return None
+    if result.returncode != 0:
+        print(
+            f"anywhere-agents: banner render exited {result.returncode}",
+            file=sys.stderr,
+        )
+        if result.stderr:
+            print(result.stderr[-2000:], file=sys.stderr)
+        return None
+    lines = [line for line in result.stdout.splitlines() if line.strip()]
+    return lines or None
 
 
 def update_version_cache() -> None:
@@ -253,7 +305,18 @@ def _read_source_from_stdin() -> str:
         return ""
 
 
+def _utf8_stdout() -> None:
+    """The banner lines this hook prints carry glyphs outside cp1252; Claude
+    Code reads the hook's stdout as UTF-8, so write it that way regardless
+    of the console code page."""
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError, OSError):
+        pass
+
+
 def main() -> int:
+    _utf8_stdout()
     cwd = os.getcwd()
 
     # Walk up from cwd to find the consumer-repo root. A launch from a deep
@@ -301,8 +364,9 @@ def main() -> int:
         # clear) still write so the banner reappears on genuine new
         # context.
         source = _read_source_from_stdin()
+        event_ts = None
         if source != "compact":
-            write_session_event(consumer_root, source=source)
+            event_ts = write_session_event(consumer_root, source=source)
 
         # Resolve the bootstrap subprocess command from the consumer root so
         # a nested-cwd launch still runs the correct .agent-config/bootstrap.*.
@@ -335,9 +399,22 @@ def main() -> int:
     # hook stays silent (and network-free) in unrelated Claude Code sessions.
     update_version_cache()
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    # Launch from the consumer root. The script path is already resolved
+    # from that root, but bootstrap writes its ledger, its report and its
+    # repo-local files relative to the working directory, so a launch from a
+    # nested cwd used to leave them under the nested directory.
+    result = subprocess.run(
+        cmd, capture_output=True, text=True, cwd=consumer_root
+    )
+    banner = render_banner_report(consumer_root, event_ts, result.returncode)
     if result.returncode == 0:
-        print("anywhere-agents: bootstrap refreshed")
+        # The banner is the session's context line: Claude Code injects the
+        # hook's stdout, and the agent prints these lines verbatim (with its
+        # model id in place of <model>) after reading the report's metadata.
+        if banner:
+            print("\n".join(banner))
+        else:
+            print("anywhere-agents: bootstrap refreshed")
         # v0.5.0 Phase 8 Task 8.4: surface deferred pack updates from a
         # prior compose run. Runs only on success — a failed bootstrap
         # already prints its own diagnostic; piling on a pending notice
@@ -345,6 +422,11 @@ def main() -> int:
         if consumer_root is not None:
             _maybe_print_pending_updates(consumer_root)
         return 0
+
+    # A failed refresh still publishes its report (rendered above, naming
+    # the phase it stopped at); the diagnostics below go to stderr.
+    if banner:
+        print("\n".join(banner))
 
     print(
         f"anywhere-agents: bootstrap failed (exit {result.returncode})",

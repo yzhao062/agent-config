@@ -1746,6 +1746,32 @@ class BannerGateTests(unittest.TestCase):
         self.assertEqual(output["permissionDecision"], "deny")
         self.assertIn("Session banner not yet emitted", output["permissionDecisionReason"])
 
+    def test_first_arm_completes_with_read_and_the_ack_write_alone(self):
+        """The Session Start Check needs no shell on the first arm. With an
+        event pending and no report (or a stale one), the agent Reads
+        .agent-config/banner.txt, decides on the fallback, and Writes the
+        exact acknowledgement; nothing else is needed before work resumes.
+        A Bash repair attempt in between is denied, which is the point: the
+        fallback must be reachable without one."""
+        ts = 1789685280.5
+        self._write_event(ts)
+        report = str(self.agent_dir / "banner.txt")
+        ack = str(self.agent_dir / "banner-emitted.json")
+        # Step 1: reading the report is allowed while the gate is armed,
+        # whether or not the file exists.
+        self.assertIsNone(self._run({"tool_name": "Read", "tool_input": {"file_path": report}}))
+        # A shell repair is not part of the sequence and stays denied.
+        resp = self._run({"tool_name": "Bash", "tool_input": {"command": "bash .agent-config/bootstrap.sh"}})
+        self.assertEqual(resp["hookSpecificOutput"]["permissionDecision"], "deny")
+        # Step 2: the exact acknowledgement write is allowed.
+        self.assertIsNone(self._run({
+            "tool_name": "Write",
+            "tool_input": {"file_path": ack, "content": json.dumps({"ts": ts})},
+        }))
+        self._write_emitted(ts)
+        # Step 3: with the acknowledgement current, ordinary work resumes.
+        self.assertIsNone(self._run({"tool_name": "Bash", "tool_input": {"command": "git status"}}))
+
     def test_rearm_is_advisory_when_ack_file_exists_with_older_ts(self):
         """A subsequent SessionStart re-fire (banner-emitted.json exists with prior
         ts) must NOT deny the next gated call. First emission already happened in

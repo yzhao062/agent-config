@@ -484,7 +484,7 @@ function Invoke-GitPreflight {
   if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     [Console]::Error.WriteLine("[anywhere-agents] git is not installed or not on PATH; bootstrap needs git >= 2.25 for sparse clone.")
     [Console]::Error.WriteLine("[anywhere-agents] install: https://git-scm.com/download/win")
-    exit 1
+    Exit-Bootstrap 1
   }
   $verLine = $null
   try {
@@ -507,7 +507,7 @@ function Invoke-GitPreflight {
   if (($major -lt 2) -or (($major -eq 2) -and ($minor -lt 25))) {
     [Console]::Error.WriteLine("[anywhere-agents] git $major.$minor is too old; bootstrap needs git >= 2.25 for sparse clone.")
     [Console]::Error.WriteLine("[anywhere-agents] install: https://git-scm.com/download/win")
-    exit 1
+    Exit-Bootstrap 1
   }
 }
 
@@ -547,6 +547,51 @@ After committing agent-config.yaml, run:
 }
 
 try { Initialize-Ledger } catch {}
+
+# Publish the session banner report when this run ends, whatever ended it.
+# The renderer reads the ledger this run wrote, so a failed or degraded
+# refresh publishes a report naming the phase it stopped at instead of
+# leaving an older all-clear report in place. Called at the end of the run
+# and before each explicit exit after the ledger exists (Exit-Bootstrap);
+# an uncaught exception ends the run without a report, and the agent's
+# freshness check then rejects any earlier report. A sparse clone without
+# the renderer (a first install whose fetch failed) publishes nothing for
+# the same reason. Best effort: the renderer's own failure never changes
+# this run's result. Not a try/finally around the body: inside a try block
+# a .NET exception at script scope stops the script instead of printing and
+# continuing, which is not the error semantics this entry point has.
+function Invoke-BannerRender([int]$BootstrapRc = 0) {
+  try {
+    if (-not (Test-Path -LiteralPath .agent-config/repo/scripts/render_banner.py)) { return }
+    $renderPy = $script:pyCmd
+    if (-not $renderPy) { $renderPy = Find-RealPython }
+    if (-not $renderPy) { return }
+    & $renderPy.Path .agent-config/repo/scripts/render_banner.py --root . --bootstrap-rc $BootstrapRc 2>$null | Out-Null
+  } catch {}
+}
+
+function Exit-Bootstrap([int]$Code) {
+  Invoke-BannerRender $Code
+  exit $Code
+}
+
+# Deploy one user-level helper, or end the run. Copy-HelperAtomic throws when
+# the replacement is refused (a live session holding the destination open is
+# the common case), and an uncaught throw would end the run with no report.
+# The Bash entry point exits 1 on the same failure, so this does too, through
+# Exit-Bootstrap so the report names the phase it stopped at.
+function Deploy-UserHelper([string]$Source, [string]$Destination, [string]$LedgerName) {
+  if (-not (Test-Path $Source)) { return }
+  try {
+    if (Copy-HelperAtomic $Source $Destination) {
+      try { Add-LedgerTarget $LedgerName } catch {}
+    }
+  } catch {
+    [Console]::Error.WriteLine("error: could not atomically deploy ${LedgerName}: $($_.Exception.Message)")
+    Exit-Bootstrap 1
+  }
+}
+
 Invoke-GitPreflight
 if ($env:AGENT_CONFIG_PREFLIGHT_TEST) { exit 0 }
 
@@ -1097,7 +1142,7 @@ if ($composeOk) {
           Add-LedgerStep 'compose' 'repo' 'failed' $composerRc
           Add-GeneratorLedgerStep
         } catch {}
-        exit $composerRc
+        Exit-Bootstrap $composerRc
     }
     try {
       Add-LedgerTarget 'AGENTS.md'
@@ -1229,34 +1274,12 @@ try {
 # It deploys a PreToolUse hook guard and merges shared permission settings.
 # Remove this section if you do not want bootstrap to modify user-level config.
 $userClaude = Join-Path $env:USERPROFILE '.claude'
-if (Test-Path .agent-config/repo/scripts/_python) {
-  $hooksDir = Join-Path $userClaude 'hooks'
-  if (Copy-HelperAtomic .agent-config/repo/scripts/_python (Join-Path $hooksDir '_python')) {
-    try { Add-LedgerTarget '~/.claude/hooks/_python' } catch {}
-  }
-}
-if (Test-Path .agent-config/repo/scripts/guard.py) {
-  $hooksDir = Join-Path $userClaude 'hooks'
-  if (Copy-HelperAtomic .agent-config/repo/scripts/guard.py (Join-Path $hooksDir 'guard.py')) {
-    try { Add-LedgerTarget '~/.claude/hooks/guard.py' } catch {}
-  }
-}
-if (Test-Path .agent-config/repo/scripts/session_bootstrap.py) {
-  $hooksDir = Join-Path $userClaude 'hooks'
-  if (Copy-HelperAtomic .agent-config/repo/scripts/session_bootstrap.py (Join-Path $hooksDir 'session_bootstrap.py')) {
-    try { Add-LedgerTarget '~/.claude/hooks/session_bootstrap.py' } catch {}
-  }
-}
-if (Test-Path .agent-config/repo/scripts/statusline.py) {
-  if (Copy-HelperAtomic .agent-config/repo/scripts/statusline.py (Join-Path $userClaude 'statusline.py')) {
-    try { Add-LedgerTarget '~/.claude/statusline.py' } catch {}
-  }
-}
-if (Test-Path .agent-config/repo/scripts/agent-quota.py) {
-  if (Copy-HelperAtomic .agent-config/repo/scripts/agent-quota.py (Join-Path $userClaude 'agent-quota.py')) {
-    try { Add-LedgerTarget '~/.claude/agent-quota.py' } catch {}
-  }
-}
+$hooksDir = Join-Path $userClaude 'hooks'
+Deploy-UserHelper .agent-config/repo/scripts/_python (Join-Path $hooksDir '_python') '~/.claude/hooks/_python'
+Deploy-UserHelper .agent-config/repo/scripts/guard.py (Join-Path $hooksDir 'guard.py') '~/.claude/hooks/guard.py'
+Deploy-UserHelper .agent-config/repo/scripts/session_bootstrap.py (Join-Path $hooksDir 'session_bootstrap.py') '~/.claude/hooks/session_bootstrap.py'
+Deploy-UserHelper .agent-config/repo/scripts/statusline.py (Join-Path $userClaude 'statusline.py') '~/.claude/statusline.py'
+Deploy-UserHelper .agent-config/repo/scripts/agent-quota.py (Join-Path $userClaude 'agent-quota.py') '~/.claude/agent-quota.py'
 if (Test-Path .agent-config/repo/user/settings.json) {
   New-Item -ItemType Directory -Force -Path $userClaude | Out-Null
   # The project phase has already recorded its own outcome, so the user phase
@@ -1455,3 +1478,4 @@ try {
   Add-LedgerStep 'finalize' 'repo' 'ok'
   Write-Ledger 'finalize' (-not $script:LedgerIncomplete)
 } catch {}
+Invoke-BannerRender 0

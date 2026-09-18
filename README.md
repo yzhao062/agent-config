@@ -33,7 +33,8 @@ Other project repos bootstrap from this repo to get shared agent defaults and sk
 - **`.claude/settings.json`** — shared Claude project defaults (permissions, attribution, etc.)
 - **`user/settings.json`** — shared user-level Claude defaults (permissions, hook wiring, `CLAUDE_CODE_EFFORT_LEVEL=max` env entry that pins effort to max)
 - **`scripts/guard.py`** — deployed to `~/.claude/hooks/guard.py` as a PreToolUse hook (compound-`cd` guard, destructive Git/GitHub confirmation, writing-style deny on prose files, session-banner gate)
-- **`scripts/session_bootstrap.py`** — deployed to `~/.claude/hooks/session_bootstrap.py` as a SessionStart hook that re-runs bootstrap automatically on every session start
+- **`scripts/session_bootstrap.py`** — deployed to `~/.claude/hooks/session_bootstrap.py` as a SessionStart hook that re-runs bootstrap automatically on every session start, then publishes the session banner
+- **`scripts/render_banner.py`** with **`scripts/pack_identity.py`** — renders the seven-line session banner from files on disk. In a consumer it publishes `.agent-config/banner.txt` behind a metadata line (event timestamp, bootstrap `run_id`, completion) that the agent checks before printing it; in a source repo it prints to stdout. Both bootstrap entry points and the hook run it after every refresh attempt.
 
 ## Adding to a Project
 
@@ -196,7 +197,9 @@ figure-references/                 # Reusable reference figures organized by vis
   index.md                         # Annotated index with role, density, and trait labels
 scripts/
   guard.py                         # PreToolUse hook: compound cd, destructive git/gh, writing-style, banner gates
-  session_bootstrap.py             # SessionStart hook: runs bootstrap automatically
+  session_bootstrap.py             # SessionStart hook: runs bootstrap, then renders the banner
+  render_banner.py                 # Session banner: fields from disk, report with freshness metadata
+  pack_identity.py                 # Read-only pack gap/update counts for the banner (item 7)
   statusline.py                    # Compact Claude + Codex + primary Agy Gemini quota row
   agent-quota.py                   # Expanded three-agent / four-pool quota readout + Agy refresh
   generate_agent_configs.py        # Generator: AGENTS.md -> CLAUDE.md + agents/codex.md
@@ -207,7 +210,9 @@ tests/                             # Validation tests (run in CI on Ubuntu, Wind
   test_bibref_filler.py            # Cite-key validation script tests
   test_figure_prompt_builder.py    # Figure spec scaffold script tests
   test_guard.py                    # Guard hook tests
-  test_session_bootstrap.py        # SessionStart hook tests
+  test_session_bootstrap.py        # SessionStart hook tests, including the banner lifecycle
+  test_render_banner.py            # Banner renderer, report contract, pack identity tests
+  test_bootstrap_size.py           # Byte ceilings for AGENTS.md and the generated files
   test_generator.py                # AGENTS.md -> per-agent generator tests
 anywhere-agents.md                 # Two-repo relationship, "what gets copied" table, release workflow
 pack-architecture.md               # Pack composition architecture and release trajectory

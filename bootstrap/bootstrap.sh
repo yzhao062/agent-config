@@ -696,6 +696,26 @@ check_git_preflight() {
 }
 
 _ledger_init
+
+# Publish the session banner report when this run ends, whatever ended it.
+# The renderer reads the ledger this run wrote, so a failed or degraded
+# refresh publishes a report naming the phase it stopped at instead of
+# leaving an older all-clear report in place. The exit status is preserved.
+# A sparse clone without the renderer (a first install whose fetch failed)
+# publishes nothing, and the agent's freshness check then selects the fixed
+# fallback banner. The renderer is best effort: its own failure never
+# changes this run's result.
+_render_banner_report() {
+  _rb_rc=$1
+  [ -f .agent-config/repo/scripts/render_banner.py ] || return 0
+  _rb_py="${_py:-}"
+  [ -n "$_rb_py" ] || _rb_py=$(_find_python 2>/dev/null || true)
+  [ -n "$_rb_py" ] || return 0
+  "$_rb_py" .agent-config/repo/scripts/render_banner.py --root . --bootstrap-rc "$_rb_rc" >/dev/null 2>&1 || true
+  return 0
+}
+trap '_bootstrap_rc=$?; _render_banner_report "$_bootstrap_rc"; exit $_bootstrap_rc' EXIT
+
 check_git_preflight
 [ -n "${AGENT_CONFIG_PREFLIGHT_TEST:-}" ] && exit 0
 
