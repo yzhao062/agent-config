@@ -10,10 +10,12 @@ must update both, which is the point.
 """
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -166,6 +168,270 @@ class ClassifierFixtureTests(unittest.TestCase):
             capture_output=True, text=True, encoding="utf-8", errors="replace",
         )
         self.assertEqual(proc.returncode, 2)
+
+
+MEASURE = AUDIT / "measure_acceptance.py"
+CORPUS_MANIFEST = AUDIT / "corpus-manifest.json"
+
+
+class CorpusManifestTests(unittest.TestCase):
+    """The manifest states the acceptance cohort; these guard that statement.
+
+    The published record is only evidence if it can be recomputed, and it used
+    to select its before cohort by globbing a session scratchpad and dropping
+    whatever classified to zero. The scratchpad is temporary, the two dates
+    involved hold 108 sessions, with 90 outside both cohorts. A missing input
+    produced an empty table and exit 0.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.manifest = json.loads(CORPUS_MANIFEST.read_text(encoding="utf-8"))
+
+    def test_cohort_sizes_match_the_published_tables(self) -> None:
+        before = self.manifest["before"]
+        counted = [e for e in before if e["included"]]
+        self.assertEqual(len(before), 14, "the audit sampled 14 before rollouts")
+        self.assertEqual(
+            len(counted), 11,
+            "the published before table totals 11 rounds; the other three are "
+            "the zero-output setup probes")
+        self.assertEqual(len(self.manifest["after"]), 4)
+
+    def test_every_entry_is_identifiable_and_hashed(self) -> None:
+        seen = set()
+        for cohort in ("before", "after"):
+            for entry in self.manifest[cohort]:
+                stem = entry["stem"]
+                with self.subTest(cohort=cohort, stem=stem):
+                    self.assertNotIn(stem, seen, "a stem appears twice")
+                    seen.add(stem)
+                    self.assertRegex(entry["sha256"], r"\A[0-9a-f]{64}\Z")
+                    self.assertIn(entry["scope"], ("paper", "trading"))
+
+    def test_every_exclusion_gives_its_reason(self) -> None:
+        for entry in self.manifest["before"]:
+            if not entry["included"]:
+                with self.subTest(stem=entry["stem"]):
+                    self.assertTrue(
+                        entry.get("excluded_because", "").strip(),
+                        "an excluded round has to say why, or the cohort is "
+                        "again something a reader has to infer")
+
+    def test_every_stem_is_a_full_session_name(self) -> None:
+        """A truncated stem is the prefix matching this change set out to remove.
+
+        Resolution globs `<stem>*.jsonl`. A timestamp-only prefix resolves to one
+        file today and the hash would catch a wrong one, but a second session
+        starting in the same second makes the entry ambiguous, and ambiguity is a
+        refusal. A full stem carries the session uuid and cannot collide.
+        """
+        for cohort in ("before", "after"):
+            for entry in self.manifest[cohort]:
+                with self.subTest(cohort=cohort, stem=entry["stem"]):
+                    self.assertRegex(
+                        entry["stem"],
+                        r"\Arollout-\d{4}-\d{2}-\d{2}T[\d-]+-[0-9a-f]{8}-[0-9a-f-]+\Z")
+
+
+class CorpusRejectionTests(unittest.TestCase):
+    """What the resolver refuses, measured against a cohort small enough to hold.
+
+    The first version of these tests withheld all but one of the eighteen real
+    inputs, so every run failed on the seventeen absent ones whatever the case
+    under test did. Turning the hash and ambiguity errors into warnings left
+    them all green: they proved the branch ran, not that it rejected. Each test
+    here starts from a synthetic cohort that passes, then changes exactly one
+    thing, which is what makes the exit code attributable.
+    """
+
+    BUSY = FIXTURE / "codex.jsonl"          # classifies to 10,691 bytes
+    QUIET = b'{"type":"event_msg","payload":{}}\n'   # no CommandExecution: zero
+
+    def _cohort(self, root: Path, *, quiet_included: bool = False,
+                busy_excluded: bool = False) -> Path:
+        """Write a three-rollout corpus and the manifest that describes it."""
+        corpus = root / "corpus"
+        corpus.mkdir()
+        busy = self.BUSY.read_bytes()
+        files = {
+            "rollout-2026-01-01T00-00-00-aaaaaaaa-0000-0000-0000-000000000001": busy,
+            "rollout-2026-01-01T00-00-01-bbbbbbbb-0000-0000-0000-000000000002": self.QUIET,
+            "rollout-2026-01-01T00-00-02-cccccccc-0000-0000-0000-000000000003": busy,
+        }
+        for stem, data in files.items():
+            (corpus / f"{stem}.jsonl").write_bytes(data)
+
+        def entry(stem, included, **extra):
+            digest = hashlib.sha256(files[stem]).hexdigest()
+            out = {"stem": stem, "sha256": digest, "scope": "paper",
+                   "included": included}
+            out.update(extra)
+            return out
+
+        stems = list(files)
+        manifest = {
+            "schema": 1,
+            "record": "synthetic",
+            "why": "synthetic",
+            "acquisition": "synthetic; set ACCEPTANCE_CORPUS_DIR or pass --corpus-dir",
+            "corpus_root_default": str(corpus),
+            "before": [
+                entry(stems[0], not busy_excluded),
+                entry(stems[1], quiet_included, excluded_because="synthetic probe"),
+            ],
+            "after": [dict(entry(stems[2], True), label="synthetic after")],
+        }
+        path = root / "manifest.json"
+        path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        return path
+
+    def _run(self, manifest: Path, corpus: Path) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, str(MEASURE), "--manifest", str(manifest),
+             "--corpus-dir", str(corpus)],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+        )
+
+    def _assert_refused(self, proc, code: int, needle: str, why: str) -> None:
+        self.assertEqual(proc.returncode, code, f"{why}; stderr={proc.stderr!r}")
+        self.assertIn(needle, proc.stderr)
+        self.assertNotIn(
+            "before total", proc.stdout,
+            "a refused corpus must print no table at all, or a reader can take "
+            "a partial one for the record")
+
+    def test_the_synthetic_cohort_passes_before_anything_is_changed(self) -> None:
+        """Without this, every case below could be passing for the wrong reason."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            manifest = self._cohort(root)
+            proc = self._run(manifest, root / "corpus")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("before total (1)", proc.stdout)
+        self.assertIn("after total (1)", proc.stdout)
+
+    def test_a_custom_cohort_says_so_instead_of_wearing_the_published_labels(self) -> None:
+        """A synthetic run must not print output that reads as the record.
+
+        The headings name one specific pair of cohorts and the paper rounds they
+        came from. Above someone else's totals they describe nothing, and the
+        output can be copied as though it were the published measurement.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            manifest = self._cohort(root)
+            proc = self._run(manifest, root / "corpus")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("Custom cohort from", proc.stdout)
+        self.assertIn(str(manifest), proc.stdout,
+                      "the notice has to name which manifest produced this")
+        self.assertIn("not the published Milestone A measurement", proc.stdout)
+        self.assertNotIn(
+            "rounds 7-9", proc.stdout,
+            "the historical heading claims a cohort this run does not have")
+        self.assertNotIn("old contract", proc.stdout)
+        self.assertNotIn("new contract", proc.stdout)
+
+    def test_one_missing_input_refuses_the_whole_run(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            manifest = self._cohort(root)
+            victim = sorted((root / "corpus").glob("*.jsonl"))[0]
+            victim.unlink()
+            proc = self._run(manifest, root / "corpus")
+        self._assert_refused(
+            proc, 2, "no file under",
+            "the earlier script printed `missing:` and carried on with exit 0")
+        self.assertIn("ACCEPTANCE_CORPUS_DIR", proc.stderr,
+                      "the failure has to say how to supply the corpus")
+
+    def test_one_tampered_input_refuses_on_its_hash(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            manifest = self._cohort(root)
+            victim = sorted((root / "corpus").glob("*.jsonl"))[0]
+            with victim.open("ab") as fh:
+                fh.write(b'{"type":"event_msg","payload":{}}\n')
+            proc = self._run(manifest, root / "corpus")
+        self._assert_refused(proc, 2, "does not match the recorded",
+                             "an edited input must not reach the table")
+
+    def test_one_ambiguous_stem_refuses_rather_than_taking_the_first(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            manifest = self._cohort(root)
+            corpus = root / "corpus"
+            twin = corpus / "twin"
+            twin.mkdir()
+            victim = sorted(corpus.glob("*.jsonl"))[0]
+            (twin / victim.name).write_bytes(victim.read_bytes())
+            proc = self._run(manifest, corpus)
+        self._assert_refused(proc, 2, "2 matches",
+                             "the earlier script took hits[0]")
+
+    def _swap(self, root: Path, manifest: Path, cohort: str, index: int,
+              payload: bytes) -> subprocess.CompletedProcess:
+        """Replace one rollout's bytes and keep its recorded hash honest.
+
+        The hash has to follow, or the run stops at resolution and never reaches
+        the membership check the test is about.
+        """
+        corpus = root / "corpus"
+        order = sorted(corpus.glob("*.jsonl"))
+        position = index if cohort == "before" else 2
+        victim = order[position]
+        victim.write_bytes(payload)
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+        data[cohort][index]["sha256"] = hashlib.sha256(payload).hexdigest()
+        manifest.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        return self._run(manifest, corpus)
+
+    def test_an_excluded_round_that_starts_producing_output_refuses(self) -> None:
+        """Drift direction one: a probe the classifier no longer sees as silent."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            manifest = self._cohort(root)
+            proc = self._swap(root, manifest, "before", 1, self.BUSY.read_bytes())
+        self._assert_refused(proc, 3, "before/", "an excluded probe now produces output")
+        self.assertIn("included=False", proc.stderr)
+
+    def test_a_counted_round_that_falls_silent_refuses(self) -> None:
+        """Drift direction two, in both cohorts.
+
+        The after cohort is the half an earlier version skipped entirely: its
+        loop appended every entry without checking membership, so a silent
+        after round printed a row of zeros and exited 0 while the README
+        promised exit 3.
+        """
+        for cohort, index in (("before", 0), ("after", 0)):
+            with self.subTest(cohort=cohort):
+                with tempfile.TemporaryDirectory() as td:
+                    root = Path(td)
+                    manifest = self._cohort(root)
+                    proc = self._swap(root, manifest, cohort, index, self.QUIET)
+                self._assert_refused(
+                    proc, 3, f"{cohort}/",
+                    f"a counted {cohort} round that produces nothing changes the total")
+                self.assertIn("included=True", proc.stderr)
+
+    def test_a_flag_with_no_value_is_a_usage_error(self) -> None:
+        proc = subprocess.run(
+            [sys.executable, str(MEASURE), "--corpus-dir"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+        )
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        self.assertIn("needs a path", proc.stderr)
+        self.assertNotIn("Traceback", proc.stderr)
+
+    def test_the_measurement_names_no_session_scratchpad(self) -> None:
+        """The defect itself: a committed script pointing at a temp directory."""
+        text = MEASURE.read_text(encoding="utf-8")
+        for needle in ("AppData/Local/Temp", "AppData\\\\Local\\\\Temp", "/scratchpad"):
+            self.assertNotIn(
+                needle, text,
+                f"measure_acceptance.py still refers to {needle}; a session "
+                "scratchpad does not outlive the session that made it")
 
 
 if __name__ == "__main__":

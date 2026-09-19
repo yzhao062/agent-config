@@ -1,0 +1,126 @@
+{
+  "schema": 1,
+  "record": "Milestone A acceptance measurement, run 2026-09-18",
+  "why": "The measurement used to select its before cohort with a directory glob over a session scratchpad, and to drop three rounds by observing that they classified to zero output. A scratchpad is temporary, and a date glob over the session store would mix the two cohorts, because the dates these rollouts fall on hold 108 sessions: fourteen before rollouts, four after rollouts, and ninety outside both cohorts. This file states the cohort instead: every input by session stem and SHA-256, and which of them the published table counts.",
+  "acquisition": "Each stem names a Codex rollout. By default the measurement resolves them under ~/.codex/sessions, which is per-machine application storage that can be archived or pruned. Keep a copy outside it and pass --corpus-dir <path>, or set ACCEPTANCE_CORPUS_DIR, to measure from the frozen copy. The raw rollouts total 68,114,296 bytes (about 68 MB or 65 MiB) for the before cohort and are not committed. Resolution matches <stem>*.jsonl recursively; a missing, ambiguous, or hash-mismatched input fails the run.",
+  "corpus_root_default": "~/.codex/sessions",
+  "before": [
+    {
+      "stem": "rollout-2026-09-17T22-52-23-01a0b312-b793-7f72-b7f2-203aeae55578",
+      "sha256": "ed2f08fc73673ef61924fbd1f01848af5e22e0edc2a34bf219ba825d97ce7876",
+      "scope": "paper",
+      "included": false,
+      "excluded_because": "setup probe: the round produced no reviewer tool output, so it contributes nothing and was dropped from the published table"
+    },
+    {
+      "stem": "rollout-2026-09-17T22-52-39-01a0b312-f534-78e1-82d2-90ab4ec52d35",
+      "sha256": "24cf0489184e7651f19cd1e57c289b0728d03b73ca04edea44aaf3b7a277acfb",
+      "scope": "paper",
+      "included": false,
+      "excluded_because": "setup probe: the round produced no reviewer tool output, so it contributes nothing and was dropped from the published table"
+    },
+    {
+      "stem": "rollout-2026-09-17T22-53-08-01a0b313-668b-7223-a5c5-33e9e3301600",
+      "sha256": "16618265f636517f5aeb1bfc494af8e9154ba95587fb26693a3a8de180708716",
+      "scope": "paper",
+      "included": false,
+      "excluded_because": "setup probe: the round produced no reviewer tool output, so it contributes nothing and was dropped from the published table"
+    },
+    {
+      "stem": "rollout-2026-09-18T00-18-25-01a0b361-79ac-7ab2-9094-b0768535a86d",
+      "sha256": "0d4ebf8df42a1a306495d1b573f238fa274da5fbfa2ca2bf1b897d262799e5ff",
+      "scope": "paper",
+      "included": true
+    },
+    {
+      "stem": "rollout-2026-09-18T00-19-09-01a0b362-2929-7741-a865-62b5dc792ad8",
+      "sha256": "e7d0bbed0c6ae483ab00b6141e9a465becb20d4bacb8297590f938c522c2d010",
+      "scope": "paper",
+      "included": true
+    },
+    {
+      "stem": "rollout-2026-09-18T00-19-18-01a0b362-4bd3-7263-b665-df99fb73027d",
+      "sha256": "a81104d0e2dcbe5cb39de4cf68802e8c31870976338d65da987ba13f2aa39e22",
+      "scope": "paper",
+      "included": true
+    },
+    {
+      "stem": "rollout-2026-09-18T00-19-28-01a0b362-72f1-79c1-b96e-d7b0d9b0d5c7",
+      "sha256": "20108af23974960249f48fe43166ce22ee20d182440b56fb4296e178b77c54cd",
+      "scope": "paper",
+      "included": true
+    },
+    {
+      "stem": "rollout-2026-09-18T09-18-10-01a0b54f-a405-7741-8168-e69c4b1550fc",
+      "sha256": "e242e2e2e0383b69977d9e7fb4bc2b1f48cbdb3419e2f0c46105258b988544d3",
+      "scope": "paper",
+      "included": true
+    },
+    {
+      "stem": "rollout-2026-09-18T09-19-08-01a0b550-8570-70d2-ae1a-288d6880d9c9",
+      "sha256": "89ef820d887cfbab091659921ea578e04cd3f8d3b58970ab1e0adbb4cd68608f",
+      "scope": "paper",
+      "included": true
+    },
+    {
+      "stem": "rollout-2026-09-18T09-19-18-01a0b550-ae61-7bd1-a7ab-28c93558ff84",
+      "sha256": "06be5bf4d6ef584eac4eda9e5b32aed79abf36d60ff979e33a8449756a6745e4",
+      "scope": "paper",
+      "included": true
+    },
+    {
+      "stem": "rollout-2026-09-18T12-52-34-01a0b613-eeb1-7b51-b04f-252600151199",
+      "sha256": "adf1fdcf3f10f31e0e406792e42575ecfc8312f5dd0e27c4d9f046894e0430c1",
+      "scope": "paper",
+      "included": true
+    },
+    {
+      "stem": "rollout-2026-09-18T12-53-31-01a0b614-cc61-7512-ada5-5eb68b933010",
+      "sha256": "325284eff5804c7e5cad795a5d77c4f4e0959ab369665ede050ed7f9732f4c6f",
+      "scope": "paper",
+      "included": true
+    },
+    {
+      "stem": "rollout-2026-09-18T12-53-43-01a0b614-fc19-7e62-9134-3606d6e6f578",
+      "sha256": "2449131641794e33b7583abc186f2017aba0586c14bb15c71880448e4000b2ab",
+      "scope": "paper",
+      "included": true
+    },
+    {
+      "stem": "rollout-2026-09-18T12-53-53-01a0b615-2170-7f50-ba3f-8f29feb32412",
+      "sha256": "9833aa3e9f86c12e059f8be0e0ca788784bb7226b31e8d8649dd60dd45156b43",
+      "scope": "paper",
+      "included": true
+    }
+  ],
+  "after": [
+    {
+      "label": "fire-ai-bench R10 root",
+      "stem": "rollout-2026-09-18T19-22-49-01a0b779-3620-7be0-8f3e-f7ba359820b5",
+      "sha256": "da51f9ea7ecf0eda7591340692d997a1a8a94c24017c9fe7770e901b597d7b68",
+      "scope": "paper",
+      "included": true
+    },
+    {
+      "label": "fire-ai-bench R10 sub-a",
+      "stem": "rollout-2026-09-18T19-23-39-01a0b779-f8c5-7731-86b4-2f75bf11eb22",
+      "sha256": "2de1260e9267fb4193b3ea989e4dacaed20a914d0dce54b4bda35ac769ad3024",
+      "scope": "paper",
+      "included": true
+    },
+    {
+      "label": "fire-ai-bench R10 sub-b",
+      "stem": "rollout-2026-09-18T19-27-37-01a0b77d-9be1-7a92-b279-93de80235349",
+      "sha256": "e5841e1f42dda1bf9f8a67063da3fac660de27700a915362f47a4ae157acbf90",
+      "scope": "paper",
+      "included": true
+    },
+    {
+      "label": "trading-doc R3",
+      "stem": "rollout-2026-09-18T19-44-04-01a0b78c-ab2d-7f43-85a9-30ce25e302e6",
+      "sha256": "abaa2f1a4aa90246c4487967f89b9f780c91c4b4722a02dbd73f6c9c9462c55c",
+      "scope": "trading",
+      "included": true
+    }
+  ]
+}

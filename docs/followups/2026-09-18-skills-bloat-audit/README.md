@@ -85,6 +85,16 @@ The Antigravity row is the sharper result. Its trace records three `view_file` c
 
 Five, and they bound what this record claims. No Antigravity round has run in a consumer under the contract, so that side rests on the Milestone A rounds, the ARM64 smoke, and the source-repo round above. The four after rollouts are two review rounds rather than four independent ones, and three of them belong to a single round. Neither side follows a sampling rule: the before rollouts are the ones the audit sampled, the after ones are whatever ran next. Only the after side was adjudicated by hand, while the before side keeps 1,586,748 unresolved bytes at their classifier labels. The two sides also differ in size and task mix. These totals describe these sessions; they do not isolate what the contract caused.
 
+### Reproducing it
+
+`corpus-manifest.json` states the cohort: all eighteen inputs by session stem and SHA-256, which eleven of the fourteen before rollouts the table counts, and why the other three do not. The three are setup probes that produced no reviewer tool output.
+
+The measurement resolves every stem under one corpus root, `~/.codex/sessions` by default, or a frozen copy named with `--corpus-dir <path>` or `ACCEPTANCE_CORPUS_DIR`. Any missing, ambiguous, or hash-mismatched input ends the run with exit 2 and names each problem. Should a classifier change move a round across the zero-output boundary, the run ends with exit 3, because the manifest's membership and its stated reason would then disagree.
+
+That replaces the original recipe, which globbed a session scratchpad for the before cohort and took the first timestamp-prefix match for the after one. A scratchpad does not outlive its session. The two dates hold 108 sessions: fourteen before rollouts, four after rollouts, and ninety outside both cohorts, so no date glob over the session store separates the two cohorts. Worse, a missing input printed one line and carried on to a table that was quietly short, with exit 0. Verification used a frozen copy held outside both the scratchpad and the session store: the tables above reproduce byte for byte, and each of the three rejection paths exits non-zero.
+
+The raw rollouts are about 78 MB and are not committed. `tests/test_classify_reviewer_io.py` covers the manifest's shape and the three rejections with synthetic inputs, so it needs neither.
+
 Six classifier accuracy items surfaced during this adjudication and are recorded in anywhere-agents#60. Diff identity needs a repository dimension. Metadata-only diff commands need their own treatment. Commands that read a diff from a temp file are classified by another path they name. A `-TotalCount` range that repeats an earlier whole-file read is labelled required. Executed interpreter paths can still parse as reads. Finally, `Select-Object -Skip N` without `-First` matches no range pattern, so a tail read is treated as a full read, which is what mislabelled `c42` here. None of them is a one-line fix: `c55` shows that a file can change between two reads, so a later range is not waste by construction.
 
 ## The audit sample, recomputed with these labels

@@ -10,17 +10,29 @@ the reviewer had already been delivered. This recipe reproduces the two raw
 tables in README.md and lists the flagged after events. It does not apply the
 adjudication in README.md, which is a reading of those events by hand.
 
-The rollouts live under ~/.codex/sessions and the audit sample under a session
-scratchpad, so reproducing this exact pair means keeping those inputs. A new
-pair needs new paths, session ids, a new date glob, and its own scopes. Here,
-one PAPER_SCOPE stands in for every paper rollout instead of being taken from
-each request separately.
+corpus-manifest.json beside this file states the cohort: every input by session
+stem and SHA-256, and which of them the published table counts. Both cohorts
+are resolved by stem under one corpus root, so neither depends on a session
+scratchpad and neither can absorb an unrelated rollout that happens to share a
+date. A missing, ambiguous, or hash-mismatched input ends the run with a
+nonzero exit rather than a table that is quietly short.
 
-Usage: python measure_acceptance.py [--events]
+The default root is ~/.codex/sessions, which is per-machine application storage
+that can be archived or pruned. Point the measurement at a frozen copy with
+--corpus-dir <path> or ACCEPTANCE_CORPUS_DIR. A new pair needs new session ids,
+its own scopes, and its own manifest. Here, one PAPER_SCOPE stands in for every
+paper rollout instead of being taken from each request separately.
+
+Usage: python measure_acceptance.py [--events] [--corpus-dir <path>] [--manifest <path>]
+
+`--manifest` exists so the resolver's refusals can be tested against a small
+synthetic cohort. Without it a negative test can only withhold files from the
+real manifest, and the run then fails on the seventeen inputs it did not supply
+rather than on the one condition under test.
 """
 from __future__ import annotations
 
-import glob
+import hashlib
 import json
 import os
 import sys
@@ -30,8 +42,84 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 HERE = Path(__file__).resolve().parent
-SP = Path(r"C:/Users/yuezh/AppData/Local/Temp/claude/C--Users-yuezh-PycharmProjects-agent-config/27c4fb45-bb69-43ab-9fbf-90ed9a022fd7/scratchpad")
 OUT = Path(tempfile.mkdtemp(prefix="acceptance-"))
+
+def option(name: str) -> str | None:
+    """The value of `--name <value>`, refusing the flag with nothing after it.
+
+    `sys.argv[index + 1]` raises IndexError when the flag is the last argument,
+    which reports a missing path as a traceback rather than as the usage error
+    it is.
+    """
+    if name not in sys.argv:
+        return None
+    index = sys.argv.index(name) + 1
+    if index >= len(sys.argv) or sys.argv[index].startswith("--"):
+        print(f"{name} needs a path", file=sys.stderr)
+        raise SystemExit(2)
+    return sys.argv[index]
+
+
+MANIFEST_PATH = Path(option("--manifest") or (HERE / "corpus-manifest.json")).expanduser()
+MANIFEST = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+
+
+def corpus_root() -> Path:
+    """Where the rollouts are read from, most explicit wins."""
+    explicit = option("--corpus-dir")
+    if explicit:
+        return Path(explicit).expanduser()
+    env = os.environ.get("ACCEPTANCE_CORPUS_DIR")
+    if env:
+        return Path(env).expanduser()
+    return Path(os.path.expanduser(MANIFEST["corpus_root_default"]))
+
+
+def sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def resolve_corpus(root: Path):
+    """Map every manifest entry to a verified file, or report every problem.
+
+    Collects rather than failing on the first entry, because a corpus that has
+    moved usually fails for many entries at once and one name at a time turns
+    that into a long guessing loop. The earlier version of this script resolved
+    the before cohort with a directory glob and the after cohort by taking the
+    first timestamp-prefix match, then printed `missing:` and carried on. A run
+    with absent inputs produced an empty table and exit 0, which is the failure
+    mode that makes a published measurement untrustworthy.
+    """
+    resolved, problems = {}, []
+    for cohort in ("before", "after"):
+        for entry in MANIFEST[cohort]:
+            stem = entry["stem"]
+            hits = sorted(root.rglob(f"{stem}*.jsonl"))
+            if not hits:
+                problems.append(f"{cohort}/{stem}: no file under {root}")
+                continue
+            if len(hits) > 1:
+                names = ", ".join(str(h.relative_to(root)) for h in hits[:4])
+                problems.append(f"{cohort}/{stem}: {len(hits)} matches ({names})")
+                continue
+            actual = sha256(hits[0])
+            if actual != entry["sha256"]:
+                problems.append(
+                    f"{cohort}/{stem}: sha256 {actual[:16]} does not match the "
+                    f"recorded {entry['sha256'][:16]}")
+                continue
+            resolved[(cohort, stem)] = hits[0]
+    if problems:
+        print(f"corpus resolution failed against {root}", file=sys.stderr)
+        for p in problems:
+            print(f"  {p}", file=sys.stderr)
+        print(f"\n{MANIFEST['acquisition']}", file=sys.stderr)
+        raise SystemExit(2)
+    return resolved
 
 spec = importlib.util.spec_from_file_location("clf", HERE / "classify_reviewer_io.py")
 clf = importlib.util.module_from_spec(spec)
@@ -47,16 +135,7 @@ PAPER_SCOPE = [
 ]
 TRADING_SCOPE = ["crypto"]
 
-ROUNDS = {
-    "after": [
-        ("fire-ai-bench R10 root", "rollout-2026-09-18T19-22-49", PAPER_SCOPE),
-        ("fire-ai-bench R10 sub-a", "rollout-2026-09-18T19-23-39", PAPER_SCOPE),
-        ("fire-ai-bench R10 sub-b", "rollout-2026-09-18T19-27-37", PAPER_SCOPE),
-        ("trading-doc R3", "rollout-2026-09-18T19-44-04", TRADING_SCOPE),
-    ],
-}
-
-BEFORE_GLOB = str(SP / "prun-skills-audit/data/codex-rollouts/*.jsonl")
+SCOPES = {"paper": PAPER_SCOPE, "trading": TRADING_SCOPE}
 
 # A line counts as already delivered only when this many significant characters
 # survive stripping a "NNN: " line-number prefix and the surrounding whitespace.
@@ -88,27 +167,69 @@ def line(label, t):
 
 # ------------------------------------------------------- the classifier pass
 
-rows = []
-for label, stem, scope in ROUNDS["after"]:
-    hits = glob.glob(os.path.expanduser(f"~/.codex/sessions/2026/09/18/{stem}*.jsonl"))
-    if not hits:
-        print("missing:", stem)
-        continue
-    rj = round_json(scope, OUT / f"round-after-{stem[-8:]}.json")
-    rep = clf.classify(hits[0], rj)
-    rows.append((label, rep["totals"], rep, hits[0]))
+CORPUS = resolve_corpus(corpus_root())
+drift = []
 
-before = []
-for f in sorted(glob.glob(BEFORE_GLOB)):
-    rj = round_json(PAPER_SCOPE, OUT / "round-before-paper.json")
-    rep = clf.classify(f, rj)
-    if rep["totals"]["tool_output_total"] == 0:
-        continue  # the three probe rollouts
-    before.append((os.path.basename(f)[8:24], rep["totals"], rep, f))
+
+def classify_cohort(cohort):
+    """Classify one cohort, recording any entry whose output contradicts the manifest.
+
+    The manifest states membership; this only checks that the reason it states
+    still holds. An excluded round is excluded for producing no reviewer output,
+    so a classifier change that gives one output has moved the cohort and the
+    published table no longer describes this corpus.
+
+    Both cohorts go through here. An earlier version checked only the before
+    cohort, so an after round that fell silent kept `included: true`, printed a
+    row of zeros, and exited 0, which is the opposite of what the README
+    promises for that state.
+    """
+    out = []
+    for entry in MANIFEST[cohort]:
+        path = CORPUS[(cohort, entry["stem"])]
+        rj = round_json(SCOPES[entry["scope"]],
+                        OUT / f"round-{cohort}-{entry['stem'][-8:]}.json")
+        rep = clf.classify(str(path), rj)
+        total = rep["totals"]["tool_output_total"]
+        if entry["included"] != (total > 0):
+            drift.append(
+                f"{cohort}/{entry['stem']}: manifest says "
+                f"included={entry['included']}, classifier reports "
+                f"tool_output_total={total:,}")
+        if not entry["included"]:
+            continue
+        out.append((entry.get("label") or entry["stem"][8:24],
+                    rep["totals"], rep, str(path)))
+    return out
+
+
+rows = classify_cohort("after")
+before = classify_cohort("before")
+
+if drift:
+    print("corpus membership no longer matches the manifest", file=sys.stderr)
+    for d in drift:
+        print(f"  {d}", file=sys.stderr)
+    raise SystemExit(3)
+
+# The historical headings describe one specific pair of cohorts. With
+# --manifest they would sit above someone else's numbers and read as the
+# published record, which is the one way this script can produce a misleading
+# artifact rather than merely a wrong one. Say whose cohort it is instead.
+PUBLISHED = MANIFEST_PATH.resolve() == (HERE / "corpus-manifest.json").resolve()
+BEFORE_HEADING = ("BEFORE (old contract, same paper, rounds 7-9)" if PUBLISHED
+                  else "BEFORE (custom cohort)")
+AFTER_HEADING = "AFTER (new contract)" if PUBLISHED else "AFTER (custom cohort)"
+
+if not PUBLISHED:
+    print(f"Custom cohort from {MANIFEST_PATH}: "
+          f"{MANIFEST.get('record', 'no record field')}.")
+    print("These totals are not the published Milestone A measurement.")
+    print()
 
 print("| round | tool output | avoidable | unresolved | coordinator_skill | rules |")
 print("|---|---:|---:|---:|---:|---:|")
-print("| **BEFORE (old contract, same paper, rounds 7-9)** | | | | | |")
+print(f"| **{BEFORE_HEADING}** | | | | | |")
 for label, t, _, _ in before:
     print(line(label, t))
 
@@ -129,7 +250,7 @@ def totals(group):
 
 
 print(line(f"**before total ({len(before)})**", totals(before)))
-print("| **AFTER (new contract)** | | | | | |")
+print(f"| **{AFTER_HEADING}** | | | | | |")
 for label, t, _, _ in rows:
     print(line(label, t))
 print(line(f"**after total ({len(rows)})**", totals(rows)))
@@ -217,7 +338,7 @@ print("Content the reviewer had already been delivered")
 print("| round | raw bytes | delivered bytes | already delivered | share of raw |")
 print("|---|---:|---:|---:|---:|")
 show_events = "--events" in sys.argv
-for name, group in (("BEFORE (old contract)", before), ("AFTER (new contract)", rows)):
+for name, group in ((BEFORE_HEADING, before), (AFTER_HEADING, rows)):
     print(f"| **{name}** | | | | |")
     gr = gd = gp = 0
     for label, _, _, path in group:
