@@ -1125,6 +1125,50 @@ class DispatchSandboxFlagContract(unittest.TestCase):
                       "dispatch-codex.ps1 must default sandbox to danger-full-access")
 
 
+class DispatchReviewerContract(unittest.TestCase):
+    """Both dispatchers hand Codex the same reviewer contract in
+    `developer_instructions`: the reviewer skips coordinator-workflow
+    discovery but keeps targeted verification reads, applies supplied policy
+    including local overrides, and treats a staged-change review and a plan
+    review as different inputs. Milestone A of the 2026-09 skills diet;
+    plan-review round 3 and execution-review round 1 both asked for the
+    copies to agree word for word."""
+
+    SENTENCES = (
+        "This session is an assigned reviewer.",
+        "Skip router dispatch and coordinator-workflow discovery at all skill lookup locations",
+        "Do not load coordinator skill files or example reviews to discover the workflow or response format.",
+        "Files under review remain readable.",
+        "A targeted read outside the review scope is permitted when it supplies missing context, resolves truncation, or answers a concrete verification question.",
+        "including applicable local overrides",
+        "Read an applicable instruction file once only when its rules have not been supplied.",
+        "For a staged-change review, obtain the selected diff once with the command in the request;",
+        "For a plan review, the named plan and evidence files are the review input:",
+    )
+
+    @staticmethod
+    def _instruction(text: str, marker: str) -> str:
+        start = text.index(marker) + len(marker)
+        end = text.index('"', start + 1)
+        return text[start + 1:end]
+
+    def test_both_dispatchers_carry_every_sentence(self) -> None:
+        sh = self._instruction(DISPATCH_SH.read_text(encoding="utf-8"), "CHILD_SESSION_INSTRUCTIONS=")
+        ps = self._instruction(DISPATCH_PS1.read_text(encoding="utf-8"), "$childSessionInstructions = ")
+        for sentence in self.SENTENCES:
+            with self.subTest(sentence[:50]):
+                self.assertIn(sentence, sh)
+                self.assertIn(sentence, ps)
+        self.assertNotIn("Follow all other project instructions", sh + ps)
+
+    def test_the_two_copies_agree_after_variable_normalization(self) -> None:
+        sh = self._instruction(DISPATCH_SH.read_text(encoding="utf-8"), "CHILD_SESSION_INSTRUCTIONS=")
+        ps = self._instruction(DISPATCH_PS1.read_text(encoding="utf-8"), "$childSessionInstructions = ")
+        sh = sh.replace("$PYTHON_INSTRUCTION", "@py").replace("$PWSH_INSTRUCTION", "@pwsh").replace("$EXPECTED_REVIEW_FILE", "@review")
+        ps = ps.replace("$pythonInstruction", "@py").replace("$pwshInstruction", "@pwsh").replace("$ExpectedReviewFile", "@review")
+        self.assertEqual(sh, ps)
+
+
 class DispatchMcpIsolationContract(unittest.TestCase):
     """Both dispatchers must isolate user MCP servers by default.
 

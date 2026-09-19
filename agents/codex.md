@@ -24,6 +24,8 @@ This file holds rules. A rule says what to do, plus one clause on why when the r
 
 > **Determine your context before proceeding.**
 >
+> **Dispatched reviewer:** A dispatched reviewer whose task, lens, and response format are supplied is exempt from this file's bootstrap, router, and coordinator-skill discovery instructions; it applies substantive project policy, including applicable local overrides, reads missing instruction files once, and may read any of these files when they are themselves in scope or answer a concrete verification question.
+>
 > **Source repo test:** If `bootstrap/bootstrap.sh`, `bootstrap/bootstrap.ps1`, `scripts/generate_agent_configs.py`, and `skills/` all exist at the repo root, you are in a source repo (`anywhere-agents`, `agent-config`, or a fork with the same layout). Skip the bootstrap block below and proceed directly to `## Session Start Check`. Do not execute the bootstrap script in a source repo; it would try to bootstrap itself.
 >
 > **Consumer repo path:** Otherwise, you are in a project that consumes the shared config. **You MUST execute the matching bootstrap block below at the start of every session, before responding to any user request or running session checks.** Use the PowerShell block on Windows and the Bash block on macOS/Linux. Bootstrap is idempotent: run it every session even if `.agent-config/` already exists, so shared config, skills, and settings are refreshed from upstream before any work begins. After running, report the refresh result in one line (for example, "bootstrap: refreshed AGENTS.md, skills, settings").

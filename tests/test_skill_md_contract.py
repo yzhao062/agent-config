@@ -58,7 +58,6 @@ CLOSE_FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})[ \t]*$")
 EXPECTED_REFERENCES = {
     "Findings flagged Refuted or Inconclusive": "Round history",
     "This history carries forward": "Round history",
-    "you may parallelize across scopes": "Splitting the round",
 }
 
 
@@ -181,10 +180,11 @@ def _terminal_prompt_template(text: str) -> str:
 def _reference_view(text: str) -> str:
     """Prose, plus the canonical prompt body, and nothing else fenced.
 
-    A blanket mask would be wrong: the `you may parallelize across scopes`
-    reference deliberately lives inside the canonical prompt fence. Exposing
-    only that one block keeps it while still refusing a decoy reference planted
-    in an arbitrary fence elsewhere.
+    A blanket mask would be wrong: a reviewer-facing reference may live inside
+    the canonical prompt fence (the parallelize sentence did until Milestone A
+    of the 2026-09 skills diet replaced its pointer with the criterion).
+    Exposing only that one block keeps such a reference checkable while still
+    refusing a decoy reference planted in an arbitrary fence elsewhere.
     """
     masked, fences = _markdown_regions(text)
     block = _terminal_prompt_fence(masked, fences)
@@ -308,7 +308,6 @@ ROUND_HISTORY_ITEM = "8. **Round history** (rounds 2+ only)"
 NEXT_HEADING = "### 1c. Send to reviewer"
 PROMPT_FENCE_HEAD = "````\nIMPORTANT: Save your complete review"
 PROMPT_FENCE_TAIL = "````\n\nThen wait for the user"
-PARALLELIZE_PHRASE = "you may parallelize across scopes that satisfy Phase 1b item 3"
 PRIOR_FINDINGS_ANCHOR = "<For rounds 2+:>\nPrior findings:\n"
 
 
@@ -387,14 +386,29 @@ def _leave_real_prompt_unclosed_behind_decoy(text: str) -> str:
 
 def _move_prompt_reference_into_nested_fence(text: str) -> str:
     # The only case that exercises the second _markdown_regions call inside
-    # _reference_view. Removing that call left every other row green.
+    # _reference_view. Removing that call left every other row green. The
+    # Round-history reference is moved out of prose into a fence nested in the
+    # canonical prompt body; a masked nested fence hides it, so the registry
+    # entry is no longer seen and the check must reject the document.
+    line = _unique_line_containing(text, HISTORY_PHRASE)
     text = _replace_unique(
-        text, PARALLELIZE_PHRASE,
-        "you may divide work across scopes under the splitting rule")
+        text, line,
+        "- Findings from earlier rounds carry forward without a cross-reference.")
     return _replace_unique(
         text, PRIOR_FINDINGS_ANCHOR,
-        PRIOR_FINDINGS_ANCHOR
-        + "```\n- you may parallelize across scopes (Phase 1b item 3)\n```\n")
+        PRIOR_FINDINGS_ANCHOR + "```\n" + line + "\n```\n")
+
+
+def _move_history_reference_into_prompt_body(text: str) -> str:
+    # The positive twin of the nested-fence rejection: the canonical prompt
+    # body is exposed to the reference check, so a registered reference that
+    # moves there unfenced is still seen exactly once. A _reference_view that
+    # returned only the prose mask would fail this row.
+    line = _unique_line_containing(text, HISTORY_PHRASE)
+    text = _replace_unique(
+        text, line,
+        "- Findings from earlier rounds carry forward without a cross-reference.")
+    return _replace_unique(text, PRIOR_FINDINGS_ANCHOR, PRIOR_FINDINGS_ANCHOR + line + "\n")
 
 
 def _parity_flip_before_phase_1b(text: str) -> str:
@@ -495,6 +509,8 @@ MUST_BE_ACCEPTED = [
     ("four leading spaces is an indented code block, not a fence",
      _sub(NEXT_HEADING, "    ```\n    9. not a list item\n\n" + NEXT_HEADING)),
     ("a CRLF working copy", _to_crlf),
+    ("a registered reference moved into the unfenced canonical prompt body",
+     _move_history_reference_into_prompt_body),
 ]
 
 
