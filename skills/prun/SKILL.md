@@ -119,7 +119,7 @@ branch/tag mutation, `reset --hard`, `clean`). Everything else is allowed. The f
 This is enforced structurally, not by trust:
 
 - **Read-only / research units** run from a per-unit scratch cwd, so accidental writes stay out of
-  the repo. `dispatch-task` does this by default.
+  the repo. `dispatch-task-agy.py` does this by default.
 - **Code-writing units** run inside a **throwaway local clone** of the repo with its remote removed:
   ```
   git clone --local -c core.longpaths=true <repo> <clone-dir>   # longpaths: Windows MAX_PATH safety
@@ -292,8 +292,7 @@ Resolve scripts via this order, first hit wins: `skills/prun/scripts/`, then
   launch. Scratch directories and throwaway clones reduce accidental changes to the working
   repository. They do not enforce filesystem or network isolation; the worker must follow the
   prompt's ban on commit, push, and destructive git.
-- The legacy `dispatch-task.{sh,ps1}` Codex scripts remain shipped only so older deployments and
-  state directories retain their recovery tooling. Current `prun` routing never selects them.
+- The Codex worker scripts that `prun` used before 2026-09-13 are archived in `legacy/prun-codex-worker/` in the source repositories and are no longer shipped. They remain available if pricing makes a Codex worker the cheaper pool again. The `report-state` and `snapshot-tail` launchers recover old unit state through `prun_state.py` without them.
 
 ## gather usage
 

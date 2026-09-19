@@ -174,7 +174,7 @@ skills/                            # Shared skills (bootstrapped to all projects
   prun/
     SKILL.md                       # Skill definition
     agents/openai.yaml             # Codex wrapper
-    scripts/                       # dispatch-task, gather, monitor (.sh + .ps1)
+    scripts/                       # dispatch-task-agy.py; gather, monitor (.sh + .ps1); state recovery
   readme-polish/
     SKILL.md                       # Audit + rewrite a GitHub README with modern patterns
     agents/openai.yaml             # Codex wrapper

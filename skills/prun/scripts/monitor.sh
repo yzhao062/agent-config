@@ -10,7 +10,7 @@
 #   - any unit failed (a FALLBACK result, or a dead dispatch process with no result).
 # Reuses the tail size+mtime liveness logic from implement-review's stall-watch.
 #
-# Args (positional): one or more <state-dir> paths emitted by dispatch-task (the
+# Args (positional): one or more <state-dir> paths emitted by dispatch-task-agy.py (the
 #   `STATE-DIR <abs-path>` line). Each provides tail (growth), result-file (done/fail),
 #   and dispatch-pid (liveness).
 #
@@ -34,9 +34,9 @@ set -u
 
 # This script can run for an hour, and a shell holds a script open for as long
 # as it is executing it. On Windows that refuses any rename over the deployed
-# path and aborts a compose transaction (#43), the same failure dispatch-task.sh
-# carries this guard for. Hand off to a private temp copy so the deployed path
-# is free. A command-string parent removes the copy and propagates the status.
+# path and aborts a compose transaction (#43). Hand off to a private temp copy
+# so the deployed path is free. A command-string parent removes the copy and
+# propagates the status.
 # Nothing here resolves a sibling relative to $0, so no source dir is handed on.
 if [ "${PRUN_MONITOR_REEXEC:-}" != "1" ]; then
     REEXEC_TMP_BASE="${TMPDIR:-/tmp}"
@@ -142,8 +142,9 @@ while :; do
             rmt=$(_mtime "$rf")
             if [ $((now - rmt)) -ge "$STABLE_WINDOW" ]; then
                 terminal=1
-                # FALLBACK only when line 1 IS a FALLBACK-producer HEADER (dispatch-task's
-                # backstop, or the Agy dispatcher's own fallback): "# <unit-id> result
+                # FALLBACK only when line 1 IS a FALLBACK-producer HEADER (the retired
+                # Codex dispatcher's backstop, kept for state written before it was
+                # retired, or the Agy dispatcher's own fallback): "# <unit-id> result
                 # (FALLBACK, ...", anchored and case-sensitive, so a real result whose
                 # first line merely quotes that text, or whose body mentions it, is done.
                 if head -n 1 "$rf" 2>/dev/null | grep -Eq '^# [A-Za-z0-9_-]+ result \(FALLBACK, '; then

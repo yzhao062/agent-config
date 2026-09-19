@@ -81,8 +81,9 @@ while ($true) {
             $rmt = Get-FileMtime $rf
             if (($now - $rmt) -ge $stableWindow) {
                 $terminal = $true
-                # FALLBACK only when line 1 IS a FALLBACK-producer HEADER (dispatch-task's
-                # backstop, or the Agy dispatcher's own fallback): "# <unit-id> result
+                # FALLBACK only when line 1 IS a FALLBACK-producer HEADER (the retired
+                # Codex dispatcher's backstop, kept for state written before it was
+                # retired, or the Agy dispatcher's own fallback): "# <unit-id> result
                 # (FALLBACK, ...", anchored and case-sensitive, so a real result whose
                 # first line merely quotes that text, or whose body mentions it, is done.
                 $firstLine = (Get-Content -LiteralPath $rf -TotalCount 1 -ErrorAction SilentlyContinue)

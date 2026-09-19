@@ -33,9 +33,9 @@ set -eu
 
 # This script can run for an hour, and a shell holds a script open for as long
 # as it is executing it. On Windows that refuses any rename over the deployed
-# path and aborts a compose transaction (#43), the same failure dispatch-task.sh
-# carries this guard for. Hand off to a private temp copy so the deployed path
-# is free. A command-string parent removes the copy and propagates the status.
+# path and aborts a compose transaction (#43). Hand off to a private temp copy
+# so the deployed path is free. A command-string parent removes the copy and
+# propagates the status.
 # Nothing here resolves a sibling relative to $0, so no source dir is handed on.
 if [ "${PRUN_GATHER_REEXEC:-}" != "1" ]; then
   REEXEC_TMP_BASE="${TMPDIR:-/tmp}"
