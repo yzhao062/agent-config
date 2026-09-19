@@ -146,12 +146,15 @@ MIN_SIG = 12
 
 
 def round_json(scope, path):
-    path.write_text(json.dumps({
+    # write_bytes, rather than write_text(newline="\n"): that argument was added
+    # in 3.10 and the CI floor here is 3.9, where it is a TypeError. Bytes skip
+    # text-mode line-ending translation outright, which is what it was for.
+    path.write_bytes(json.dumps({
         "backend": "codex",
         "supplied_instruction_files": ["AGENTS.md"],
         "review_scope": scope,
         "diff_transport": "command",
-    }, indent=1), encoding="utf-8", newline="\n")
+    }, indent=1).encode("utf-8"))
     return path
 
 
