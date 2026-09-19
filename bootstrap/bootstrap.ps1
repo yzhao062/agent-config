@@ -177,7 +177,14 @@ function Add-GitignoreLine([string]$Line) {
     if ($bytes.Length -gt 0 -and $bytes[$bytes.Length - 1] -ne 0x0A) { $prefix = "`n" }
   }
   $encoding = New-Object System.Text.UTF8Encoding $false
-  $existing = if (Test-Path -LiteralPath $path) { [System.IO.File]::ReadAllBytes($path) } else { [byte[]]@() }
+  # Declare the array and assign outside a pipeline. An `if` used as an
+  # expression sends its result through the pipeline, which enumerates an empty
+  # array to nothing, so the else branch bound $null rather than a zero-length
+  # Byte[]. Array.Copy below then threw "Value cannot be null. (Parameter
+  # 'sourceArray')" on every repository that had no .gitignore yet, which is the
+  # documented first run for a new consumer. See anywhere-agents#62.
+  [byte[]]$existing = @()
+  if (Test-Path -LiteralPath $path) { $existing = [System.IO.File]::ReadAllBytes($path) }
   $addition = $encoding.GetBytes($prefix + $Line + "`n")
   $combined = New-Object byte[] ($existing.Length + $addition.Length)
   [System.Array]::Copy($existing, 0, $combined, 0, $existing.Length)
@@ -199,7 +206,14 @@ function Add-GitignoreEntry([string]$Pattern, [string]$Line) {
     if ($bytes.Length -gt 0 -and $bytes[$bytes.Length - 1] -ne 0x0A) { $prefix = "`n" }
   }
   $encoding = New-Object System.Text.UTF8Encoding $false
-  $existing = if (Test-Path -LiteralPath $path) { [System.IO.File]::ReadAllBytes($path) } else { [byte[]]@() }
+  # Declare the array and assign outside a pipeline. An `if` used as an
+  # expression sends its result through the pipeline, which enumerates an empty
+  # array to nothing, so the else branch bound $null rather than a zero-length
+  # Byte[]. Array.Copy below then threw "Value cannot be null. (Parameter
+  # 'sourceArray')" on every repository that had no .gitignore yet, which is the
+  # documented first run for a new consumer. See anywhere-agents#62.
+  [byte[]]$existing = @()
+  if (Test-Path -LiteralPath $path) { $existing = [System.IO.File]::ReadAllBytes($path) }
   $addition = $encoding.GetBytes($prefix + $Line + "`n")
   $combined = New-Object byte[] ($existing.Length + $addition.Length)
   [System.Array]::Copy($existing, 0, $combined, 0, $existing.Length)

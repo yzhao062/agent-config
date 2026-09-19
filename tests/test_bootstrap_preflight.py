@@ -5104,5 +5104,146 @@ class AtomicHelperIdenticalDeploySkipTests(unittest.TestCase):
                 "a deploy that had to add the executable bit skipped the rename")
 
 
+class GitignoreWriterEmptyArrayTests(unittest.TestCase):
+    """Regression: the gitignore writers on a repository with no .gitignore.
+
+    Both writers bound their existing-bytes variable from an `if` used as an
+    expression, whose else branch was `[byte[]]@()`. PowerShell sends the result
+    of that `if` through the pipeline, an empty array enumerates to nothing, and
+    the variable received $null rather than a zero-length Byte[]. The next line
+    passed that null to Array.Copy as `sourceArray` and threw. Every repository
+    without a .gitignore therefore aborted the run at the first ignore rule,
+    with the files written so far already on disk and `completed: false` in the
+    ledger. That is the documented first run for a new consumer, which is why no
+    existing consumer ever reached it. See anywhere-agents#62.
+
+    Two layers, following PowerShellPythonProbeQuotingTests above, though the
+    static half here is deliberately narrower than the one in that class:
+
+    - The source check guards recurrence of the assignment shape in the two
+      writers. It does not classify arbitrary PowerShell, and the method below
+      records why trying to do so was abandoned. It runs on the Linux and macOS
+      legs, which have no PowerShell.
+    - The live check proves behavior, against every installed edition. The bug
+      is a language semantic rather than an edition quirk, but the empty-array
+      unroll is exactly the kind of rule an edition could differ on, and the
+      single-edition choice is what let anywhere-agents#34 ship.
+
+    The absent file is the case that failed in production. The empty and
+    no-trailing-newline files are the neighboring states of the same branch,
+    where a fix that traded one boundary for another would show up.
+    """
+
+    BOOTSTRAP_PS1 = ROOT / "bootstrap" / "bootstrap.ps1"
+    WRITERS = ("Add-GitignoreLine", "Add-GitignoreEntry")
+
+    def _function_text(self, name: str) -> str:
+        """Return the source of one writer, braces balanced."""
+        text = self.BOOTSTRAP_PS1.read_text(encoding="utf-8")
+        start = text.index(f"function {name}")
+        depth = 0
+        for index in range(start, len(text)):
+            char = text[index]
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start:index + 1]
+        self.fail(f"{name} is not brace-balanced")
+
+    def test_writers_do_not_restore_the_original_if_assignment(self) -> None:
+        """Guard the two writers against the exact shape that was fixed.
+
+        This replaced a repository-wide scanner for the whole defect class. The
+        scanner was removed rather than extended because it was unsound in both
+        directions and could not become sound without a real PowerShell parser.
+        It reported `[string]@()` and `[bool]@()`, which bind an empty string and
+        False rather than null, and `$(if (...) { 1 } else { @() }; 42)`, which
+        binds 42; a single such line in any .ps1 turned the whole suite red on
+        correct code. It also missed `${x} =`, `$script:x =`, a backtick line
+        continuation, `(@())`, `[byte []]@()`, `@();;` and `@(;)`, every one of
+        which parses and binds null in both editions. Reaching soundness means
+        classifying arbitrary PowerShell expressions and their destination
+        conversions, which is a parser, not a test helper.
+
+        What is left is narrow and provable: the two functions that carried the
+        defect must not assign a variable from an `if` expression at all. They
+        have no reason to, and the live check below covers behavior.
+        """
+        for writer in self.WRITERS:
+            with self.subTest(writer=writer):
+                self.assertNotRegex(
+                    self._function_text(writer),
+                    r"(?im)^\s*\$\w+\s*=\s*if\b",
+                    f"{writer} assigns a variable from an `if` expression. That "
+                    "is how anywhere-agents#62 happened: an empty-array branch "
+                    "enumerates to nothing and binds $null. Declare the typed "
+                    "variable first and assign inside a plain `if`.",
+                )
+
+    @unittest.skipUnless(sys.platform.startswith("win"),
+                         "PowerShell editions are Windows-only here")
+    def test_writers_append_under_every_installed_powershell(self) -> None:
+        available = [(Path(p).stem.lower(), p) for p in powershell_editions_or_fail(self)]
+        body = "\n".join(self._function_text(name) for name in self.WRITERS)
+
+        # (label, pre-existing bytes or None for an absent file, expected result)
+        scenarios = (
+            ("absent", None, b".agent-config/\n"),
+            ("empty", b"", b".agent-config/\n"),
+            ("no-trailing-newline", b"*.log", b"*.log\n.agent-config/\n"),
+            ("trailing-newline", b"*.log\n", b"*.log\n.agent-config/\n"),
+        )
+
+        for name, path in available:
+            for label, seed, expected in scenarios:
+                for writer in self.WRITERS:
+                    with self.subTest(edition=name, state=label, writer=writer):
+                        with tempfile.TemporaryDirectory() as tmpdir:
+                            work = Path(tmpdir)
+                            target = work / ".gitignore"
+                            if seed is not None:
+                                target.write_bytes(seed)
+                            call = (
+                                "Add-GitignoreEntry '^/?\\.agent-config/' '.agent-config/'"
+                                if writer == "Add-GitignoreEntry"
+                                else "Add-GitignoreLine '.agent-config/'"
+                            )
+                            # Stop turns the non-terminating method-invocation
+                            # error into the abort the run actually suffered,
+                            # so the regression shows up as a non-zero exit
+                            # rather than a silently wrong file.
+                            script = (
+                                "$ErrorActionPreference = 'Stop'\n"
+                                f"{body}\n"
+                                f"Set-Location -LiteralPath '{str(work).replace(chr(39), chr(39) * 2)}'\n"
+                                f"{call}\n"
+                            )
+                            script_path = work / "writer-probe.ps1"
+                            script_path.write_text(script, encoding="utf-8")
+                            result = subprocess.run(
+                                [path, "-NoProfile", "-ExecutionPolicy", "Bypass",
+                                 "-File", str(script_path)],
+                                capture_output=True,
+                                text=True,
+                            )
+                            self.assertEqual(
+                                result.returncode, 0,
+                                f"{writer} failed under {name} with a "
+                                f"{label} .gitignore; stderr={result.stderr!r}",
+                            )
+                            self.assertTrue(
+                                target.exists(),
+                                f"{writer} wrote no .gitignore under {name} "
+                                f"from the {label} state",
+                            )
+                            self.assertEqual(
+                                target.read_bytes(), expected,
+                                f"{writer} produced the wrong bytes under {name} "
+                                f"from the {label} state",
+                            )
+
+
 if __name__ == "__main__":
     unittest.main()
