@@ -20,7 +20,72 @@ The fixture under `fixture/` is the hand-labeled contract: one synthetic rollout
 
 Known limits: a Codex shell event is the payload the shell wrapper ran, and a command that reads several files is one event with one output, classed by its most consequential read, or unresolved when it mixes an in-scope read with a read that would be avoidable alone; an operand a command executes (`python x.py`) is not a read; a here-string or heredoc body is dropped as data only when it is literal (a single-quoted here-string or a quoted heredoc delimiter) and the whole event is positively recognized as storage (assigned to a variable, piped into Set-Content, Out-File, Add-Content, or tee, or redirected into a file, and nothing else); an expandable body (`@"..."@`, or a heredoc with a bare delimiter) is always kept because `$(...)` runs during expansion, while both bash quote styles suppress it; source passed inline with `-c` or `-Command` is a body too; in every other event the body is kept, and when it names a rule file, a coordinator file, a review sink, or a diff, the event is unresolved, because no shell is interpreted here; a search is identified by its literal command, so a different pattern, context option, or whitespace inside the pattern is a different read and only an identical command is a repeat; a `run_command` whose output the tail did not record counts 0 bytes and is marked; Antigravity `view_file` bytes come from the CLI's `N lines, M bytes` summary, which is the payload the model received, so they exceed the literal `output` string.
 
-Acceptance procedure. The labels narrow what a person has to read; they do not replace reading it. A compound command whose inline source is followed by another statement (`python -c "..."; Write-Output 'done'`) keeps its outer quotes and can leave an inner path invisible, so it is reported required. Before claiming zero avoidable reads, inspect every shell and script event of the measured rounds, not only the unresolved list, and record any corrected label with the byte total it moves.
+Acceptance procedure. The labels narrow what a person has to read; they do not replace reading it. A compound command whose inline source is followed by another statement (`python -c "..."; Write-Output 'done'`) keeps its outer quotes and can leave an inner path invisible, so it is reported required. Before claiming zero avoidable reads, inspect every shell and script event of the measured rounds, not only the unresolved list, and record any corrected label with the byte total it moves. The required column needs inspection too. A `-TotalCount` range over a file the same session already read whole is labelled required, and the 2026-09-18 measurement below found 9,376 such bytes outside the flagged events.
+
+## The acceptance measurement (2026-09-18)
+
+This is an observational check of Milestone A on ordinary review work. The paper comparison holds the document, the coordinator, and the reviewer model fixed: rounds 7 to 9 ran before the contract, round 10 after it. One unrelated consumer round joins the after side. The paired acceptance procedure of `PLAN-skills-diet.md` is not complete, because it wants a pair on both backends and no Antigravity round has run in a consumer.
+
+Before: the eleven `fire-ai-bench` rollouts of 2026-09-18 that the audit sampled, under the old contract. After: four consumer rollouts that began at 19:22 or later. The contract was committed at 18:34 and reached those two consumers when they re-bootstrapped, at 18:51 and 18:55. Three of the four cover `fire-ai-bench` round 10, a 48-page paper and its code repository, reviewed by a root reviewer and two sub-agents. The fourth covers `trading-doc` round 3. Classification uses one shared `PAPER_SCOPE` for every paper session and `crypto` for the trading round, as `measure_acceptance.py` records.
+
+Two byte conventions appear below. Raw bytes are the classifier's `aggregated_output`, which is what the command produced. Delivered bytes are Codex's `formatted_output`, which is what reached the model once a long response was truncated. The after sample is 1,251,797 raw bytes against 853,920 delivered. Raw bytes are what the table below reports, because the classifier counts them.
+
+| | tool output | avoidable | unresolved | coordinator_skill | rules |
+|---|---:|---:|---:|---:|---:|
+| Before, 11 rounds | 7,872,334 | 2,405,335 (30.6%) | 1,586,748 | 1,832,635 | 555,949 |
+| After, 4 rounds | 1,251,797 | 109,165 (8.7%) | 18,159 | **0** | 63,189 |
+
+**The coordinator-skill class is zero in all four after rollouts**, against 1.83 MB across the eleven before them. That class holds `SKILL.md`, its references, and its example reviews. A reviewer read those to learn a workflow and a response format that its own prompt already carried. No event in the after sample opens one.
+
+### The avoidable column, adjudicated
+
+That column does not survive event-by-event reading, and no corrected share replaces it here. Reading only the flagged events would not have been enough either: two of the corrections below move bytes the classifier had called required.
+
+| Event | Bytes | Classifier | Reading of the record |
+|---|---:|---|---|
+| root `c2` | 59,723 | avoidable | Required. A second `git diff --cached`, run in the paper repository after `git -C ...\fire-bench diff --cached` ran against the code repository. Two repositories, two diffs. |
+| root `c3` | 420 | avoidable | Required. `Get-Content AGENTS.md,AGENTS.local.md` in `fire-bench`, exit 1. Neither file exists there, so the 420 bytes are two PowerShell errors and no rule text was re-read. |
+| root `c45`, `c49`, `c60` | 57 | avoidable | Required. `git diff --cached --check` and `git diff --name-only`, a lint and a file list. The 57 bytes are one `rg` hit in `main.log`. |
+| trading `c5` | 277 | avoidable | Required. `New-Item`, `git ls-files`, `--check`, and `git status --short`: setup and metadata. |
+| trading `c4` | 32,413 | avoidable | Mixed. Lines 56 to 500 of a plan and 1 to 128 of the prior review, read after `c3` was truncated from 60,742 raw bytes to 40,108 delivered. Source-position matching puts 11,671 bytes as already delivered and 20,742 as recovered; the line heuristic below counts 10,933. |
+| root `c52`, `c53` | 9,376 | required | Avoidable. `-TotalCount 55` and `-TotalCount 40` over two findings files this reviewer had already read whole at `c46` and `c50`, neither of which was truncated. Both outputs are exact substrings of those. The line heuristic below counts 9,213. |
+| root `c54` | 6,799 | avoidable | Avoidable. The tail after line 55 exactly repeats content delivered at `c46`. |
+| root `c55` | 9,476 | avoidable | Mixed. The tail after line 40 carries a new 525-byte replacement paragraph alongside content delivered at `c50`, so the whole output is not avoidable. |
+| root `c42` | 7,405 | unresolved | Mixed. Two tail reads, `-Skip 86` and `-Skip 130`. The sweep note supplies new context; the `figstyle.py` tail repeats 161 bytes that `c11` delivered whole. |
+| sub-a `c12` | 1,407 | unresolved | Required. A script run whose log tail was printed; the interpreter path parsed as a read. |
+| sub-a `c18` | 7,177 | unresolved | Required. Lines 112 to 238 and 469 to 500, printed with numbers. Its two matching lines are `parser.parse_args()` and the `__main__` guard, which other files carry too. |
+| sub-b `c2` | 1,674 | unresolved | Required. A changed-prose style check over the saved diff. |
+| trading `c12`, `c13` | 496 | unresolved | Required. The scripts that validated and published the review. |
+
+### A second measurement, without adjudication
+
+Count, for each command event in order, the raw output bytes on lines that an earlier event in the same session already delivered. Comparing against delivered bytes rather than raw ones keeps recovery after a truncation from counting as repetition. A line matches only when twelve or more significant characters remain after a `NNN: ` prefix and surrounding whitespace come off, and it contributes its own bytes including its terminator. What this measures is repeated text. It counts output a command produced as readily as a file a reviewer opened, and it misses repetition that rewrapped or that arrived outside a command.
+
+| | raw bytes | delivered bytes | already delivered | share of raw |
+|---|---:|---:|---:|---:|
+| Before, 11 rounds | 7,872,334 | 5,086,800 | 677,105 | 8.6% |
+| After, 4 rounds | 1,251,797 | 853,920 | 85,829 | 6.9% |
+
+Repetition barely moved, from 8.6 percent to 6.9, inside a per-round spread of 1.2 to 16.6 percent before and 2.1 to 10.9 after. Coordinator-skill reads are gone from the after sample; repeated reads of a reviewer's own working files are not. The single largest after-side entry is not a read at all: two identical `pdflatex` runs, 15,009 bytes each, of which 29,670 bytes repeat. A second LaTeX pass is how the build works, and both sides of this comparison contain builds. The rest is two sub-agent findings files read whole and then again in halves, and one reviewer going back over a plan and a prior review. A reviewer is already told not to read the same content twice, and all four after rollouts received that instruction. These sessions show incomplete compliance with it.
+
+### The round that reviewed this record
+
+Both backends reviewed this staged record under the contract, which supplies the Antigravity data point the sample above lacks.
+
+| | tool output | coordinator_skill | rules | avoidable |
+|---|---:|---:|---:|---:|
+| Codex | 1,207,851 | **0** | 1,230 | 12,902 |
+| Antigravity | 373,645 | **0** | 1,507 | 183,811 |
+
+Neither reviewer opened a coordinator skill file. Each read `AGENTS.local.md` once, which the contract allows for an applicable instruction file that was not supplied. The Codex total is dominated by a single 1.05 MB verification script that the reviewer wrote and ran, so it measures its own work more than its reading. Its whole avoidable figure is one event that reads a test file alongside `git status --short` and `git diff --cached --check`, which is the misclassification the ledger above corrects twice.
+
+The Antigravity row is the sharper result. Its trace records three `view_file` calls for `scripts/guard.py`, each summarized as 2,055 lines and 89,220 bytes. The reviewer was working out which style detectors this project runs. For the two repeat calls the classifier assigns 178,440 bytes, most of its 183,811. Because the tail records those summaries rather than the payloads, it does not settle whether the whole file reached the model each time.
+
+### Limits
+
+Five, and they bound what this record claims. No Antigravity round has run in a consumer under the contract, so that side rests on the Milestone A rounds, the ARM64 smoke, and the source-repo round above. The four after rollouts are two review rounds rather than four independent ones, and three of them belong to a single round. Neither side follows a sampling rule: the before rollouts are the ones the audit sampled, the after ones are whatever ran next. Only the after side was adjudicated by hand, while the before side keeps 1,586,748 unresolved bytes at their classifier labels. The two sides also differ in size and task mix. These totals describe these sessions; they do not isolate what the contract caused.
+
+Six classifier accuracy items surfaced during this adjudication and are recorded in anywhere-agents#60. Diff identity needs a repository dimension. Metadata-only diff commands need their own treatment. Commands that read a diff from a temp file are classified by another path they name. A `-TotalCount` range that repeats an earlier whole-file read is labelled required. Executed interpreter paths can still parse as reads. Finally, `Select-Object -Skip N` without `-First` matches no range pattern, so a tail read is treated as a full read, which is what mislabelled `c42` here. None of them is a one-line fix: `c55` shows that a file can change between two reads, so a later range is not waste by construction.
 
 ## The audit sample, recomputed with these labels
 
