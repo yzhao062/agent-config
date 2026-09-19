@@ -1,0 +1,331 @@
+{
+  "codex": {
+    "events": {
+      "c0": {
+        "class": "diff",
+        "label": "required"
+      },
+      "c1": {
+        "class": "rules",
+        "label": "required"
+      },
+      "c2": {
+        "class": "coordinator_skill",
+        "label": "required"
+      },
+      "c3": {
+        "class": "source",
+        "label": "required"
+      },
+      "c4": {
+        "class": "source",
+        "label": "required"
+      },
+      "c5": {
+        "class": "coordinator_skill",
+        "label": "required"
+      },
+      "c6": {
+        "class": "diff",
+        "label": "avoidable"
+      },
+      "c7": {
+        "class": "rules",
+        "label": "avoidable"
+      },
+      "c8": {
+        "class": "coordinator_skill",
+        "label": "avoidable"
+      },
+      "c9": {
+        "class": "coordinator_skill",
+        "label": "unresolved"
+      },
+      "c10": {
+        "class": "tests_builds",
+        "label": "required"
+      },
+      "c11": {
+        "class": "source",
+        "label": "avoidable"
+      },
+      "c12": {
+        "class": "source",
+        "label": "required"
+      },
+      "c13": {
+        "class": "source",
+        "label": "required"
+      },
+      "c14": {
+        "class": "tests_builds",
+        "label": "required"
+      },
+      "c15": {
+        "class": "rules",
+        "label": "required"
+      },
+      "c16": {
+        "class": "rules",
+        "label": "required"
+      },
+      "c17": {
+        "class": "rules",
+        "label": "unresolved"
+      },
+      "c18": {
+        "class": "other",
+        "label": "required"
+      },
+      "c19": {
+        "class": "tests_builds",
+        "label": "required"
+      },
+      "c20": {
+        "class": "tests_builds",
+        "label": "required"
+      },
+      "c21": {
+        "class": "rules",
+        "label": "avoidable"
+      },
+      "c22": {
+        "class": "rules",
+        "label": "unresolved"
+      },
+      "c23": {
+        "class": "rules",
+        "label": "avoidable"
+      },
+      "c24": {
+        "class": "source",
+        "label": "required"
+      },
+      "c25": {
+        "class": "source",
+        "label": "required"
+      },
+      "c26": {
+        "class": "source",
+        "label": "avoidable"
+      },
+      "c27": {
+        "class": "source",
+        "label": "required"
+      },
+      "c28": {
+        "class": "tests_builds",
+        "label": "unresolved"
+      },
+      "c29": {
+        "class": "tests_builds",
+        "label": "unresolved"
+      },
+      "c30": {
+        "class": "coordinator_skill",
+        "label": "required"
+      },
+      "c31": {
+        "class": "coordinator_skill",
+        "label": "required"
+      },
+      "c32": {
+        "class": "coordinator_skill",
+        "label": "required"
+      },
+      "c33": {
+        "class": "coordinator_skill",
+        "label": "required"
+      },
+      "c34": {
+        "class": "coordinator_skill",
+        "label": "required"
+      },
+      "c35": {
+        "class": "coordinator_skill",
+        "label": "required"
+      },
+      "c36": {
+        "class": "coordinator_skill",
+        "label": "avoidable"
+      },
+      "c37": {
+        "class": "tests_builds",
+        "label": "unresolved"
+      },
+      "c38": {
+        "class": "tests_builds",
+        "label": "unresolved"
+      },
+      "c39": {
+        "class": "source",
+        "label": "required"
+      },
+      "c40": {
+        "class": "source",
+        "label": "required"
+      },
+      "c41": {
+        "class": "source",
+        "label": "avoidable"
+      },
+      "c42": {
+        "class": "other",
+        "label": "unresolved"
+      },
+      "c43": {
+        "class": "other",
+        "label": "unresolved"
+      },
+      "c44": {
+        "class": "other",
+        "label": "required"
+      },
+      "c45": {
+        "class": "other",
+        "label": "unresolved"
+      },
+      "c46": {
+        "class": "other",
+        "label": "unresolved"
+      },
+      "c47": {
+        "class": "other",
+        "label": "unresolved"
+      },
+      "c48": {
+        "class": "other",
+        "label": "required"
+      },
+      "c49": {
+        "class": "other",
+        "label": "unresolved"
+      },
+      "c50": {
+        "class": "tests_builds",
+        "label": "unresolved"
+      },
+      "c51": {
+        "class": "tests_builds",
+        "label": "unresolved"
+      },
+      "c52": {
+        "class": "tests_builds",
+        "label": "required"
+      },
+      "c53": {
+        "class": "other",
+        "label": "required"
+      }
+    },
+    "totals": {
+      "by_class": {
+        "diff": 100,
+        "rules": 1907,
+        "coordinator_skill": 1370,
+        "source": 1004,
+        "tests_builds": 3386,
+        "other": 2924
+      },
+      "by_label": {
+        "required": 1817,
+        "avoidable": 2210,
+        "unresolved": 6664
+      },
+      "tool_output_total": 10691,
+      "events": 54,
+      "events_without_usable_output": 0
+    },
+    "injected_bytes": 1038,
+    "prompt_bytes": 101
+  },
+  "antigravity": {
+    "events": {
+      "a0": {
+        "class": "diff",
+        "label": "avoidable"
+      },
+      "a1": {
+        "class": "rules",
+        "label": "required"
+      },
+      "a2": {
+        "class": "coordinator_skill",
+        "label": "required"
+      },
+      "a3": {
+        "class": "source",
+        "label": "required"
+      },
+      "a4": {
+        "class": "source",
+        "label": "required"
+      },
+      "a5": {
+        "class": "coordinator_skill",
+        "label": "required"
+      },
+      "a6": {
+        "class": "rules",
+        "label": "required"
+      },
+      "a7": {
+        "class": "rules",
+        "label": "avoidable"
+      },
+      "a8": {
+        "class": "coordinator_skill",
+        "label": "avoidable"
+      },
+      "a9": {
+        "class": "coordinator_skill",
+        "label": "unresolved"
+      },
+      "a10": {
+        "class": "tests_builds",
+        "label": "required"
+      },
+      "a11": {
+        "class": "source",
+        "label": "avoidable"
+      },
+      "a12": {
+        "class": "other",
+        "label": "required"
+      },
+      "a13": {
+        "class": "rules",
+        "label": "required"
+      },
+      "a14": {
+        "class": "rules",
+        "label": "required"
+      },
+      "a15": {
+        "class": "tests_builds",
+        "label": "required"
+      }
+    },
+    "totals": {
+      "by_class": {
+        "diff": 19,
+        "rules": 49462,
+        "coordinator_skill": 143576,
+        "source": 2400,
+        "tests_builds": 15,
+        "other": 11
+      },
+      "by_label": {
+        "required": 164533,
+        "avoidable": 30050,
+        "unresolved": 900
+      },
+      "tool_output_total": 195483,
+      "events": 16,
+      "events_without_usable_output": 0
+    },
+    "preamble_bytes": 69,
+    "request_bytes": 34,
+    "diff_bytes_prompt": 90
+  }
+}

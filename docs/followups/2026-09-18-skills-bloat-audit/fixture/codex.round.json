@@ -1,0 +1,15 @@
+{
+  "backend": "codex",
+  "supplied_instruction_files": [
+    "AGENTS.md"
+  ],
+  "review_scope": [
+    "skills/implement-review/SKILL.md",
+    "src/module.py",
+    "src/new.py"
+  ],
+  "diff_transport": "command",
+  "verification_reasons": {
+    "c5": "the lens wording is what the changed focus item quotes"
+  }
+}

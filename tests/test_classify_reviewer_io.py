@@ -1,0 +1,172 @@
+"""The reviewer-I/O classifier against its hand-labeled fixture.
+
+The classifier lives beside the audit note it serves
+(docs/followups/2026-09-18-skills-bloat-audit/) rather than under skills/,
+because it measures the review loop and is not part of it. The fixture holds
+one synthetic Codex rollout and one synthetic Antigravity tail whose every
+event was labeled by hand; expected.json records those labels and the totals
+the classifier produced once the labels agreed. A change to the label rules
+must update both, which is the point.
+"""
+from __future__ import annotations
+
+import importlib.util
+import json
+import subprocess
+import sys
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+AUDIT = ROOT / "docs" / "followups" / "2026-09-18-skills-bloat-audit"
+SCRIPT = AUDIT / "classify_reviewer_io.py"
+FIXTURE = AUDIT / "fixture"
+
+INPUTS = {
+    "codex": ("codex.jsonl", "codex.round.json"),
+    "antigravity": ("tail", "tail.round.json"),
+}
+
+
+def _load():
+    spec = importlib.util.spec_from_file_location("classify_reviewer_io", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+class ClassifierFixtureTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.module = _load()
+        cls.expected = json.loads((FIXTURE / "expected.json").read_text(encoding="utf-8"))
+
+    def test_fixture_files_exist(self) -> None:
+        for name in ("codex.jsonl", "codex.round.json", "tail", "tail.round.json",
+                     "prompt-relay", "expected.json"):
+            self.assertTrue((FIXTURE / name).is_file(), name)
+
+    def test_every_hand_label_matches(self) -> None:
+        for backend, (inp, rnd) in INPUTS.items():
+            with self.subTest(backend):
+                report = self.module.classify(FIXTURE / inp, FIXTURE / rnd)
+                self.assertEqual(report["backend"], backend)
+                got = {r["event_id"]: {"class": r["class"], "label": r["label"]}
+                       for r in report["events"]}
+                self.assertEqual(got, self.expected[backend]["events"])
+
+    def test_totals_match_and_never_fold_unresolved(self) -> None:
+        for backend, (inp, rnd) in INPUTS.items():
+            with self.subTest(backend):
+                report = self.module.classify(FIXTURE / inp, FIXTURE / rnd)
+                self.assertEqual(report["totals"], self.expected[backend]["totals"])
+                labels = report["totals"]["by_label"]
+                self.assertEqual(
+                    labels["required"] + labels["avoidable"] + labels["unresolved"],
+                    report["totals"]["tool_output_total"])
+                self.assertGreater(labels["unresolved"], 0,
+                                   "the fixture carries an unresolved case on purpose")
+
+    def test_prompt_bytes_stay_out_of_the_tool_totals(self) -> None:
+        codex = self.module.classify(FIXTURE / "codex.jsonl", FIXTURE / "codex.round.json")
+        self.assertEqual(codex["injected_bytes"], self.expected["codex"]["injected_bytes"])
+        self.assertEqual(codex["prompt_bytes"], self.expected["codex"]["prompt_bytes"])
+        self.assertNotIn("injected_bytes", codex["totals"]["by_class"])
+        self.assertEqual(codex["totals"]["tool_output_total"],
+                         sum(r["output_bytes"] for r in codex["events"]))
+        agy = self.module.classify(FIXTURE / "tail", FIXTURE / "tail.round.json")
+        for key in ("preamble_bytes", "request_bytes", "diff_bytes_prompt"):
+            self.assertEqual(agy[key], self.expected["antigravity"][key], key)
+
+    def test_the_eight_specified_cases_by_name(self) -> None:
+        """The plan names eight cases; pin each to its event so a fixture edit
+        cannot quietly drop one."""
+        codex = self.expected["codex"]["events"]
+        self.assertEqual(codex["c1"], {"class": "rules", "label": "required"})              # AGENTS.local.md not supplied
+        self.assertEqual(codex["c2"], {"class": "coordinator_skill", "label": "required"})  # skill under review
+        self.assertEqual(codex["c3"]["label"], "required")                                  # two ranges of one file
+        self.assertEqual(codex["c4"]["label"], "required")
+        self.assertEqual(codex["c5"], {"class": "coordinator_skill", "label": "required"})  # verification reason
+        self.assertEqual(codex["c6"], {"class": "diff", "label": "avoidable"})              # second diff obtain
+        self.assertEqual(codex["c7"], {"class": "rules", "label": "avoidable"})             # supplied AGENTS.md re-read
+        self.assertEqual(codex["c8"], {"class": "coordinator_skill", "label": "avoidable"}) # example review, no reason
+        self.assertEqual(codex["c9"], {"class": "coordinator_skill", "label": "unresolved"})  # range read, no reason
+        self.assertEqual(codex["c11"], {"class": "source", "label": "avoidable"})           # same range again
+        # Round-2 additions (execution review): argv payloads, executed scripts,
+        # range identity for instruction files, and a mixed event.
+        self.assertEqual(codex["c12"], {"class": "source", "label": "required"})            # first of two files under the wrapper
+        self.assertEqual(codex["c13"], {"class": "source", "label": "required"})            # second file, not a repeat of the first
+        self.assertEqual(codex["c14"], {"class": "tests_builds", "label": "required"})      # coordinator script executed, not read
+        self.assertEqual(codex["c15"], {"class": "rules", "label": "required"})             # AGENTS.local.md lines 1-20
+        self.assertEqual(codex["c16"], {"class": "rules", "label": "required"})             # lines 21-40 are a different read
+        self.assertEqual(codex["c17"], {"class": "rules", "label": "unresolved"})           # supplied AGENTS.md + in-scope file in one output
+        self.assertEqual(codex["c18"], {"class": "other", "label": "required"})             # a body only stored, nothing run: inert data
+        self.assertEqual(codex["c19"], {"class": "tests_builds", "label": "required"})      # quoted interpreter path
+        self.assertEqual(codex["c20"], {"class": "tests_builds", "label": "required"})      # pwsh -File operand
+        self.assertEqual(codex["c21"], {"class": "rules", "label": "avoidable"})            # supplied rule read again
+        self.assertEqual(codex["c22"], {"class": "rules", "label": "unresolved"})           # mixed event judged before the repeat rule
+        self.assertEqual(codex["c23"], {"class": "rules", "label": "avoidable"})            # identical mixed command repeated
+        self.assertEqual(codex["c24"], {"class": "source", "label": "required"})            # search keyed by pattern
+        self.assertEqual(codex["c25"], {"class": "source", "label": "required"})            # different pattern, same file
+        self.assertEqual(codex["c26"], {"class": "source", "label": "avoidable"})           # same search again
+        self.assertEqual(codex["c27"], {"class": "source", "label": "required"})            # $n -ge/-le filter is a range
+        self.assertEqual(codex["c28"], {"class": "tests_builds", "label": "unresolved"})    # executed body reads a supplied rule
+        self.assertEqual(codex["c29"], {"class": "tests_builds", "label": "unresolved"})    # bash heredoc executed body
+        self.assertEqual(codex["c30"]["label"], "required")                                 # 'bootstrap|router'
+        self.assertEqual(codex["c31"]["label"], "required")                                 # 'bootstrap|verification' is a different search
+        self.assertEqual(codex["c32"]["label"], "required")                                 # Select-String -Pattern 'bootstrap'
+        self.assertEqual(codex["c33"]["label"], "required")                                 # -Pattern 'verification'
+        self.assertEqual(codex["c34"]["label"], "required")
+        self.assertEqual(codex["c35"]["label"], "required")                                 # -C 20 adds context
+        self.assertEqual(codex["c36"], {"class": "coordinator_skill", "label": "avoidable"})  # exact repeat
+        self.assertEqual(codex["c37"], {"class": "tests_builds", "label": "unresolved"})    # stored then run in one event
+        self.assertEqual(codex["c38"], {"class": "tests_builds", "label": "unresolved"})    # assigned then piped
+        self.assertEqual(codex["c39"]["label"], "required")                                 # '^  - item'
+        self.assertEqual(codex["c40"]["label"], "required")                                 # '^ - item' differs by one space
+        self.assertEqual(codex["c41"], {"class": "source", "label": "avoidable"})           # identical command
+        self.assertEqual(codex["c42"], {"class": "other", "label": "unresolved"})           # stored then run directly
+        self.assertEqual(codex["c43"], {"class": "other", "label": "unresolved"})           # Invoke-Expression consumer
+        self.assertEqual(codex["c44"], {"class": "other", "label": "required"})             # assignment only is storage
+        self.assertEqual(codex["c45"], {"class": "other", "label": "unresolved"})           # expandable here-string
+        self.assertEqual(codex["c46"], {"class": "other", "label": "unresolved"})           # expanded before storage (-PassThru)
+        self.assertEqual(codex["c47"], {"class": "other", "label": "unresolved"})           # unquoted heredoc delimiter
+        self.assertEqual(codex["c48"], {"class": "other", "label": "required"})             # quoted heredoc stored: data
+        self.assertEqual(codex["c49"], {"class": "other", "label": "unresolved"})           # bare literal here-string is not storage
+        self.assertEqual(codex["c50"], {"class": "tests_builds", "label": "unresolved"})    # inline -c source reads a supplied rule
+        self.assertEqual(codex["c51"], {"class": "tests_builds", "label": "unresolved"})    # inline -c source reads the coordinator skill
+        self.assertEqual(codex["c52"], {"class": "tests_builds", "label": "required"})      # benign inline code
+        self.assertEqual(codex["c53"], {"class": "other", "label": "required"})             # <<"EOF" is literal in bash
+        agy = self.expected["antigravity"]["events"]
+        self.assertEqual(agy["a0"], {"class": "diff", "label": "avoidable"})                # embedded transport
+        self.assertEqual(agy["a7"], {"class": "rules", "label": "avoidable"})               # repeated rule read
+        self.assertEqual(agy["a9"], {"class": "coordinator_skill", "label": "unresolved"})
+        self.assertEqual(agy["a13"], {"class": "rules", "label": "required"})
+        self.assertEqual(agy["a14"], {"class": "rules", "label": "required"})
+        self.assertEqual(agy["a15"], {"class": "tests_builds", "label": "required"})
+
+    def test_cli_prints_the_totals(self) -> None:
+        for backend, (inp, rnd) in INPUTS.items():
+            with self.subTest(backend):
+                proc = subprocess.run(
+                    [sys.executable, str(SCRIPT), "--input", str(FIXTURE / inp),
+                     "--round", str(FIXTURE / rnd)],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    cwd=str(ROOT),
+                )
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertIn("Totals by label (tool-output bytes):", proc.stdout)
+                self.assertIn("tool_output_total", proc.stdout)
+                self.assertIn("Unresolved events", proc.stdout)
+
+    def test_cli_usage_error_exits_two(self) -> None:
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "--input", str(FIXTURE / "missing"),
+             "--round", str(FIXTURE / "codex.round.json")],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+        )
+        self.assertEqual(proc.returncode, 2)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,0 +1,9 @@
+You are the independent Gemini reviewer in an implement-review loop.
+--- ORIGINAL REVIEW REQUEST ---
+Review staged changes. Round 1.
+
+--- STAGED DIFF PROVIDED BY DISPATCHER ---
+diff --git a/x b/x
++1
+
+--- END STAGED DIFF ---
