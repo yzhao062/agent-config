@@ -378,6 +378,223 @@ class DispatchGeminiUnitTests(unittest.TestCase):
 
 
 @unittest.skipUnless(GIT, "git is required for dispatcher integration tests")
+@unittest.skipUnless(GIT, "git is required")
+class StagedDriftRefusalTests(unittest.TestCase):
+    """anywhere-agents#57: the reviewer receives an export of the index.
+
+    A path that is staged and then edited again is reviewed as it was at
+    `git add`, and the findings come back indistinguishable from findings
+    about the current file. The dispatcher refuses that case before it spends
+    a round. A path edited but never staged is ordinary and must not block,
+    which is the half a coarser check would get wrong.
+    """
+
+    def _repo(self) -> Path:
+        tmp = tempfile.TemporaryDirectory(prefix="drift-")
+        self.addCleanup(tmp.cleanup)
+        repo = Path(tmp.name)
+        for args in (
+            ("init", "-q"),
+            ("config", "user.email", "t@example.invalid"),
+            ("config", "user.name", "t"),
+        ):
+            subprocess.run([GIT, *args], cwd=repo, capture_output=True, check=True)
+        return repo
+
+    def _write(self, repo: Path, name: str, body: str) -> None:
+        (repo / name).write_text(body, encoding="utf-8")
+
+    def _git(self, repo: Path, *args: str) -> None:
+        subprocess.run([GIT, *args], cwd=repo, capture_output=True, check=True)
+
+    def _drifted(self, repo: Path) -> list[str]:
+        module = load_dispatch_module()
+        drifted, error = module.staged_paths_edited_since(repo)
+        self.assertEqual(error, "", "git could not compare index with worktree")
+        return drifted
+
+    def test_a_staged_path_edited_again_is_reported(self) -> None:
+        repo = self._repo()
+        self._write(repo, "a.txt", "one\n")
+        self._git(repo, "add", "a.txt")
+        self.assertEqual(self._drifted(repo), [])
+        self._write(repo, "a.txt", "two\n")
+        self.assertEqual(self._drifted(repo), ["a.txt"])
+
+    def test_an_unstaged_path_outside_the_staged_set_does_not_count(self) -> None:
+        repo = self._repo()
+        self._write(repo, "b.txt", "seed\n")
+        self._git(repo, "add", "b.txt")
+        self._git(repo, "commit", "-q", "-m", "seed")
+        self._write(repo, "b.txt", "edited but never staged\n")
+        self._write(repo, "a.txt", "one\n")
+        self._git(repo, "add", "a.txt")
+        self.assertEqual(
+            self._drifted(repo), [],
+            "an edit outside the staged set is ordinary and must not block",
+        )
+
+    def _dispatch(self, repo: Path, extra_env: dict[str, str] | None = None):
+        env = dict(os.environ)
+        env.pop("IMPLEMENT_REVIEW_ALLOW_STAGED_DRIFT", None)
+        # A name that cannot resolve: a run that clears the drift check stops
+        # at the binary probe with exit 70 rather than spending an Agy request,
+        # so the two outcomes stay distinguishable without a mock backend.
+        env["ANTIGRAVITY_BIN"] = "agy-absent-for-this-test"
+        env.update(extra_env or {})
+        (repo / "prompt.txt").write_text("probe", encoding="utf-8")
+        return subprocess.run(
+            [
+                str(PYTHON), str(DISPATCH),
+                "--prompt-file", str(repo / "prompt.txt"),
+                "--round", "1",
+                "--expected-review-file", "Review-Antigravity.md",
+            ],
+            cwd=repo, capture_output=True, text=True, env=env,
+        )
+
+    def test_drift_refuses_before_the_backend_is_probed(self) -> None:
+        repo = self._repo()
+        self._write(repo, "a.txt", "one\n")
+        self._git(repo, "add", "a.txt")
+        self._write(repo, "a.txt", "two\n")
+        result = self._dispatch(repo)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("a.txt", result.stderr)
+        self.assertIn("anywhere-agents#57", result.stderr)
+
+    def test_a_clean_index_reaches_the_backend_probe(self) -> None:
+        repo = self._repo()
+        self._write(repo, "a.txt", "one\n")
+        self._git(repo, "add", "a.txt")
+        result = self._dispatch(repo)
+        self.assertEqual(result.returncode, 70, result.stderr)
+
+    def test_the_documented_override_lets_a_drifted_index_through(self) -> None:
+        repo = self._repo()
+        self._write(repo, "a.txt", "one\n")
+        self._git(repo, "add", "a.txt")
+        self._write(repo, "a.txt", "two\n")
+        result = self._dispatch(repo, {"IMPLEMENT_REVIEW_ALLOW_STAGED_DRIFT": "1"})
+        self.assertEqual(result.returncode, 70, result.stderr)
+
+    def test_a_directory_git_cannot_answer_for_is_refused(self) -> None:
+        tmp = tempfile.TemporaryDirectory(prefix="drift-nogit-")
+        self.addCleanup(tmp.cleanup)
+        repo = Path(tmp.name)
+        (repo / "a.txt").write_text("one\n", encoding="utf-8")
+        result = self._dispatch(repo)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("cannot compare the index with the working tree", result.stderr)
+
+    def test_a_staged_deletion_that_is_recreated_is_reported(self) -> None:
+        """`git diff` reports tracked changes only.
+
+        A staged deletion whose file comes back is untracked against the
+        index, so the worktree diff stays silent while the reviewer is handed
+        a deletion for a file that exists. The untracked list closes that.
+        """
+        repo = self._repo()
+        self._write(repo, "gone.txt", "here\n")
+        self._git(repo, "add", "gone.txt")
+        self._git(repo, "commit", "-q", "-m", "seed")
+        self._git(repo, "rm", "-q", "gone.txt")
+        self.assertEqual(self._drifted(repo), [])
+        self._write(repo, "gone.txt", "back\n")
+        self.assertEqual(self._drifted(repo), ["gone.txt"])
+
+    def test_a_staged_rename_whose_source_is_recreated_is_reported(self) -> None:
+        """Rename detection prints only the destination.
+
+        Without `--no-renames` a staged `git mv a b` reports `b` alone, so the
+        recreated `a` is untracked and outside the staged set, and the
+        intersection misses it. That is the half the untracked union alone did
+        not close.
+        """
+        repo = self._repo()
+        self._write(repo, "old.txt", "content\n")
+        self._git(repo, "add", "old.txt")
+        self._git(repo, "commit", "-q", "-m", "seed")
+        self._git(repo, "mv", "old.txt", "new.txt")
+        self.assertEqual(self._drifted(repo), [])
+        self._write(repo, "old.txt", "recreated\n")
+        self.assertEqual(self._drifted(repo), ["old.txt"])
+
+    def test_every_failed_query_with_no_stderr_still_reports(self) -> None:
+        """Each query's failure branch, and its empty-stderr fallback.
+
+        Real git writes a message on every failure these tests can reach, so
+        neither branch is exercised by a constructed repository. Both exist so
+        that a silent non-zero exit cannot be read as "no drift", which is the
+        shape the Round 1 finding was about. All three queries are named here
+        because a Round 3 review deleted the first two fallback expressions
+        and every test still passed; the exact message is asserted so that
+        losing one cannot pass as a different one.
+        """
+        module = load_dispatch_module()
+        cases = (
+            (("diff", "--cached", "--name-only", "--no-renames"),
+             "git diff --cached --name-only exited 128"),
+            (("diff", "--name-only"),
+             "git diff --name-only exited 128"),
+            (("ls-files", "--others", "--exclude-standard"),
+             "git ls-files --others exited 128"),
+        )
+        real = module.git_output
+
+        for failing, expected in cases:
+            with self.subTest(query=" ".join(failing)):
+                repo = self._repo()
+                self._write(repo, "a.txt", "one\n")
+                self._git(repo, "add", "a.txt")
+
+                def fail_one(cwd, *args, _failing=failing):
+                    if args == _failing:
+                        return subprocess.CompletedProcess(args, 128, "", "")
+                    return real(cwd, *args)
+
+                with mock.patch.object(module, "git_output", fail_one):
+                    drifted, error = module.staged_paths_edited_since(repo)
+                self.assertEqual(drifted, [])
+                self.assertEqual(error, expected)
+
+    def test_an_ordinary_untracked_file_is_not_drift(self) -> None:
+        repo = self._repo()
+        self._write(repo, "a.txt", "one\n")
+        self._git(repo, "add", "a.txt")
+        self._write(repo, "scratch.txt", "not staged, not tracked\n")
+        self.assertEqual(
+            self._drifted(repo), [],
+            "an untracked path outside the staged set must not block",
+        )
+
+    def test_a_failed_worktree_query_refuses_rather_than_skipping(self) -> None:
+        """Nothing downstream repeats this comparison.
+
+        `prepare_snapshot` runs `git diff --cached` and `checkout-index`, so a
+        working-tree query that fails on its own would otherwise leave the
+        snapshot exporting the older bytes with the round unchecked. A clean
+        filter that exits non-zero reproduces it without a race.
+        """
+        repo = self._repo()
+        self._write(repo, "a.txt", "staged\n")
+        self._git(repo, "add", "a.txt")
+        self._write(repo, ".gitattributes", "a.txt filter=broken\n")
+        self._git(repo, "config", "filter.broken.clean", "exit 1")
+        self._git(repo, "config", "filter.broken.smudge", "cat")
+        self._git(repo, "config", "filter.broken.required", "true")
+        self._write(repo, "a.txt", "later\n")
+
+        module = load_dispatch_module()
+        drifted, error = module.staged_paths_edited_since(repo)
+        self.assertEqual(drifted, [])
+        self.assertNotEqual(error, "", "a failed query must report an error")
+
+        result = self._dispatch(repo)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("cannot compare the index with the working tree", result.stderr)
+
+
 class DispatchGeminiIntegrationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:

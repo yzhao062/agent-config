@@ -169,6 +169,48 @@ def git_output(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def staged_paths_edited_since(cwd: Path) -> tuple[list[str], str]:
+    """Paths that are staged and have been edited again since staging.
+
+    The reviewer is handed an export of the index, so a path that has moved on
+    in the working tree is reviewed as it was at `git add`, and the findings
+    arrive looking exactly like findings about the current file. A path that is
+    unstaged but outside the staged set is ordinary and must not block, which is
+    why only the intersection counts. Returns the drifted paths, or a diagnostic
+    when git could not answer. See anywhere-agents#57.
+    """
+    # --no-renames because rename detection prints only the destination. A
+    # staged `git mv a b` then reports `b` alone, so recreating `a` in the
+    # working tree leaves it untracked and outside the staged set, and the
+    # intersection below misses it. Without the flag the reviewer receives a
+    # rename whose source exists again.
+    staged = git_output(cwd, "diff", "--cached", "--name-only", "--no-renames")
+    if staged.returncode != 0:
+        return [], staged.stderr.strip() or (
+            f"git diff --cached --name-only exited {staged.returncode}"
+        )
+    worktree = git_output(cwd, "diff", "--name-only")
+    if worktree.returncode != 0:
+        return [], worktree.stderr.strip() or (
+            f"git diff --name-only exited {worktree.returncode}"
+        )
+    # Untracked paths matter because `git diff` reports tracked changes only.
+    # A staged deletion whose file is recreated, or a staged rename whose old
+    # path is recreated, leaves that path untracked against the index, so the
+    # worktree diff stays silent while the reviewer is handed a deletion for a
+    # file that exists. An ordinary untracked file is not in the staged set and
+    # so cannot reach the intersection.
+    untracked = git_output(cwd, "ls-files", "--others", "--exclude-standard")
+    if untracked.returncode != 0:
+        return [], untracked.stderr.strip() or (
+            f"git ls-files --others exited {untracked.returncode}"
+        )
+    staged_set = {line for line in staged.stdout.splitlines() if line}
+    changed = {line for line in worktree.stdout.splitlines() if line}
+    changed |= {line for line in untracked.stdout.splitlines() if line}
+    return sorted(changed & staged_set), ""
+
+
 def prepare_snapshot(cwd: Path, state_dir: Path) -> tuple[Path | None, str, str]:
     diff_result = git_output(cwd, "diff", "--cached", "--no-ext-diff")
     diff_text = diff_result.stdout
@@ -495,6 +537,38 @@ def main(argv: list[str] | None = None) -> int:
     expected_path = expected_path.resolve()
     if not expected_path.parent.is_dir():
         return fail(f"review output directory not found: {expected_path.parent}")
+
+    # Refuse before anything is spent. A failed comparison refuses too: nothing
+    # downstream repeats it. prepare_snapshot runs `git diff --cached` and
+    # checkout-index, never the working-tree query, so a worktree query that
+    # fails on its own leaves the snapshot to export the older bytes and the
+    # round to proceed unchecked. Reproduced with a clean filter that exits 1.
+    if os.environ.get("IMPLEMENT_REVIEW_ALLOW_STAGED_DRIFT", "").strip().lower() not in {
+        "1", "true", "yes", "on"
+    }:
+        drifted, drift_error = staged_paths_edited_since(cwd)
+        if drift_error:
+            return fail(
+                "cannot compare the index with the working tree: "
+                f"{drift_error}. Fix git, or set "
+                "IMPLEMENT_REVIEW_ALLOW_STAGED_DRIFT=1 to review the index "
+                "without this check. See anywhere-agents#57."
+            )
+        if drifted:
+            listing = "\n  ".join(drifted)
+            return fail(
+                "refusing to dispatch: the index and the working tree "
+                "disagree at these paths. The reviewer is handed the index, "
+                "so it would read stale bytes, or a removal for a file that "
+                "is still on disk, and its findings would not describe the "
+                "current file:\n"
+                f"  {listing}\n"
+                "`git add` each path to review what is on disk now. Set "
+                "IMPLEMENT_REVIEW_ALLOW_STAGED_DRIFT=1 to review the index "
+                "as it stands, which is the right choice when the staged "
+                "removal is deliberate, as after `git rm --cached`. "
+                "See anywhere-agents#57."
+            )
 
     try:
         original = prompt_path.read_text(encoding="utf-8")
