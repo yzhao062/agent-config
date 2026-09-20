@@ -8,6 +8,8 @@ A reproducible builder should separate the figure's labels, palette, coordinates
 
 Use attached connectors when moving a node should move its edges. Static curves or freeforms are appropriate for decorative arcs or relationships that do not need attachment. If a curve is only a freeform, do not describe it as an automatically rerouting connector.
 
+For a hybrid figure, follow the picture boundary in [hybrid-figures.md](hybrid-figures.md). Apply one typography, stroke, dash, and arrowhead system across all regions, including links around imported objects. Route smooth curves with deliberate control points and clear endpoint tangents. Check clearance and contact with the visible object silhouette; a picture's rectangular bounds can differ substantially from that silhouette.
+
 Choose an available font and verify actual rendered text. Numeric dimensions may be pixels, points, or EMUs depending on the API. In OOXML, 1 inch is 914400 EMUs; in a 96 DPI authoring canvas, 1 pixel is 9525 EMUs. Check the library's conventions. A figure scaled to one third of its slide width also scales its text to one third of its point size.
 
 ## Lessons from an actual native build
@@ -22,6 +24,9 @@ These were observed in September 2026 with the Artifact Tool deck-authoring runt
 | PowerPoint disables grouping | Group locks on the specific native shapes | Prefer the authoring API's unlock option. If the exporter wrote `a:spLocks noGrp="1"`, remove only that grouping restriction in a new draft copy, then revalidate. |
 | COM rejects restoring a position | A `Single` property passed to a setter expecting `Double` | Preserve and restore as an explicit `[double]`, for example `[double]$originalLeft = $shape.Left`. |
 | PowerPoint opens a path but export fails | Absolute export path and native Windows separators | Normalize export paths with .NET path utilities or `Join-Path`. |
+| A picture shows the wrong crop | Source dimensions, image transform, and exported `a:srcRect` | Compute the crop from actual source pixels. Verify the native render; an authoring API may substitute a center crop. Repair only the affected crop if necessary. |
+| A requested curve renders as straight segments | Exported path geometry, including `a:cubicBezTo` versus `a:lnTo` | Use explicit curve controls supported by the current API. Inspect and edit a control point in PowerPoint before claiming curve editability. |
+| A dash style disappears after XML repair | Child ordering within the line properties | Follow OOXML schema order, including dash properties before arrow ends, then render again. |
 | COM reports `80070520` in a sandbox | Whether the current runtime has an interactive logon session | Use the supported execution/approval mechanism if authorized. Otherwise export with the available renderer and disclose the missing native check. Do not disable controls or repeatedly retry unchanged calls. |
 
 If XML repair is necessary, keep it confined to the known defect in a new file. Preserve relationships and other package parts. Run the active presentation workflow's package, layout, font, and import checks after the final repair. Validate the delivered bytes, not an earlier version.
@@ -95,6 +100,8 @@ $shape.Left = $originalLeft
 ```
 
 This movement check alone does not establish connector behavior; inspect the relevant `ConnectorFormat` attachments and the moved rendering as well.
+
+For a hybrid figure, also move an imported object independently and edit labels and links around it. Test a static native curve by changing and restoring a control point. Record this separately from attached-connector movement. Check that picture backgrounds and layer order do not hide nearby lines or labels.
 
 For a native chart, also change and restore a known series value on the disposable copy and check the visible update. Test the workbook's Edit Data path when that behavior is required. Record the specific behavior tested; do not present a COM series test alone as proof that workbook editing was tested. Discard the test copy or validate any serialization changes before using it as a source.
 

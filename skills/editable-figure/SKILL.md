@@ -1,13 +1,13 @@
 ---
 name: editable-figure
-description: Analyze source material, find relevant paper, README, or awarded-proposal references, and design concise figures as editable PowerPoint objects. Use for overview, mechanism, workflow, or hero figures when an editable PPTX is wanted, including simplifying dense drafts and combining a schematic with a compact result panel. Complements scientific plotting; does not replace screenshot capture, prompt-only work, or full slide-deck authoring. Completing a PPTX deliverable requires desktop PowerPoint on Windows or macOS for the native rendering and editing checks; the bundled export helper is Windows-only. Assessment and prompt-only requests need neither.
+description: Analyze source material, study relevant references, and create editable PowerPoint figures for papers, proposals, and READMEs. Use for overview, mechanism, workflow, or hero figures, including simplifying dense drafts and combining schematics with results. New overviews and substantial redesigns recommend two independently generated visual concepts first, subject to delegation authorization. Object art can remain pictures while diagram text and relationships stay native. Complements scientific plotting; does not replace screenshot capture, prompt-only work, or full slide-deck authoring. Completing a PPTX requires desktop PowerPoint on Windows or macOS for native rendering and editing checks; the bundled export helper is Windows-only. Assessment and prompt-only requests need neither.
 ---
 
 # Editable Figure
 
 ## Overview
 
-Turn a document's central idea into a figure that a reader can understand quickly, then deliver a PowerPoint source that the author can actually edit. The common workflow is **analyze, find references, design, build native objects, inspect in context**. Paper, proposal, and README figures share this workflow but serve different reader decisions.
+Turn a document's central idea into a figure that a reader can understand quickly, then deliver a PowerPoint source that the author can actually edit. For a new overview or substantial redesign, first analyze the source, study references, and design the takeaway. Then **generate two independent visual concepts, select and combine, build editable layers, and inspect in context**. Use existing authorization for both generators; otherwise propose that step before dispatch. Small revisions can reuse the accepted composition. Paper, proposal, and README figures share these principles but serve different reader decisions.
 
 ## Choose the scope
 
@@ -119,9 +119,13 @@ Read [panels-and-results.md](references/panels-and-results.md) when combining an
 
 ### Choose how to draft
 
-Native PowerPoint can be the first draft when the figure consists of text, nodes, arrows, and simple geometry. A preliminary raster generation is optional, unless the user explicitly requests it. If an image generator helps explore a richer concept, use the available image-generation workflow, then rebuild the required semantic content as native objects. Do not treat a screenshot on a slide as an editable figure.
+For a new overview or substantial redesign, recommend two agents independently generating visual concepts before PowerPoint reconstruction. Read [hybrid-figures.md](references/hybrid-figures.md) for the common brief, candidate comparison, selection, and picture boundaries. Both agents must produce actual images; prompts, critiques, or native approximations do not fulfill a request for two generated concepts. Follow the session's delegation authorization and preserve explicit user choices about backends.
 
-Show one recommended direction with a concrete reason. Generate alternatives only when a real design tradeoff remains or the user requests them. Save revisions under meaningful new names so the author can compare them.
+Select one primary composition and borrow specific strengths from the other candidate. Keep diagram labels, symbols, arrows, and relationship lines native. Detailed object illustrations can remain replaceable pictures. Respect a stricter all-native requirement when supplied; do not flatten a diagram into one picture and call it editable.
+
+Native-first remains suitable for small revisions, and even for new figures when the composition is settled or the diagram is simple geometry. An explicit request for two generated concepts takes priority. If a generator is unavailable, report the missing candidate. With an already authorized fallback, continue from the available candidate or draft natively; otherwise resolve that choice with the user. Do not relabel a duplicate or a reconstruction as an independent generated concept.
+
+Show the two generated originals when this route is used, followed by one recommended direction with a concrete reason. Generate further alternatives only when a real design tradeoff remains or the user requests them. Save revisions under meaningful new names so the author can compare them.
 
 ## 4. Build the editable figure
 
@@ -139,7 +143,7 @@ These are separate checks:
 
 1. **Meaning:** Trace claims to the source, distinguish illustrative from empirical content, and verify the figure plus caption conveys the intended usefulness without overstating scope.
 2. **Rendering and space:** Export the final PPTX and inspect the actual result for clipping, wrapping, arrow direction, visibility, spacing, and unused regions. Evaluate each panel and the complete occupied document area, not only a tightly cropped preview. Recheck at the intended document width, and in the actual document when insertion is part of the task.
-3. **Editability:** Verify that important text and objects are native and independently selectable. On a disposable copy, edit representative text and move a connected node to check behavior. For a native result chart, check its data source and edit/restore a series value; verify the embedded workbook when portable data editing is required. Counts of shapes or a PNG preview alone do not prove this.
+3. **Editability:** Apply the [picture boundary](references/hybrid-figures.md): diagram labels, symbols, arrows, and relationship lines stay native; detailed object illustrations may remain independently replaceable pictures. On a disposable copy, edit representative text and symbols throughout the figure, and move a connected node to check behavior. When used, move an imported object independently and change and restore a static curve's control point. For a native result chart, check its data source and edit/restore a series value; verify the embedded workbook when portable data editing is required. Counts of shapes or a PNG preview alone do not prove this. Disclose picture boundaries and curves that need manual rerouting.
 
 Use the installed presentation workflow's validators when available. The optional Windows helper `scripts/render_powerpoint.ps1` exports a single-slide figure through local PowerPoint and reports native object counts. It is a renderer and inventory check, not a substitute for visual or editing inspection.
 
@@ -158,6 +162,8 @@ Save the editable `.pptx` and the appropriate viewing or publication export toge
 - Papers and proposals: normally a vector `.pdf`, plus a PNG preview when useful.
 - GitHub README: a `.png` or compatible `.svg` for display, plus the `.pptx` source. Provide meaningful alt text when embedding it.
 
-Check that the exports correspond to the final editable source. Supply a concise caption or nearby sentence when needed to make the figure interpretable. Do not insert into or rewrite the document unless authorized by the task. Link the editable file, show a preview, and briefly identify any material limitation.
+Check that the exports correspond to the final editable source. When inserting the figure, trace the actual document inclusion path to that export, compile, and compare the rendered page with the PowerPoint export. Resolve wrong-source selection before investigating preview caching. See [hybrid-figures.md](references/hybrid-figures.md) for the handoff when several candidates and reconstructions coexist.
+
+Supply a concise caption or nearby sentence when needed to make the figure interpretable. Do not insert into or rewrite the document unless authorized by the task. Link the editable file, show a preview, and briefly identify any material limitation.
 
 Keep caption or adjacent explanatory text in one canonical place; for LaTeX insertion, use one canonical float fragment. After a revision, synchronize the PPTX, viewing exports, builder dimensions and group definitions, caption, and current verification notes. Before replacing files after a long build, check whether those targets changed concurrently. Preserve unrelated edits and render or compile the current document when insertion is authorized; a private snapshot is not a replacement for newer document work. Keep historical reviews labeled by version rather than implying they cover later edits.

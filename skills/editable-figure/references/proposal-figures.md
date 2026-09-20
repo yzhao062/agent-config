@@ -16,6 +16,8 @@ These compact-figure lessons do not establish a template for a large research or
 
 ## Keep aim names separate from operations
 
+For a proposal overview, make the problem and the contribution of each included aim or thrust visible. Add short research questions and current section pointers when the requested overview needs those navigation cues. Place each question beside the mechanism it concerns. Keep the source's aim/thrust terminology and preserve the visual evidence connecting them; headings alone do not explain the research. This is figure design guidance, not a sponsor-mandated format or a fixed number of thrusts.
+
 Read the current subsection headings and definitions. An operation such as re-anchor, repair, or trace is not the aim's official name. Place action words by the relevant marks instead of presenting them as replacement aim titles. A fluent substitute can also change the mechanism: reducing reliance is different from redirecting a request or changing partners.
 
 When shortening is appropriate, preserve distinctive source wording and keep a label-to-source mapping in the working brief. If the author flags ambiguity or requests exact naming, restore the full visible titles and reflow around them. Compare the exported title text with the current headings, ignoring line breaks only for an exact match. Correct wording hidden in speaker notes does not fix the image. Title consistency and quick comprehension require separate checks.
