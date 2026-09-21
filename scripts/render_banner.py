@@ -365,7 +365,14 @@ def read_ledger(root: str) -> Optional[dict]:
 def read_event_ts(root: str) -> Optional[float]:
     data = _read_json(os.path.join(root, ".agent-config", "session-event.json"))
     if isinstance(data, dict) and isinstance(data.get("ts"), (int, float)):
-        return float(data["ts"])
+        try:
+            return float(data["ts"])
+        except OverflowError:
+            # A JSON integer has no width limit, a float does. Treat one that
+            # cannot convert as no timestamp, which is what every other
+            # unusable value here reads as, rather than ending the render and
+            # leaving no report at all.
+            return None
     return None
 
 

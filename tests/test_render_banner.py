@@ -120,6 +120,22 @@ class MetadataContractTests(unittest.TestCase):
         self.assertEqual(meta["run_id"], "52516-1789685000")
         self.assertIs(meta["completed"], True)
 
+    def test_an_event_too_large_for_a_float_reads_as_no_event(self) -> None:
+        """A JSON integer has no width limit and a float does.
+
+        `isinstance(ts, int)` passes for a 400-digit number and the conversion
+        then raises, which ended the render and left the consumer with no
+        report at all. Reading it as no timestamp is what every other unusable
+        value here does.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            agent_dir = Path(tmp) / ".agent-config"
+            agent_dir.mkdir()
+            (agent_dir / "session-event.json").write_text(
+                '{"ts": %s}' % ("1" + "0" * 400), encoding="utf-8"
+            )
+            self.assertIsNone(render_banner.read_event_ts(tmp))
+
     def test_no_event_is_recorded_as_none(self) -> None:
         meta = render_banner.parse_metadata(render_banner.metadata_line(None, "r1", False))
         self.assertIsNone(meta["event_ts"])

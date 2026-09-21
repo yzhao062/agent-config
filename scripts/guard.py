@@ -910,10 +910,13 @@ def check_banner_emission(tool_name, tool_input):
             )
         # Re-arm semantics: ack file already exists, so the banner was
         # emitted at least once this consumer-root. A later SessionStart
-        # (resume / clear / leaked compact) must not block in-flight skill
-        # tool calls. Re-emit advisory: pass through; the agent re-emits
-        # the banner on its next textual response if it chooses
-        # (issue anywhere-agents#7).
+        # (clear, a leaked compact, or a startup whose banner the agent
+        # did not acknowledge) must not block in-flight skill tool calls.
+        # Re-emit advisory: pass through; the agent re-emits the banner on
+        # its next textual response if it chooses (issue anywhere-agents#7).
+        # session_bootstrap no longer writes an event for resume, so a resume
+        # creates no new re-arm; an event already pending before it still
+        # reaches here.
         sys.stderr.write(
             f"[banner-gate] SessionStart re-fire detected (event_ts={event_ts}, "
             f"emitted_ts={emitted_ts}). Re-emit advisory; tool call allowed.\n"

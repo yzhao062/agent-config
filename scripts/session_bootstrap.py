@@ -75,6 +75,22 @@ def _cleanup_legacy_flag_files() -> None:
 _SESSION_EVENT_DEBOUNCE_SECONDS = 10.0
 
 
+def _guard_readable_event_ts(consumer_root: str) -> float:
+    """The event timestamp guard.py would read, or 0 when it can use none.
+
+    Deliberately the same expression as guard.py's ``_read_ts``, down to
+    accepting a numeric string, so the hook and the gate cannot disagree about
+    whether an event exists. Missing, empty, malformed, or carrying no usable
+    ``ts`` all read as 0.
+    """
+    path = os.path.join(consumer_root, ".agent-config", "session-event.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            return float(json.load(f).get("ts", 0))
+    except Exception:
+        return 0.0
+
+
 def write_session_event(consumer_root: str, source: str = ""):
     """Write <consumer_root>/.agent-config/session-event.json with a fresh ts.
 
@@ -109,7 +125,13 @@ def write_session_event(consumer_root: str, source: str = ""):
                     raw_source = existing_data.get("source", "")
                     if isinstance(raw_source, str):
                         existing_source = raw_source
-            except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            # OverflowError because a JSON integer has no width limit while a
+            # float does: `{"ts": 1e400}` written as digits decodes fine and
+            # then raises on the conversion. Without it here the whole write
+            # is abandoned by the outer handler, so the event that made the
+            # read fail is the one left on disk, and nothing can replace it.
+            except (OSError, json.JSONDecodeError, TypeError, ValueError,
+                    OverflowError):
                 existing_ts = 0.0
                 existing_source = ""
 
@@ -289,10 +311,12 @@ def _read_source_from_stdin() -> str:
 
     Claude Code's SessionStart hook payload includes a ``source`` field with
     one of ``startup`` / ``resume`` / ``clear`` / ``compact``. Skipping the
-    event write only on ``compact`` keeps the banner gate from re-arming
-    mid-session under auto-compaction (issue anywhere-agents#7) while still
-    re-arming on genuine new-context events. Missing or malformed stdin
-    falls through to write (legacy callers, older CC versions, manual tests).
+    event write on ``compact`` and ``resume`` keeps the banner gate from
+    re-arming inside a continuing conversation (issue anywhere-agents#7),
+    which has no turn 1 to print a banner on, while still re-arming on
+    ``startup`` and ``clear``. A resume that finds neither marker file is the
+    exception; see the call site. Missing or malformed stdin falls through to
+    write (legacy callers, older CC versions, manual tests).
     """
     try:
         raw = sys.stdin.read()
@@ -360,13 +384,58 @@ def main() -> int:
         #
         # Skip the event write on auto-compaction so the banner gate does
         # not re-arm mid-session and block in-flight skill tool calls
-        # (issue anywhere-agents#7). Other sources (startup / resume /
-        # clear) still write so the banner reappears on genuine new
-        # context.
+        # (issue anywhere-agents#7). `resume` skips for the same reason:
+        # the conversation continues, so there is no turn 1 to print a
+        # banner on, and the agent leaves the event unacknowledged. A
+        # stale acknowledgement then makes guard.py write its re-arm
+        # advisory on every later tool call, for the rest of the session.
+        # `startup` and `clear` still write, because each opens a fresh
+        # context where the banner belongs. Bootstrap itself runs on every
+        # source and still prints the report to stdout, so a resumed
+        # session keeps the check line either way.
+        # One exception: a repository can become a consumer while a
+        # conversation is closed, so the first hook fire it ever sees is a
+        # resume, with neither marker on disk. The guard returns early when
+        # no event exists, so skipping that write would leave the first arm
+        # unable to ever fire and the banner never enforced there. Write the
+        # event for that cold start only; once either marker exists, a resume
+        # skips as above.
         source = _read_source_from_stdin()
         event_ts = None
-        if source != "compact":
+        agent_dir = os.path.join(consumer_root, ".agent-config")
+        # "No event" means none the guard could use, not merely no file. An
+        # interrupted write leaves `{` or `{"ts":` behind; the guard reads that
+        # as 0 and enforces nothing, and checking only for the path would skip
+        # the repair and strand the consumer there for good.
+        # `not (ts > 0)` rather than `ts <= 0`: a `{"ts": "NaN"}` payload
+        # converts without raising, and every comparison against nan is false,
+        # so `<= 0` would call it usable while the gate, comparing the same
+        # value, can never act on it. Following the gate's own positive test
+        # keeps the two decisions the same one.
+        pending_ts = _guard_readable_event_ts(consumer_root)
+        cold_resume = (
+            source == "resume"
+            and not (pending_ts > 0)
+            and not os.path.exists(os.path.join(agent_dir, "banner-emitted.json"))
+        )
+        # Known limitation, accepted: because a resume no longer refreshes the
+        # stored source, clear, resume, then clear inside the debounce window
+        # leaves the second clear looking like a duplicate of the first, and
+        # that context starts without a banner. Recording the source on resume
+        # was tried and withdrawn: the rewrite it needed could truncate a
+        # pending event, and could roll the timestamp back over a concurrent
+        # clear. Three context switches inside ten seconds is not worth a
+        # write path on the SessionStart hook.
+        if source not in ("compact", "resume") or cold_resume:
             event_ts = write_session_event(consumer_root, source=source)
+        elif source == "resume" and pending_ts > 0:
+            # Hand the renderer the timestamp already accepted here. It
+            # re-reads the event itself and takes only int or float, so an
+            # event carrying a numeric string would otherwise publish
+            # `event_ts=none` and the freshness rule would reject a report
+            # from a refresh that succeeded. For an ordinary float this is the
+            # same number the renderer would have read for itself.
+            event_ts = pending_ts
 
         # Resolve the bootstrap subprocess command from the consumer root so
         # a nested-cwd launch still runs the correct .agent-config/bootstrap.*.

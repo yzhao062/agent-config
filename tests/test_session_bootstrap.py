@@ -36,6 +36,37 @@ import render_banner  # noqa: E402  the report contract the lifecycle tests chec
 SUBPROCESS_TIMEOUT = int(os.environ.get("AGENT_CONFIG_TEST_TIMEOUT", "90"))
 
 
+GUARD = ROOT / "scripts" / "guard.py"
+
+
+def run_guard_in(cwd, command: str, env_overrides=None):
+    """Invoke guard.py the way Claude Code does, with cwd inside a consumer.
+
+    The banner gate's first arm is a hook-to-guard contract: session_bootstrap
+    writes the event and guard.py reads it. Tests that write the event by hand
+    cannot see a hook that failed to write one, so this runs the real pair.
+    Returns the parsed decision, or None when the guard stays silent (allow).
+    """
+    env = dict(os.environ)
+    env.pop("AGENT_CONFIG_GATES", None)
+    if env_overrides:
+        env.update(env_overrides)
+    result = subprocess.run(
+        [sys.executable, str(GUARD)],
+        input=json.dumps(
+            {"tool_name": "Bash", "tool_input": {"command": command}}
+        ),
+        capture_output=True, text=True, check=False, env=env,
+        cwd=str(cwd), timeout=SUBPROCESS_TIMEOUT,
+    )
+    if result.returncode != 0:
+        raise AssertionError(
+            "guard.py crashed (exit %d): %s" % (result.returncode, result.stderr.strip())
+        )
+    out = result.stdout.strip()
+    return json.loads(out) if out else None
+
+
 def _make_fresh_cache(hooks_dir: Path) -> None:
     """Pre-populate version-cache.json so update_version_cache short-circuits."""
     hooks_dir.mkdir(parents=True, exist_ok=True)
@@ -203,6 +234,149 @@ class ConsumerRootEventWriteTests(unittest.TestCase):
         self.assertFalse(
             (self.agent_dir / "session-event.json").exists(),
             "session-event.json must not be written on source=compact",
+        )
+
+    def _resume(self):
+        return run_session_bootstrap_with_stdin(
+            self.tmp_project,
+            stdin_input=json.dumps({"source": "resume"}),
+            env_overrides=self.env,
+        )
+
+    def test_skips_event_write_on_resume_once_an_event_exists(self):
+        """The steady state: source=resume must not advance session-event.ts.
+
+        A resumed conversation has no first reply to print a banner on, so an
+        event written here is never acknowledged, and guard.py then writes its
+        re-arm advisory on every later tool call for the rest of the session.
+        Five of seven consumers found stale in a 2026-09-20 fleet audit were
+        resumed ones. Same reasoning as source=compact (anywhere-agents#7).
+        """
+        event = self.agent_dir / "session-event.json"
+        event.write_text(json.dumps({"ts": 1000.0, "source": "startup"}))
+        rc, out, err = self._resume()
+        self.assertEqual(rc, 0, msg=err)
+        self.assertEqual(
+            json.loads(event.read_text(encoding="utf-8"))["ts"], 1000.0,
+            "resume must not advance an existing event",
+        )
+
+    def test_skips_event_write_on_resume_when_only_the_ack_exists(self):
+        """An acknowledgement without an event means the banner was already
+        emitted here. Writing a fresh event would make it instantly stale,
+        which is the advisory loop this change removes."""
+        (self.agent_dir / "banner-emitted.json").write_text(json.dumps({"ts": 900.0}))
+        rc, out, err = self._resume()
+        self.assertEqual(rc, 0, msg=err)
+        self.assertFalse(
+            (self.agent_dir / "session-event.json").exists(),
+            "resume must not write an event when the banner was acknowledged",
+        )
+
+    def test_a_resume_repairs_an_unusable_event_when_nothing_is_acknowledged(self):
+        """An event the guard cannot read is no event, so the resume must
+        rewrite it.
+
+        An interrupted write leaves `{` or `{"ts":` behind. The guard reads
+        that as 0 and enforces nothing, so checking only that the path exists
+        would skip the repair and leave the consumer unable to be asked for
+        its banner ever again. Before the resume skip existed, resume always
+        called write_session_event, which replaced malformed data outright.
+        """
+        # The first four fail to parse; the last three parse and still carry
+        # no timestamp the guard could act on. Both paths must repair, and a
+        # mutation that treated a zero as usable survived until the latter
+        # three were named here.
+        # The first four fail to parse; the next three parse and carry no
+        # usable timestamp; the last two convert without raising to a float
+        # no comparison can order, which `<= 0` called usable and the gate
+        # could never act on.
+        for junk in ("{", '{"ts":', "[]", "", "{}", '{"ts": 0}', '{"ts": "x"}',
+                     '{"ts": "NaN"}', '{"ts": NaN}',
+                     '{"ts": %s}' % ("1" + "0" * 400)):
+            with self.subTest(content=junk):
+                (self.agent_dir / "session-event.json").write_text(junk)
+                rc, _, err = self._resume()
+                self.assertEqual(rc, 0, msg=err)
+                data = json.loads(
+                    (self.agent_dir / "session-event.json").read_text(encoding="utf-8")
+                )
+                self.assertIsInstance(data.get("ts"), (int, float))
+                self.assertGreater(data["ts"], 0)
+                resp = run_guard_in(self.tmp_project, "echo hi", self.env)
+                self.assertIsNotNone(resp, "the repaired event must arm the gate")
+                self.assertEqual(
+                    resp["hookSpecificOutput"]["permissionDecision"], "deny"
+                )
+
+    def test_an_unusable_event_is_left_alone_once_the_banner_was_acknowledged(self):
+        """The other half of the condition: with an acknowledgement present
+        there is nothing to enforce, so a resume stays out of it."""
+        (self.agent_dir / "session-event.json").write_text("{")
+        (self.agent_dir / "banner-emitted.json").write_text(json.dumps({"ts": 900.0}))
+        rc, _, err = self._resume()
+        self.assertEqual(rc, 0, msg=err)
+        self.assertEqual(
+            (self.agent_dir / "session-event.json").read_text(encoding="utf-8"), "{",
+            "an acknowledged consumer must not have its event rewritten by a resume",
+        )
+
+    def test_cold_resume_writes_the_event_so_the_first_arm_can_fire(self):
+        """The one resume that must write: neither marker on disk.
+
+        A repository can become a consumer while its conversation is closed,
+        so the first hook fire it ever sees is a resume. guard.py returns
+        early when no event exists, so skipping this write would leave the
+        banner unenforceable in that repository for good.
+        """
+        rc, out, err = self._resume()
+        self.assertEqual(rc, 0, msg=err)
+        self.assertTrue(
+            (self.agent_dir / "session-event.json").exists(),
+            "a resume with neither marker must write the event",
+        )
+
+    def test_a_cold_resume_leaves_the_banner_gate_able_to_deny(self):
+        """Runs the hook and then the guard, which is the contract that broke.
+
+        Every existing first-arm test writes the event by hand, so none of
+        them can see a hook that failed to write one. Acknowledging the event
+        the hook wrote then releases the gate, which shows the arm completes
+        rather than merely blocking.
+        """
+        rc, _, err = self._resume()
+        self.assertEqual(rc, 0, msg=err)
+
+        resp = run_guard_in(self.tmp_project, "echo hi", self.env)
+        self.assertIsNotNone(resp, "the gate must deny after a cold resume")
+        self.assertEqual(resp["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertIn(
+            "Session banner not yet emitted",
+            resp["hookSpecificOutput"]["permissionDecisionReason"],
+        )
+
+        ts = json.loads(
+            (self.agent_dir / "session-event.json").read_text(encoding="utf-8")
+        )["ts"]
+        (self.agent_dir / "banner-emitted.json").write_text(json.dumps({"ts": ts}))
+        self.assertIsNone(
+            run_guard_in(self.tmp_project, "echo hi", self.env),
+            "acknowledging the event must release the gate",
+        )
+
+    def test_writes_event_on_source_clear(self):
+        """source=clear still writes: it opens a fresh context that has a
+        first reply, so the banner belongs there. Pinned so that widening the
+        skip list to clear cannot pass unnoticed."""
+        rc, out, err = run_session_bootstrap_with_stdin(
+            self.tmp_project,
+            stdin_input=json.dumps({"source": "clear"}),
+            env_overrides=self.env,
+        )
+        self.assertEqual(rc, 0, msg=err)
+        self.assertTrue(
+            (self.agent_dir / "session-event.json").exists(),
+            "session-event.json must be written on source=clear",
         )
 
     def test_writes_event_on_source_startup(self):
@@ -581,6 +755,58 @@ class BannerLifecycleTests(unittest.TestCase):
         # Nothing re-fires: the acknowledged timestamp is still the event's.
         ack = json.loads((self.agent_dir / "banner-emitted.json").read_text(encoding="utf-8"))["ts"]
         self.assertEqual(ack, first_ts)
+
+    def test_resume_keeps_the_event_and_the_report_stays_current(self):
+        """Resume behaves like compact: the event stays put, the report still
+        follows the ledger of the run that just finished, and the
+        acknowledgement stays matched, so the re-arm advisory never fires."""
+        self._install_stub_bootstrap(run_id="run-a")
+        rc, _, err = self._run("startup")
+        self.assertEqual(rc, 0, msg=err)
+        first_ts = self._event_ts()
+        (self.agent_dir / "banner-emitted.json").write_text(json.dumps({"ts": first_ts}))
+        self._install_stub_bootstrap(run_id="run-b")
+        rc, out, err = self._run("resume")
+        self.assertEqual(rc, 0, msg=err)
+        self.assertEqual(self._event_ts(), first_ts, "resume must not advance the event")
+        report = self._report()
+        self.assertTrue(render_banner.report_is_current(report, first_ts, "run-b"))
+        # The refreshed check line still reaches the session on stdout, which
+        # is why dropping the event costs no signal. Assert the whole rendered
+        # body, not just the title: printing the title alone would satisfy a
+        # title-only check while losing every line the signal is made of.
+        self.assertIn("\n".join(render_banner.banner_body(report)), out)
+        ack = json.loads((self.agent_dir / "banner-emitted.json").read_text(encoding="utf-8"))["ts"]
+        self.assertEqual(ack, first_ts, "a resumed session must leave no pending event")
+
+    def test_a_numeric_string_event_still_publishes_an_accepted_report(self):
+        """Four readers, two conversions, one report.
+
+        `guard.py` and the hook accept a numeric string; the renderer and
+        `write_session_event` take only int or float. On a resume the event is
+        preserved rather than rewritten, so the renderer would re-read the
+        string, reject it, and publish `event_ts=none`, and the freshness rule
+        would then reject a report from a refresh that had just succeeded. The
+        hook passes the value it accepted instead.
+        """
+        self._install_stub_bootstrap(run_id="run-s")
+        (self.agent_dir / "session-event.json").write_text(
+            json.dumps({"ts": "1000.5", "source": "startup"})
+        )
+        rc, out, err = self._run("resume")
+        self.assertEqual(rc, 0, msg=err)
+        self.assertEqual(
+            json.loads((self.agent_dir / "session-event.json").read_text(
+                encoding="utf-8"))["ts"],
+            "1000.5",
+            "a usable event must be preserved as it stands",
+        )
+        report = self._report()
+        self.assertTrue(
+            render_banner.report_is_current(report, 1000.5, "run-s"),
+            msg="the report does not match the event it was rendered for:\n%s" % report,
+        )
+        self.assertIn(render_banner.TITLE, out)
 
     def test_nested_cwd_lands_ledger_and_report_at_the_root(self):
         self._install_stub_bootstrap(run_id="nested-1")
