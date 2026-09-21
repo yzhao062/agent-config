@@ -130,8 +130,22 @@ This is enforced structurally, not by trust:
   `git -C <clone-dir> diff`, integrates the wanted changes into the real tree, and **the user
   approves the actual commit**. That is the only gate.
 
-No credential scrubbing or sandbox wall: the user writes the prompts, the clone has no path to the
-real remotes, and the Claude session plus the user are the integration gate. That is the whole safety model.
+**The worker's environment is scrubbed.** `dispatch-task-agy.py` builds the child environment
+with `worker_env()`, which drops every name containing `KEY`, `TOKEN`, `SECRET`, `PASSWORD`,
+`PASSWD`, `CREDENTIAL`, `APIKEY`, or `AUTH`, and every name starting `AWS_`. `ANTIGRAVITY_*` is
+kept, because the CLI's own session plumbing lives there. The names withheld from a run are
+listed in `<state-dir>/env-withheld`; values are never written anywhere. A unit that genuinely
+needs one variable through gets it with `PRUN_KEEP_ENV=NAME1,NAME2`.
+
+This exists because the dispatcher previously passed `os.environ.copy()` straight through. A
+worker only has to list its environment once, in an `env` command or a traceback, for a live
+key to enter a third-party model's context. On 2026-09-20 a scan found two live credentials in
+90 files across 18 Agy conversations over three days. A worker never calls a model, so it never
+needed them.
+
+Beyond that: the user writes the prompts, the clone has no path to the real remotes, and the
+Claude session plus the user are the integration gate. Scrubbing removes the credential class
+of accident; it is not a sandbox, and a worker can still read any file the user can.
 
 ## Flow
 

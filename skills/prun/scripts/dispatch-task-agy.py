@@ -188,6 +188,52 @@ def sandbox_opt_in() -> bool:
     )
 
 
+SECRET_NAME_PARTS = (
+    "KEY",
+    "TOKEN",
+    "SECRET",
+    "PASSWORD",
+    "PASSWD",
+    "CREDENTIAL",
+    "APIKEY",
+    "AUTH",
+)
+SECRET_NAME_PREFIXES = ("AWS_",)
+SECRET_KEEP_PREFIXES = ("ANTIGRAVITY_",)
+
+
+def worker_env():
+    """The parent environment with secret-shaped names removed.
+
+    A worker runs offline analysis in a throwaway clone and never calls a model, so it needs no
+    model credential. Passing the parent environment verbatim put live keys into a third-party
+    model's context whenever anything listed the environment. Matching on the shape of the name
+    rather than on a fixed list means a credential added later is covered without editing this.
+
+    ANTIGRAVITY_* is kept because the CLI's own session plumbing lives there. PRUN_KEEP_ENV takes
+    a comma-separated list of names to let through when a unit genuinely needs one.
+    """
+    keep_extra = {
+        name.strip().upper()
+        for name in os.environ.get("PRUN_KEEP_ENV", "").split(",")
+        if name.strip()
+    }
+    env = {}
+    dropped = []
+    for name, value in os.environ.items():
+        upper = name.upper()
+        if upper in keep_extra or upper.startswith(SECRET_KEEP_PREFIXES):
+            env[name] = value
+            continue
+        if upper.startswith(SECRET_NAME_PREFIXES) or any(
+            part in upper for part in SECRET_NAME_PARTS
+        ):
+            dropped.append(name)
+            continue
+        env[name] = value
+    return env, sorted(dropped)
+
+
 def env_off(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {
         "0",
@@ -866,6 +912,11 @@ def main(argv: list[str] | None = None) -> int:
         {"event": "user", "message": {"content": relay}}, ensure_ascii=False
     ) + "\n"
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+    child_env, dropped_env = worker_env()
+    if dropped_env:
+        (state_dir / "env-withheld").write_text(
+            "\n".join(dropped_env) + "\n", encoding="utf-8"
+        )
     try:
         process = subprocess.Popen(
             command,
@@ -873,7 +924,7 @@ def main(argv: list[str] | None = None) -> int:
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            env=os.environ.copy(),
+            env=child_env,
             creationflags=creationflags,
         )
     except OSError as exc:

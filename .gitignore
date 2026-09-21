@@ -8,6 +8,10 @@ __pycache__/
 PLAN-*.md
 Review-*.md
 CodexReview.md
+# Reviewers write to a dotted temp file and rename it over the target, so a
+# run killed in between leaves one behind. The leading dot keeps it out of
+# `Review-*.md` above, and a later `git add -A` would otherwise commit it.
+.Review-*.tmp.md
 
 # Local-only archive of shipped planning docs and review logs. Move old
 # PLAN-*.md / Review-*.md / CodexReview.md here at release time to declutter the root.
