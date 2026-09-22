@@ -371,6 +371,13 @@ printf '%s\n' '{"mcpServers":{}}' > "$EMPTY_MCP_CONFIG_FILE"
 # succeeds, so experiments can execute without touching the source checkout.
 # No `--sandbox` flag (that is Codex-only).
 #
+# `--effort max` requests max review effort. `--setting-sources project,local`
+# keeps user settings and their env-block effort out of the reviewer. Without
+# the flag or another applicable setting, it runs at the model's default
+# effort, which can sit below max.
+# CLAUDE_CODE_EFFORT_LEVEL in the environment, or an effort cap, can still
+# change the applied level.
+#
 # `--bare` is OPT-IN via CLAUDE_DISPATCH_BARE=1. Claude Code 2.1.153 documents
 # bare mode as API-key/apiKeyHelper auth only: OAuth and keychain auth are
 # disabled when --bare is set. Defaulting to --bare would break the typical
@@ -405,6 +412,7 @@ unset IMPLEMENT_REVIEW_DISPATCH_REEXEC IMPLEMENT_REVIEW_DISPATCH_SOURCE_DIR
         --tools default \
         --add-dir "$VALIDATION_DIR" \
         --setting-sources project,local \
+        --effort max \
         --strict-mcp-config --mcp-config "$EMPTY_MCP_CONFIG_FILE" \
         ${CLAUDE_BARE_ARGS[@]+"${CLAUDE_BARE_ARGS[@]}"} \
         --output-format text \

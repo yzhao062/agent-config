@@ -393,15 +393,17 @@ CODEX_DISPATCH_SANDBOX="${CODEX_DISPATCH_SANDBOX:-danger-full-access}"
 # --strict-mcp-config. `--ignore-user-config` is the only reliable stop: the
 # narrower `-c mcp_servers={}` is deep-merged by codex 0.139 and leaves the
 # configured servers running (verified live -- node_repl still spawned). It
-# drops the user's MCP servers, plugins, and hooks; the model still defaults to
-# codex's built-in recommended model and auth still uses
-# CODEX_HOME, but reasoning effort drops to "none", so re-pass it via
-# -c model_reasoning_effort (default xhigh; override CODEX_DISPATCH_REASONING)
-# to avoid a silent reviewer downgrade. What is NOT re-passed: service_tier and
+# drops the user's MCP servers, plugins, and hooks; auth still uses
+# CODEX_HOME. It also drops the configured model, leaving codex's built-in
+# recommended one (server-chosen, so it can change under us), and reasoning
+# effort drops to "none". Re-pass -c model and -c model_reasoning_effort to
+# keep reviews on the chosen model and effort. Their defaults are the model
+# AGENTS.md names for Codex (a contract test keeps them in step) and xhigh;
+# CODEX_DISPATCH_MODEL (e.g. for an account without that model) and
+# CODEX_DISPATCH_REASONING override them. What is NOT re-passed: service_tier and
 # any custom model_provider / base_url. service_tier is left to codex's default
 # on purpose -- hardcoding the maintainer's "fast" tier would make every round
-# fail for a consumer whose account lacks it, and Codex's built-in model
-# default already matches the common recommended config. A review that genuinely
+# fail for a consumer whose account lacks it. A review that genuinely
 # needs a custom provider or a specific tier should set
 # CODEX_DISPATCH_ISOLATE_MCP=off; full config-preserving
 # isolation (a temp CODEX_HOME holding a copy of config.toml minus the MCP
@@ -411,8 +413,9 @@ CODEX_DISPATCH_SANDBOX="${CODEX_DISPATCH_SANDBOX:-danger-full-access}"
 # the .ps1 copy of this note is kept short on purpose -- a longer comment
 # beside its cmdBody construction trips a Windows-AV heuristic (Bitdefender
 # AMSI parse block), so the full rationale lives here, not there.
+CODEX_DISPATCH_MODEL="${CODEX_DISPATCH_MODEL:-gpt-6-sol}"
 CODEX_DISPATCH_REASONING="${CODEX_DISPATCH_REASONING:-xhigh}"
-CODEX_ISOLATE_ARGS=(--ignore-user-config -c "model_reasoning_effort=$CODEX_DISPATCH_REASONING")
+CODEX_ISOLATE_ARGS=(--ignore-user-config -c "model=$CODEX_DISPATCH_MODEL" -c "model_reasoning_effort=$CODEX_DISPATCH_REASONING")
 if [ "$(printf '%s' "${CODEX_DISPATCH_ISOLATE_MCP:-}" | tr '[:upper:]' '[:lower:]')" = "off" ]; then
     CODEX_ISOLATE_ARGS=()
 fi

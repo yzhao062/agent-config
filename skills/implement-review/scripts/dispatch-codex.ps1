@@ -537,10 +537,11 @@ $promptFileEsc = $PromptFile -replace '%', '%%'
 $sandboxMode = if ($env:CODEX_DISPATCH_SANDBOX) { $env:CODEX_DISPATCH_SANDBOX } else { 'danger-full-access' }
 $sandboxModeEsc = $sandboxMode -replace '%', '%%'
 # Reviewer isolation (default on; CODEX_DISPATCH_ISOLATE_MCP=off opts out).
-# --ignore-user-config drops user MCP/plugins/hooks; reasoning is re-passed
-# (model uses codex's default). See dispatch-codex.sh for what is not kept.
+# --ignore-user-config drops user MCP/plugins/hooks; model and reasoning are
+# re-passed. See dispatch-codex.sh for the defaults and what is not kept.
+$model = if ($env:CODEX_DISPATCH_MODEL) { $env:CODEX_DISPATCH_MODEL } else { 'gpt-6-sol' }
 $reasoning = if ($env:CODEX_DISPATCH_REASONING) { $env:CODEX_DISPATCH_REASONING } else { 'xhigh' }
-$isolateArg = if ($env:CODEX_DISPATCH_ISOLATE_MCP -eq 'off') { '' } else { "--ignore-user-config -c model_reasoning_effort=$reasoning " }
+$isolateArg = if ($env:CODEX_DISPATCH_ISOLATE_MCP -eq 'off') { '' } else { "--ignore-user-config -c model=$model -c model_reasoning_effort=$reasoning " }
 $pythonInstruction = if ($pythonBin) {
     "A working Python interpreter was execution-probed before dispatch. Use this exact absolute path for every Python command: $pythonBin. Do not invoke bare python, python3, or py."
 } else {

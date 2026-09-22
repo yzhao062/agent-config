@@ -154,10 +154,12 @@ claude -p "prompt" --max-turns 10 --max-budget-usd 5  # safety limits
 | Low | File renames, simple greps, quick questions |
 | Medium | General coding, small refactors |
 | High | Complex debugging, multi-file refactors |
-| Xhigh | Heavy multi-file or design work below Max (persists to settings) |
-| Max | System design, deeply nested bugs (Opus only, resets on session end) |
+| Xhigh | Heavy multi-file or design work below Max |
+| Max | System design, deeply nested bugs (session only unless set through the env var) |
 
-Set via: `/effort low|medium|high|xhigh` (persists to user settings), `/effort max` (session only, because `max` is not a valid persisted value), `claude --effort <level>` at launch (session only), `"effortLevel": "low|medium|high"` in `settings.json` for persisted low/medium/high, or the `CLAUDE_CODE_EFFORT_LEVEL` env var, which is the only way to persist `max` (for example, `"env": {"CLAUDE_CODE_EFFORT_LEVEL": "max"}` in `~/.claude/settings.json`). The env var outranks CLI and slash-command overrides. Left/right arrows in the `/model` picker also change the level.
+Defaults and supported levels differ by model; Opus 5.5, for example, defaults to `medium`. A level the model lacks falls back to the highest one below it. The [model configuration page](https://code.claude.com/docs/en/model-config) keeps the current table. This repo requests `max` through the `CLAUDE_CODE_EFFORT_LEVEL` env var, which outranks the model default, `--effort`, and `/effort`.
+
+Set it with `/effort <level>` or, for one session, `claude --effort <level>`. In `/effort`, Enter saves `low` through `xhigh` for the current model under `modelSettings`; `max` lasts only for the session. Press `s` to keep any level to the session, or run `/effort auto` to clear the saved level. The `CLAUDE_CODE_EFFORT_LEVEL` env var is the only way to persist `max`, for example `"env": {"CLAUDE_CODE_EFFORT_LEVEL": "max"}` in `~/.claude/settings.json`. Left/right arrows in the `/model` picker also change the level.
 
 ## 11. Cost & Performance
 
@@ -208,7 +210,7 @@ Ask quick questions without polluting conversation history:
 
 - **In session**: `/model` or `Alt+P`
 - **CLI**: `claude --model opus`
-- **Available**: `default`, `sonnet`, `opus`, `haiku`, `sonnet[1m]`, `opus[1m]` (1M context)
+- **Available**: the [model configuration page](https://code.claude.com/docs/en/model-config) lists the current aliases and what each resolves to on each provider.
 
 ## 17. Background Tasks
 

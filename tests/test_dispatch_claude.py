@@ -575,6 +575,21 @@ class _DispatchContractMixin:
             self.assertGreater(len(args), idx + 1)
             self.assertEqual(args[idx + 1], "project,local")
 
+    def test_claude_invoked_with_max_effort(self) -> None:
+        """User settings are excluded, so without `--effort` or another
+        applicable setting the reviewer runs at the model's own default
+        effort, which can sit below max."""
+        with _temp_dir() as td:
+            tmpdir = Path(td)
+            claude, prompt, log_dir = self._fresh_fixture(tmpdir)
+            result = self._run_dispatch(
+                tmpdir, prompt, "1", "Review-Claude-Code.md", claude, log_dir
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            args = self._read_args(log_dir)
+            self.assertIn(("--effort", "max"), list(zip(args, args[1:])),
+                          f"claude must receive --effort max: {args}")
+
     def test_claude_invoked_with_empty_strict_mcp_config(self) -> None:
         """Global Codex MCP must not be auto-started inside the Claude backend."""
         with _temp_dir() as td:

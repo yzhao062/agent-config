@@ -408,6 +408,7 @@ $ErrorActionPreference = 'Continue'
 # bare mode as API-key/apiKeyHelper auth only: OAuth and keychain auth are
 # disabled when --bare is set. Defaulting to --bare would break the typical
 # subscription user.
+# --effort max requests max review effort; see dispatch-claude.sh for why.
 $permissionFlag = '--per' + 'mission-' + 'mode'
 $toolFlag = '--too' + 'ls'
 $permMode = 'by' + 'pass' + 'Per' + 'missions'
@@ -418,6 +419,7 @@ $claudeArgs = @(
     $toolFlag, $toolList,
     '--add-dir', $validationDir,
     '--setting-sources', 'project,local',
+    '--effort', 'max',
     '--strict-mcp-config', '--mcp-config', $emptyMcpConfigPath,
     '--output-format', 'text'
 )

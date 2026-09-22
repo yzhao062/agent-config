@@ -42,6 +42,20 @@ DISPATCH_PS1 = Path(os.environ.get(
     "TEST_DISPATCH_CODEX_PS1", SCRIPTS_DIR / "dispatch-codex.ps1"
 ))
 
+
+def _policy_codex_model() -> str:
+    """The Codex model named by the `- Codex:` line of AGENTS.md.
+
+    Reviews run on the same model, so a model bump edits that line and the
+    default in both dispatchers; DispatchMcpIsolationContract fails until the
+    three agree.
+    """
+    text = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    match = re.search(r"^- Codex: `([^`]+)`", text, re.MULTILINE)
+    if match is None:
+        raise AssertionError("AGENTS.md has no '- Codex: `<model>`' line")
+    return match.group(1)
+
 # A wait sized on an idle machine has failed under load three times in two
 # releases, most recently on this file in both repositories on one push,
 # green again on a rerun with no change. A deadline is only spent when the
@@ -456,8 +470,10 @@ class _DispatchContractMixin:
         codex and leaves the servers running). Because that flag also drops
         reasoning effort to "none", the dispatcher re-passes
         `-c model_reasoning_effort` (default xhigh) so the reviewer is not
-        silently downgraded. This freezes that both reach codex's CLI before
-        the trailing stdin marker.
+        silently downgraded. The flag also drops the configured model, so the
+        dispatcher pins the policy model from AGENTS.md with `-c model`. This
+        freezes that all of them reach codex's CLI before the trailing stdin
+        marker.
         """
         with _temp_dir() as td:
             tmpdir = Path(td)
@@ -465,6 +481,7 @@ class _DispatchContractMixin:
             # Force the default path regardless of the ambient environment.
             old = os.environ.pop("CODEX_DISPATCH_ISOLATE_MCP", None)
             old_r = os.environ.pop("CODEX_DISPATCH_REASONING", None)
+            old_m = os.environ.pop("CODEX_DISPATCH_MODEL", None)
             try:
                 result = self._run_dispatch(
                     tmpdir, prompt, "1", "Review-Codex.md", codex, log_dir
@@ -474,6 +491,8 @@ class _DispatchContractMixin:
                     os.environ["CODEX_DISPATCH_ISOLATE_MCP"] = old
                 if old_r is not None:
                     os.environ["CODEX_DISPATCH_REASONING"] = old_r
+                if old_m is not None:
+                    os.environ["CODEX_DISPATCH_MODEL"] = old_m
             self.assertEqual(result.returncode, 0, result.stderr)
             args = json.loads((log_dir / "args").read_text(encoding="utf-8"))
             self.assertIn("--ignore-user-config", args,
@@ -488,6 +507,10 @@ class _DispatchContractMixin:
             self.assertIn(
                 ("-c", "model_reasoning_effort=xhigh"), list(zip(args, args[1:])),
                 f"reasoning config must immediately follow a -c: {args}",
+            )
+            self.assertIn(
+                ("-c", f"model={_policy_codex_model()}"), list(zip(args, args[1:])),
+                f"the AGENTS.md policy model must be pinned after a -c: {args}",
             )
             self.assertEqual(args[-1], "-",
                              f"stdin marker must stay the final positional: {args}")
@@ -526,6 +549,11 @@ class _DispatchContractMixin:
             self.assertFalse(
                 any(str(arg).startswith("model_reasoning_effort=") for arg in args),
                 f"isolation=off must drop any reasoning re-pass: {args}",
+            )
+            # The configured model applies too: no pinned model re-pass.
+            self.assertFalse(
+                any(str(arg).startswith("model=") for arg in args),
+                f"isolation=off must drop the pinned model: {args}",
             )
             # Sandbox flag and stdin marker are unaffected by the opt-out.
             self.assertIn("--sandbox", args, f"--sandbox must remain: {args}")
@@ -569,6 +597,37 @@ class _DispatchContractMixin:
             self.assertNotIn(
                 "model_reasoning_effort=xhigh", args,
                 f"override must replace the xhigh default: {args}",
+            )
+
+    def test_codex_isolation_model_override(self) -> None:
+        """CODEX_DISPATCH_MODEL replaces the pinned review model, for an
+        account without that model or a round meant for a different one."""
+        with _temp_dir() as td:
+            tmpdir = Path(td)
+            codex, prompt, log_dir = self._fresh_fixture(tmpdir)
+            old_iso = os.environ.pop("CODEX_DISPATCH_ISOLATE_MCP", None)
+            old_m = os.environ.get("CODEX_DISPATCH_MODEL")
+            os.environ["CODEX_DISPATCH_MODEL"] = "gpt-test-override"
+            try:
+                result = self._run_dispatch(
+                    tmpdir, prompt, "1", "Review-Codex.md", codex, log_dir
+                )
+            finally:
+                if old_iso is not None:
+                    os.environ["CODEX_DISPATCH_ISOLATE_MCP"] = old_iso
+                if old_m is None:
+                    os.environ.pop("CODEX_DISPATCH_MODEL", None)
+                else:
+                    os.environ["CODEX_DISPATCH_MODEL"] = old_m
+            self.assertEqual(result.returncode, 0, result.stderr)
+            args = json.loads((log_dir / "args").read_text(encoding="utf-8"))
+            self.assertIn(
+                ("-c", "model=gpt-test-override"), list(zip(args, args[1:])),
+                f"CODEX_DISPATCH_MODEL must reach codex after a -c: {args}",
+            )
+            self.assertNotIn(
+                f"model={_policy_codex_model()}", args,
+                f"override must replace the pinned default: {args}",
             )
 
     def _assert_project_doc_budget(self, args: list) -> None:
@@ -1177,11 +1236,11 @@ class DispatchMcpIsolationContract(unittest.TestCase):
     looped on "ERROR: Reconnecting... N/5", and hung the headless reviewer
     15+ minutes with an empty review. The fix passes --ignore-user-config
     (the only reliable stop; a narrower `-c mcp_servers={}` is deep-merged
-    by codex and leaves servers running). Because that flag also drops the
-    reasoning effort to "none", the dispatcher re-passes
-    `-c model_reasoning_effort` (default xhigh) so the reviewer is not
-    silently downgraded; the model stays on codex's built-in default. Default
-    on; opt out with CODEX_DISPATCH_ISOLATE_MCP=off.
+    by codex and leaves servers running). That flag also drops the reasoning
+    effort to "none" and drops the configured model. The dispatcher therefore
+    re-passes `-c model_reasoning_effort` (default xhigh) and `-c model`
+    (default: the AGENTS.md policy model), so the reviewer is not silently
+    changed. Default on; opt out with CODEX_DISPATCH_ISOLATE_MCP=off.
 
     These static checks freeze the wiring so a future refactor that drops
     the override (while the runtime mock tests happen to still pass) fails
@@ -1208,6 +1267,19 @@ class DispatchMcpIsolationContract(unittest.TestCase):
                       "dispatch-codex.ps1 must isolate via --ignore-user-config")
         self.assertIn("model_reasoning_effort", text,
                       "dispatch-codex.ps1 must re-pass reasoning effort")
+
+    def test_default_model_matches_agents_md(self) -> None:
+        """Both dispatchers default to the model AGENTS.md names for Codex, so
+        a model bump cannot leave reviews on the previous model."""
+        policy = _policy_codex_model()
+        sh = re.search(r"CODEX_DISPATCH_MODEL:-([^}\"]+)\}",
+                       DISPATCH_SH.read_text(encoding="utf-8"))
+        ps1 = re.search(r"\$env:CODEX_DISPATCH_MODEL \} else \{ '([^']+)' \}",
+                        DISPATCH_PS1.read_text(encoding="utf-8"))
+        self.assertIsNotNone(sh, "dispatch-codex.sh must default CODEX_DISPATCH_MODEL")
+        self.assertIsNotNone(ps1, "dispatch-codex.ps1 must default CODEX_DISPATCH_MODEL")
+        self.assertEqual(sh.group(1), policy, "dispatch-codex.sh default differs from AGENTS.md")
+        self.assertEqual(ps1.group(1), policy, "dispatch-codex.ps1 default differs from AGENTS.md")
 
     def test_both_shells_raise_the_project_doc_budget(self) -> None:
         """Both dispatchers pass -c project_doc_max_bytes=262144 outside the
