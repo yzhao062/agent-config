@@ -276,13 +276,21 @@ VERIFICATION_STATUS_RE = re.compile(
 )
 VERDICT_LABEL_RE = re.compile(
     r"^\s*(?:#{1,6}\s+|[-*+]\s+)?(?:\*\*|__)?"
-    r"(?:commit\s+)?verdict\b(?P<rest>.*)$",
+    r"(?P<kind>(?:commit|plan)\s+)?verdict\b(?P<rest>.*)$",
     re.IGNORECASE,
 )
 VERDICT_VALUE_RE = re.compile(
     r"\b(BLOCK(?:ED)?|PASS(?:ED)?|UNVERIFIED)\b",
     re.IGNORECASE,
 )
+# A bare "Verdict" label often opens a per-section judgment written as prose,
+# such as "**Verdict**: deleting the whole block is right", so after a bare
+# label the value must be the first word past the label's punctuation.
+LEADING_VERDICT_VALUE_RE = re.compile(
+    r"^[\s*_:=\u2013\u2014-]*(BLOCK(?:ED)?|PASS(?:ED)?|UNVERIFIED)\b",
+    re.IGNORECASE,
+)
+VERDICT_DECORATION = " \t*_:=\u2013\u2014-"
 VERIFICATION_NOTES_LABEL_RE = re.compile(
     r"^(?:verification|validation)\s+notes\b[.:]?\s*(.*)$",
     re.IGNORECASE,
@@ -391,12 +399,15 @@ def is_echo_line(line: str, intrinsic_res: list, diagnostic_re) -> bool:
 
 
 def extract_commit_verdicts(text: str) -> set[str]:
-    """Return normalized verdict values from labeled commit-verdict lines.
+    """Return normalized verdict values from labeled verdict lines.
 
-    Review files in the field use both ``Commit verdict: BLOCKED`` and a
-    ``# Commit verdict`` heading followed by ``BLOCKED`` on the next nonempty
-    line. Restricting detection to a line-start label avoids treating a finding
-    that merely discusses the word "block" as the review's verdict.
+    Review files in the field use ``Commit verdict: BLOCKED``, ``Plan verdict:
+    PASS`` in plan reviews, and a ``# Commit verdict`` heading followed by
+    ``BLOCKED`` on the next nonempty line. Restricting detection to a line-start
+    label avoids treating a finding that merely discusses the word "block" as
+    the review's verdict. A bare ``Verdict`` label also opens per-section
+    judgments written as prose, so after it only a value that leads the text
+    counts, and the next line is read only when the label stands alone.
     """
     verdicts: set[str] = set()
     lines = text.splitlines()
@@ -404,13 +415,17 @@ def extract_commit_verdicts(text: str) -> set[str]:
         match = VERDICT_LABEL_RE.match(line)
         if not match:
             continue
-        candidates = [match.group("rest")]
-        for following in lines[index + 1:index + 5]:
-            if following.strip():
-                candidates.append(following)
-                break
+        rest = match.group("rest")
+        formal = match.group("kind") is not None
+        value_re = VERDICT_VALUE_RE if formal else LEADING_VERDICT_VALUE_RE
+        candidates = [rest]
+        if formal or not rest.strip(VERDICT_DECORATION):
+            for following in lines[index + 1:index + 5]:
+                if following.strip():
+                    candidates.append(following)
+                    break
         for candidate in candidates:
-            value_match = VERDICT_VALUE_RE.search(candidate)
+            value_match = value_re.search(candidate)
             if not value_match:
                 continue
             value = value_match.group(1).upper()

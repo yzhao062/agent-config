@@ -1119,7 +1119,7 @@ class HealthCheckPython(unittest.TestCase):
             self.assertEqual(parsed["check-9"][0], "WARN")
             self.assertIn("stall-periods", parsed["check-9"][1])
 
-    # ----- Check 10: commit-verification contract -----
+    # ----- Check 10: verdict-verification contract -----
     def test_check10_accepts_all_supported_status_label_shapes(self) -> None:
         label_shapes = {
             "plain": "Verification status: {status}",
@@ -1155,6 +1155,57 @@ class HealthCheckPython(unittest.TestCase):
                         self.assertEqual(result.returncode, returncode)
                         self.assertEqual(parsed["check-10"][0], outcome)
                         self.assertIn(detail, parsed["check-10"][1])
+
+    def test_check10_reads_a_bare_verdict_label_only_when_the_value_leads(self) -> None:
+        """Plan labels count, and prose after a bare Verdict label does not.
+
+        A plan review on 2026-09-23 closed with "Plan verdict: PASS" and had
+        per-section lines such as the one below. The old parser skipped the
+        Plan label, searched the whole section line, and reported BLOCK from
+        the prose word "block"; had it read both, the review would have failed
+        Check 10 with conflicting verdicts. Commit and Plan verdict lines keep
+        the old reading, so a conditional verdict still counts there.
+        """
+        section = (
+            "- **Verdict**: Deleting the entire `autoMode` block is the correct fix."
+        )
+        cases = {
+            "plan-label": ("Plan verdict: PASS", "verdict=PASS"),
+            "section-prose-then-plan-label": (
+                f"{section}\n\nPlan verdict: PASS",
+                "verdict=PASS",
+            ),
+            "section-prose-only": (section, "verdict=NONE"),
+            "bare-label-value-first": ("- **Verdict**: BLOCK", "verdict=BLOCK"),
+            "bare-label-alone-then-value": ("Verdict:\n\nBLOCK", "verdict=BLOCK"),
+            "bare-label-prose-then-value": ("Verdict: explanatory prose\nBLOCK", "verdict=NONE"),
+            "bare-heading-then-value": ("## Verdict\n\nPASS", "verdict=PASS"),
+            "bare-heading-then-prose": (
+                "## Verdict\n\nDeleting the entire block is right.",
+                "verdict=NONE",
+            ),
+            "commit-label-conditional": (
+                "Commit verdict: will be PASS if the remaining checks succeed.",
+                "verdict=PASS",
+            ),
+            "heading-then-value": ("## Commit verdict\n\nBLOCKED", "verdict=BLOCK"),
+            "dash-separated": ("Commit verdict \u2014 PASS, one Low open", "verdict=PASS"),
+        }
+        for name, (body, detail) in cases.items():
+            with self.subTest(case=name):
+                with tempfile.TemporaryDirectory() as td:
+                    td_path = Path(td)
+                    review = td_path / "Review-Codex.md"
+                    make_review(
+                        review,
+                        extra_body=f"Verification status: VERIFIED\n\n{body}",
+                    )
+                    state = make_state_dir(td_path)
+                    result = run_health_py(state, review)
+                    parsed = parse_output(result.stdout)
+                    self.assertEqual(result.returncode, 0)
+                    self.assertEqual(parsed["check-10"][0], "PASS")
+                    self.assertIn(detail, parsed["check-10"][1])
 
     def test_check7_warns_when_review_could_not_execute_commands(self) -> None:
         blocked_phrases = (

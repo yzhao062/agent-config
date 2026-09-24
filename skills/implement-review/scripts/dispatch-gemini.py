@@ -37,10 +37,16 @@ VERIFICATION_STATUS_RE = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 VERDICT_LABEL_RE = re.compile(
-    r"^\s*(?:#{1,6}\s+|[-*+]\s+)?(?:\*\*|__)?(?:commit\s+)?verdict\b(?P<rest>.*)$",
+    r"^\s*(?:#{1,6}\s+|[-*+]\s+)?(?:\*\*|__)?"
+    r"(?P<kind>(?:commit|plan)\s+)?verdict\b(?P<rest>.*)$",
     re.IGNORECASE,
 )
 VERDICT_VALUE_RE = re.compile(r"\b(BLOCK(?:ED)?|PASS(?:ED)?|UNVERIFIED)\b", re.IGNORECASE)
+# After a bare "Verdict" label the value must lead the text, as in health-check.py.
+LEADING_VERDICT_VALUE_RE = re.compile(
+    r"^[\s*_:=\u2013\u2014-]*(BLOCK(?:ED)?|PASS(?:ED)?|UNVERIFIED)\b", re.IGNORECASE
+)
+VERDICT_DECORATION = " \t*_:=\u2013\u2014-"
 
 
 def fail(message: str, code: int = 2) -> int:
@@ -429,7 +435,7 @@ def has_review_structure(response: str, round_num: int) -> bool:
     """Return whether the response has this round's review structure outside quoted code.
 
     The structure is this round's marker on its own line and, after it, a
-    standalone verification status and a commit verdict. Closed triple-backtick
+    standalone verification status and a labeled verdict. Closed triple-backtick
     blocks and single-line inline code are masked first, the exclusions
     health-check.py applies, so a template quoted in either cannot supply those
     lines. A tilde fence or an unclosed fence is not recognized, which is one
@@ -463,9 +469,15 @@ def has_review_structure(response: str, round_num: int) -> bool:
         match = VERDICT_LABEL_RE.match(line)
         if not match:
             continue
-        following = next((later for later in body[index + 1:index + 5] if later.strip()), "")
-        if VERDICT_VALUE_RE.search(match.group("rest")) or VERDICT_VALUE_RE.search(following):
+        rest = match.group("rest")
+        formal = match.group("kind") is not None
+        value_re = VERDICT_VALUE_RE if formal else LEADING_VERDICT_VALUE_RE
+        if value_re.search(rest):
             return True
+        if formal or not rest.strip(VERDICT_DECORATION):
+            following = next((later for later in body[index + 1:index + 5] if later.strip()), "")
+            if value_re.search(following):
+                return True
     return False
 
 

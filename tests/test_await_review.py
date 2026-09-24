@@ -593,7 +593,7 @@ class TestAgreesWithHealthChecks1To3(AwaitReviewCase):
 
     The promise is bounded: await-review tells Phase 2 that a REVIEW-READY
     satisfies the state contract and Health checks 1 to 3. Size, verification
-    notes, and the commit-verification contract are Checks 4 to 10 and remain
+    notes, and the verdict-verification contract are Checks 4 to 10 and remain
     Phase 2's job, so a REVIEW-READY review can still fail them.
 
     The bounded promise was false once, when the two scripts parsed and compared

@@ -174,6 +174,17 @@ class DispatchGeminiUnitTests(unittest.TestCase):
         self.assertTrue(self.module.has_review_structure(bold, 6))
         heading = whole.replace(verdict, "## Commit verdict\n\nBLOCK")
         self.assertTrue(self.module.has_review_structure(heading, 6))
+        # As in health-check.py, a Plan label counts and a section line whose
+        # prose merely contains "block" after a Verdict label does not.
+        plan = whole.replace(verdict, "Plan verdict: PASS")
+        self.assertTrue(self.module.has_review_structure(plan, 6))
+        prose = whole.replace(verdict, "**Verdict**: Deleting the entire block is the right fix.")
+        self.assertFalse(self.module.has_review_structure(prose, 6))
+        # A bare label reads the next line only when nothing else follows it.
+        alone = whole.replace(verdict, "Verdict:\n\nBLOCK")
+        self.assertTrue(self.module.has_review_structure(alone, 6))
+        prose_then_value = whole.replace(verdict, "Verdict: explanatory prose\nBLOCK")
+        self.assertFalse(self.module.has_review_structure(prose_then_value, 6))
         self.assertFalse(self.module.has_review_structure(whole.replace(verdict, ""), 6))
         self.assertFalse(self.module.has_review_structure(whole.replace(status, ""), 6))
         self.assertFalse(self.module.has_review_structure(whole, 5))
