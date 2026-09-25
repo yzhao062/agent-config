@@ -86,6 +86,10 @@ The inventory records native shapes, text-bearing objects, connectors, charts, g
 
 ## Check actual editing
 
+On macOS, use the session's supported native-app control path. A connection timeout does not prove PowerPoint is absent: retry once, inspect app availability, and retry later if the user or environment resolves the connection. Keep native verification explicitly pending until it succeeds. Follow the current tool policy; do not switch to a prohibited automation API to bypass a connection problem.
+
+After opening a disposable test deck, reacquire the active window and verify its title and file identity before editing. An old window handle can still target the master even when the copy appears in front. Record the master file's hash before and after the test. Discard the test copy after verifying the edits, and investigate any unexpected master change before delivery. When exporting on macOS, inspect the destination and export option: choose a local PDF path when available instead of assuming an option that uses an online service is local.
+
 On a disposable copy of the final source, select and change representative text, change a meaningful shape property, and move a connected node. Confirm its connectors still attach to the correct endpoints. Inspect whether semantic groups can be moved together and ungrouped for detailed changes. Restore or discard the disposable copy; keep the final source unchanged by the test.
 
 For scripted COM checks, name the exact objects being checked, verify the change, and restore it. Example for a known shape:
@@ -114,3 +118,17 @@ Open the final PNG or rendered PDF. Look for text clipping, changed line breaks,
 Retain the native PPTX even when delivering a PDF or PNG. A PDF may be vector while some included assets remain raster; describe that accurately. A future author who changes the PPTX must regenerate the viewing export. Keep generation code when useful, but identify manual PPTX edits so regenerating does not erase them.
 
 Native effects and vector exports are separate properties. In an observed PowerPoint export, editable panel shadows became raster images in the PDF while foreground text and geometry remained vector. When effects are used, inspect the actual PDF before describing it as wholly vector. Use a native effect in the PPTX when editability is required. If a destination requires an entirely vector figure, simplify or remove the effect and verify the export.
+
+### Inspect Physical Text Size
+
+The portable [inspect_figure_pdf.py](../scripts/inspect_figure_pdf.py) helper reads a PDF and prints JSON with its hash, scaled dimensions, smallest extractable text spans, and image occurrence count. It requires Python with the `pymupdf` package. Use the existing document runtime when it provides that dependency.
+
+```bash
+python '<skill-root>/scripts/inspect_figure_pdf.py' '/absolute/path/figure.pdf' --width-mm 77 --min-font-pt 7
+```
+
+The width and optional minimum above are examples, not venue rules. Supply the actual placement width and an appropriate threshold. For a multipage PDF, select a 1-based `--page`; the width then applies to that entire page, not an individual figure embedded within it. The calculation assumes uniform scaling without extra trimming. Inspect the compiled manuscript separately when LaTeX cropping, rotation, or placement differs from this assumption.
+
+To measure the compiled page, pass its physical page width and `--page N`, for example `--width-mm 215.9` for US Letter. That report includes placement transforms already applied by LaTeX, but also includes body text and other figures. Reported sizes use PDF points (1/72 inch); a 10 pt TeX font can therefore read as about 9.963 PDF points. Inspect the intended figure's labels on the rendered page.
+
+Exit 0 means the report was produced and any requested extractable-text threshold was met. Exit 1 means text falls below that threshold, or no text could be extracted to test it. Exit 2 reports invalid input or a missing dependency. The threshold allows 0.001 pt for PDF rounding. Raster or outlined labels are outside this check even when other text passes; hidden text can also appear in the report. The helper neither certifies legibility nor substitutes for native PowerPoint rendering and editing checks.

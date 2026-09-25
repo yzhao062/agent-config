@@ -34,6 +34,28 @@ Inspect the current proposal's figures alongside the awarded examples. The forme
 
 An existing `figure-references/index.md` can help discover visual references, but its style tags do not establish award status. If no awarded example is accessible, state that limitation and continue with user-supplied or clearly labeled alternative references. Do not claim to have completed an awarded-proposal comparison.
 
+## External Plotting Repositories
+
+Use an external repository as a specific design or plotting reference. Inspect its rendered example, corresponding source script, and applicable skill instructions before deciding what transfers. Record the revision, inspected paths, chosen convention, and whether code or artwork was copied. Reading a repository by path or URL does not require installing its skill; installation changes discovery, not the rendering capability.
+
+### figures4papers Worked Reference
+
+The inspected [figures4papers snapshot](https://github.com/ChenLiu-1996/figures4papers/tree/3c181f85e82c6f24948fcaaf3be6696102b41d8d) supplies scientific plotting examples and a Matplotlib-oriented skill. Use it alongside editable-figure for result panels and plotting conventions. Keep contribution selection, explanatory artwork, editable PowerPoint construction, and native checks in this workflow.
+
+Useful entry points at that revision:
+
+| Inspected Source | Transferable Choice | Adaptation Boundary |
+|---|---|---|
+| [VIGIL teaser](https://github.com/ChenLiu-1996/figures4papers/blob/3c181f85e82c6f24948fcaaf3be6696102b41d8d/assets/VIGIL_teaser.png) | Combine a concrete explanatory scene with compact quantitative evidence | Rebuild the relationship using the current paper's objects and verified results. |
+| [Dispersion motivation](https://github.com/ChenLiu-1996/figures4papers/blob/3c181f85e82c6f24948fcaaf3be6696102b41d8d/assets/Dispersion_motivation.png) | Connect a mechanism to its geometric consequence | Preserve the causal connection rather than copying the layout alone. |
+| [ImmunoStruct bars](https://github.com/ChenLiu-1996/figures4papers/blob/3c181f85e82c6f24948fcaaf3be6696102b41d8d/figure_ImmunoStruct/figures/bars_comparison_IEDB.png) and [plot script](https://github.com/ChenLiu-1996/figures4papers/blob/3c181f85e82c6f24948fcaaf3be6696102b41d8d/figure_ImmunoStruct/plot_bars.py) | Aligned small multiples, restrained axes, and consistent emphasis | Replace project-specific inputs and recompute printed type size before reusing the canvas. Do not inherit limits that distort a magnitude comparison. |
+
+Read its [scientific-figure-making skill](https://github.com/ChenLiu-1996/figures4papers/blob/3c181f85e82c6f24948fcaaf3be6696102b41d8d/scientific-figure-making/SKILL.md) for plotting guidance. Its [API reference](https://github.com/ChenLiu-1996/figures4papers/blob/3c181f85e82c6f24948fcaaf3be6696102b41d8d/scientific-figure-making/references/api.md) is an interface specification to implement or adapt, not evidence of an importable plotting package. Inspect dependencies, input paths, and output paths before executing an example script.
+
+For a scientific plot, adapt an appropriate plotting script with real data. For a hybrid PowerPoint figure, recreate selected conventions as native shapes and text if that satisfies the editing requirement. Describe those objects accurately: editable bars and labels do not provide a chart workbook. Preserve the accepted document palette, consistent scales, and explicit units; prefer direct labels when they save legend lookup.
+
+The inspected repository carries a [CC BY-NC 4.0 license](https://github.com/ChenLiu-1996/figures4papers/blob/3c181f85e82c6f24948fcaaf3be6696102b41d8d/LICENSE). Check applicable terms and file-specific notices before copying code or artwork, and retain required attribution when reusing material. These reference notes copy neither its code nor its artwork. Recheck the selected revision when adopting later repository changes.
+
 ## Select what transfers
 
 Inspect a small candidate set, often three to five examples, and select one to three useful references. Expand only if none solves the design question. These are effort guides, not quotas. The best structural reference and the best style reference may be different examples.

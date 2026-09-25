@@ -117,6 +117,8 @@ When the author wants a large (a) and narrow (b), reserve the gutter first, then
 
 Read [panels-and-results.md](references/panels-and-results.md) when combining an explanatory panel with data, separating regions within a wide schematic, or revising panel spacing. It covers panel hierarchy, region separation, cross-panel edges, source-derived numbers, descriptive versus inferential claims, and focused revisions. Use the plotting workflow for scientific correctness and the native PowerPoint guidance for editable chart behavior.
 
+For a paper first figure, read [paper-first-figures.md](references/paper-first-figures.md) for problem/contribution panel roles, compact comparison cases, baseline semantics, and review of the inserted manuscript page. For external plotting repositories such as figures4papers, use the concrete reuse procedure in [reference-search.md](references/reference-search.md#external-plotting-repositories).
+
 ### Choose how to draft
 
 For a new overview or substantial redesign, recommend two agents independently generating visual concepts before PowerPoint reconstruction. Read [hybrid-figures.md](references/hybrid-figures.md) for the common brief, candidate comparison, selection, and picture boundaries. Both agents must produce actual images; prompts, critiques, or native approximations do not fulfill a request for two generated concepts. Follow the session's delegation authorization and preserve explicit user choices about backends.
@@ -146,6 +148,8 @@ These are separate checks:
 3. **Editability:** Apply the [picture boundary](references/hybrid-figures.md): diagram labels, symbols, arrows, and relationship lines stay native; detailed object illustrations may remain independently replaceable pictures. On a disposable copy, edit representative text and symbols throughout the figure, and move a connected node to check behavior. When used, move an imported object independently and change and restore a static curve's control point. For a native result chart, check its data source and edit/restore a series value; verify the embedded workbook when portable data editing is required. Counts of shapes or a PNG preview alone do not prove this. Disclose picture boundaries and curves that need manual rerouting.
 
 Use the installed presentation workflow's validators when available. The optional Windows helper `scripts/render_powerpoint.ps1` exports a single-slide figure through local PowerPoint and reports native object counts. It is a renderer and inventory check, not a substitute for visual or editing inspection.
+
+The portable `scripts/inspect_figure_pdf.py` reports extractable PDF text sizes at a supplied placement width. See [native-powerpoint.md](references/native-powerpoint.md#inspect-physical-text-size) for its usage and limits.
 
 Fix issues that affect the requested result and stop when the checks pass. Do not expand a one-figure revision into unrelated document edits or a large review process. If native PowerPoint becomes unavailable, report which rendering and editing checks remain incomplete and follow the platform requirement above. A fallback preview does not complete this workflow.
 
