@@ -270,6 +270,10 @@ class LiveDocumentTests(unittest.TestCase):
     def test_the_prompt_template_names_the_phase_1b_choice(self):
         check_template(self.text)
 
+    def test_the_prompt_template_skip_list_includes_agents_skills(self):
+        template = _terminal_prompt_template(self.text)
+        self.assertIn(".agents/skills/implement-review/", template)
+
     def test_the_mask_preserves_offsets(self):
         masked, _ = _markdown_regions(self.text)
         self.assertEqual(len(masked), len(self.text))

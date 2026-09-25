@@ -2,6 +2,10 @@
 # dispatch-codex.sh -- Auto-terminal channel dispatch for implement-review skill.
 # See skills/implement-review/SKILL.md > Phase 1c Auto-terminal path for the contract.
 #
+# Self-review guard: refuses to dispatch when the invoking orchestrator is
+# Codex itself (would be self-review, which the fungibility principle
+# disallows). See the env-check block below.
+#
 # Args (named):
 #   --prompt-file <path>           Path to file containing the review prompt
 #   --round <N>                    Round number (positive integer)
@@ -10,6 +14,16 @@
 #
 # Env:
 #   CODEX_BIN                      Codex binary name or path (default: codex)
+#   IMPLEMENT_REVIEW_ORCHESTRATOR  Who is driving this dispatch: claude / codex / user.
+#                                  When 'codex' (case-insensitive), refuses to
+#                                  dispatch with exit 2. When unset/empty AND
+#                                  either CODEX_THREAD_ID or CODEX_SESSION_ID is
+#                                  set to a non-empty value, also refuses. Any
+#                                  other value (claude / user) proceeds.
+#   CODEX_THREAD_ID                Set by Codex in its tool subprocesses (observed
+#                                  with codex-cli 0.156.1). Fall-through guard
+#                                  signal; child processes inherit it.
+#   CODEX_SESSION_ID               Same as CODEX_THREAD_ID, for the session ID.
 #   ANYWHERE_AGENTS_PYTHON         Explicit Python interpreter override
 #   TMPDIR                         Temp dir for state-dir (default: /tmp)
 #
@@ -21,7 +35,7 @@
 #
 # Exit code:
 #   Propagates codex exec's exit code unchanged.
-#   Returns 2 on usage errors (missing/invalid args).
+#   Returns 2 on usage errors (missing/invalid args) or self-review refusal.
 
 set -u
 
@@ -110,6 +124,24 @@ case "$ROUND" in
         echo "dispatch-codex: --round must be a positive integer, got: $ROUND" >&2
         exit 2 ;;
 esac
+
+# Self-review guard (orchestrator detection) --------------------------------
+# Refuse to dispatch when ANY of these holds:
+#   - IMPLEMENT_REVIEW_ORCHESTRATOR=codex (case-insensitive), OR
+#   - IMPLEMENT_REVIEW_ORCHESTRATOR is unset/empty AND either CODEX_THREAD_ID
+#     or CODEX_SESSION_ID is set to a non-empty value.
+# IMPLEMENT_REVIEW_ORCHESTRATOR=claude / user proceed regardless of
+# CODEX_THREAD_ID / CODEX_SESSION_ID.
+ORCH_RAW="${IMPLEMENT_REVIEW_ORCHESTRATOR:-}"
+ORCH_LC=$(printf '%s' "$ORCH_RAW" | tr '[:upper:]' '[:lower:]')
+if [ "$ORCH_LC" = "codex" ]; then
+    echo "dispatch-codex: refusing to dispatch (orchestrator=codex; self-review)" >&2
+    exit 2
+fi
+if [ -z "$ORCH_LC" ] && { [ -n "${CODEX_THREAD_ID:-}" ] || [ -n "${CODEX_SESSION_ID:-}" ]; }; then
+    echo "dispatch-codex: refusing to dispatch (orchestrator=codex; self-review)" >&2
+    exit 2
+fi
 
 # Resolve a Python interpreter for the reviewer before spending a Codex round.
 # A path/name check alone is insufficient on Windows: App Execution Aliases are
@@ -434,7 +466,7 @@ else
     PWSH_INSTRUCTION="No usable PowerShell 7 was found on this machine; a bare pwsh call may be a Microsoft Store execution alias that fails instantly under this spawn context and retries forever. Do not shell out to pwsh. Use bash, Windows PowerShell 5.1 (powershell.exe), or plain git commands instead."
 fi
 
-CHILD_SESSION_INSTRUCTIONS="The parent agent session already completed the repository bootstrap at startup. Skip bootstrap and shared configuration refresh commands in this child review session. Skip the session-start banner as well: no human reads a dispatched child's terminal, so rendering it only spends shell spawns. Use the shared configuration currently on disk. This session is an assigned reviewer. Its task, lens, and response format are already supplied. Skip router dispatch and coordinator-workflow discovery at all skill lookup locations (skills/implement-review/, .claude/skills/implement-review/, .agent-config/repo/skills/implement-review/). Do not load coordinator skill files or example reviews to discover the workflow or response format. Files under review remain readable. A targeted read outside the review scope is permitted when it supplies missing context, resolves truncation, or answers a concrete verification question. Apply the substantive project instructions supplied in context, including applicable local overrides. Read an applicable instruction file once only when its rules have not been supplied. For a staged-change review, obtain the selected diff once with the command in the request; if the request embeds that diff, use it and do not obtain another copy. For a plan review, the named plan and evidence files are the review input: read each once from the repository or from the supplied copy, as the request directs. Do not read the same content twice. $PYTHON_INSTRUCTION $PWSH_INSTRUCTION Before issuing a PASS or BLOCK commit verdict, execute relevant verification commands. In $EXPECTED_REVIEW_FILE, add one standalone line exactly 'Verification status: VERIFIED' if at least one relevant verification command completed, otherwise add 'Verification status: UNVERIFIED'. If the status is UNVERIFIED, write 'Commit verdict: UNVERIFIED'; never issue PASS or BLOCK. Verification notes must list the exact commands and outcomes."
+CHILD_SESSION_INSTRUCTIONS="The parent agent session already completed the repository bootstrap at startup. Skip bootstrap and shared configuration refresh commands in this child review session. Skip the session-start banner as well: no human reads a dispatched child's terminal, so rendering it only spends shell spawns. Use the shared configuration currently on disk. This session is an assigned reviewer. Its task, lens, and response format are already supplied. Skip router dispatch and coordinator-workflow discovery at all skill lookup locations (skills/implement-review/, .claude/skills/implement-review/, .agent-config/repo/skills/implement-review/, .agents/skills/implement-review/). Do not load coordinator skill files or example reviews to discover the workflow or response format. Files under review remain readable. A targeted read outside the review scope is permitted when it supplies missing context, resolves truncation, or answers a concrete verification question. Apply the substantive project instructions supplied in context, including applicable local overrides. Read an applicable instruction file once only when its rules have not been supplied. For a staged-change review, obtain the selected diff once with the command in the request; if the request embeds that diff, use it and do not obtain another copy. For a plan review, the named plan and evidence files are the review input: read each once from the repository or from the supplied copy, as the request directs. Do not read the same content twice. $PYTHON_INSTRUCTION $PWSH_INSTRUCTION Before issuing a PASS or BLOCK commit verdict, execute relevant verification commands. In $EXPECTED_REVIEW_FILE, add one standalone line exactly 'Verification status: VERIFIED' if at least one relevant verification command completed, otherwise add 'Verification status: UNVERIFIED'. If the status is UNVERIFIED, write 'Commit verdict: UNVERIFIED'; never issue PASS or BLOCK. Verification notes must list the exact commands and outcomes."
 # Codex injects at most project_doc_max_bytes of discovered instruction files
 # (AGENTS.md and the like) and silently truncates the rest; the default is
 # 32 KiB, which a consumer's composed AGENTS.md exceeds once the passive packs

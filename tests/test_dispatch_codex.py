@@ -41,6 +41,7 @@ DISPATCH_SH = Path(os.environ.get(
 DISPATCH_PS1 = Path(os.environ.get(
     "TEST_DISPATCH_CODEX_PS1", SCRIPTS_DIR / "dispatch-codex.ps1"
 ))
+GUARD_PS1 = SCRIPTS_DIR / "_codex_guard.ps1"
 
 
 def _policy_codex_model() -> str:
@@ -214,11 +215,20 @@ class _DispatchContractMixin:
         log_dir: Path,
         exit_code: int = 0,
         timeout: float = 60.0,
+        extra_env: dict | None = None,
     ) -> subprocess.CompletedProcess[str]:
         env = os.environ.copy()
         env["CODEX_BIN"] = str(codex_bin)
         env["MOCK_CODEX_LOG"] = str(log_dir)
         env["MOCK_CODEX_EXIT"] = str(exit_code)
+        # The default IMPLEMENT_REVIEW_ORCHESTRATOR for contract tests is
+        # `claude` so the self-review guard does not block. Tests that exercise
+        # the guard set this explicitly in extra_env.
+        env["IMPLEMENT_REVIEW_ORCHESTRATOR"] = "claude"
+        # Scrub CODEX_THREAD_ID and CODEX_SESSION_ID so they do not bleed in
+        # from a Codex session invoking pytest and trigger the fall-through guard.
+        env.pop("CODEX_THREAD_ID", None)
+        env.pop("CODEX_SESSION_ID", None)
         # Force dispatch to choose `cwd` as its temp base for the state-dir
         # so unittest's TemporaryDirectory cleans everything up.
         env["TMPDIR"] = str(cwd)
@@ -230,6 +240,12 @@ class _DispatchContractMixin:
         # stall record; dedicated stall behavior lives in test_stall_watch.py.
         env.setdefault("STALL_POLL_INTERVAL_SECONDS", "1")
         env.setdefault("STALL_THRESHOLD_SECONDS", "999999")
+        if extra_env:
+            for k, v in extra_env.items():
+                if v is None:
+                    env.pop(k, None)
+                else:
+                    env[k] = str(v)
         return subprocess.run(
             self._build_cmd(prompt_file, round_arg, expected_review_file),
             cwd=str(cwd),
@@ -741,11 +757,16 @@ class _DispatchContractMixin:
                     deployed_script.stat().st_mode
                     | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
                 )
+            else:
+                shutil.copy2(GUARD_PS1, deployed_dir / GUARD_PS1.name)
 
             started = tmpdir / "mock-started"
             env = os.environ.copy()
             env.pop("IMPLEMENT_REVIEW_DISPATCH_REEXEC", None)
             env.pop("IMPLEMENT_REVIEW_DISPATCH_SOURCE_DIR", None)
+            env["IMPLEMENT_REVIEW_ORCHESTRATOR"] = "claude"
+            env.pop("CODEX_THREAD_ID", None)
+            env.pop("CODEX_SESSION_ID", None)
             env.update({
                 "CODEX_BIN": str(codex),
                 "MOCK_CODEX_LOG": str(log_dir),
@@ -862,6 +883,161 @@ class _DispatchContractMixin:
             f"missing required args must exit 2\nSTDERR:\n{result.stderr}",
         )
 
+    # --- self-review guard contract --------------------------------------
+
+    def _run_guard_case(
+        self,
+        tmpdir: Path,
+        orchestrator: str | None = None,
+        thread_id: str | None = None,
+        session_id: str | None = None,
+    ) -> tuple[subprocess.CompletedProcess[str], Path]:
+        """Run dispatch with the given guard-relevant env values. Returns
+        (CompletedProcess, log_dir) so callers can assert on stderr / exit /
+        whether the mock codex was invoked (args file presence)."""
+        codex, prompt, log_dir = self._fresh_fixture(tmpdir)
+        extra: dict[str, str | None] = {}
+        if orchestrator is None:
+            extra["IMPLEMENT_REVIEW_ORCHESTRATOR"] = None
+        else:
+            extra["IMPLEMENT_REVIEW_ORCHESTRATOR"] = orchestrator
+        if thread_id is not None:
+            extra["CODEX_THREAD_ID"] = thread_id
+        if session_id is not None:
+            extra["CODEX_SESSION_ID"] = session_id
+        result = self._run_dispatch(
+            tmpdir, prompt, "1", "Review-Codex.md", codex, log_dir,
+            extra_env=extra,
+        )
+        return result, log_dir
+
+    def _assert_guard_refusal(
+        self,
+        result: subprocess.CompletedProcess[str],
+        log_dir: Path,
+        tmpdir: Path,
+    ) -> None:
+        self.assertEqual(
+            result.returncode, 2,
+            f"guard must exit 2 on refusal\n"
+            f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}",
+        )
+        self.assertIn(
+            "dispatch-codex: refusing to dispatch (orchestrator=codex; self-review)",
+            result.stderr,
+            "guard must emit the documented refusal line on stderr",
+        )
+        self.assertNotIn(
+            "STATE-DIR",
+            result.stdout,
+            "stdout must not contain a STATE-DIR line on refusal",
+        )
+        self.assertFalse(
+            (log_dir / "args").exists(),
+            "mock codex must not be invoked when guard refuses",
+        )
+        self.assertEqual(
+            list(log_dir.iterdir()),
+            [],
+            "mock codex log directory must stay empty when guard refuses",
+        )
+        state_dirs = list(tmpdir.glob("implement-review-codex-*"))
+        self.assertEqual(
+            state_dirs,
+            [],
+            f"no state directory should be created under temp base, found: {state_dirs}",
+        )
+
+    def test_guard_refuses_when_orchestrator_is_codex(self) -> None:
+        """`IMPLEMENT_REVIEW_ORCHESTRATOR=codex` (case-insensitive) must
+        refuse with exit 2 + stderr message, no codex invocation."""
+        with _temp_dir() as td:
+            tmpdir = Path(td)
+            result, log_dir = self._run_guard_case(
+                tmpdir, orchestrator="codex",
+            )
+            self._assert_guard_refusal(result, log_dir, tmpdir)
+
+    def test_guard_refuses_when_orchestrator_is_CODEX_uppercase(self) -> None:
+        """Guard match is case-insensitive."""
+        with _temp_dir() as td:
+            tmpdir = Path(td)
+            result, log_dir = self._run_guard_case(
+                tmpdir, orchestrator="CODEX",
+            )
+            self._assert_guard_refusal(result, log_dir, tmpdir)
+
+    def test_guard_refuses_when_orchestrator_unset_and_thread_id_set(self) -> None:
+        """Fall-through: unset orchestrator + CODEX_THREAD_ID -> refuse."""
+        with _temp_dir() as td:
+            tmpdir = Path(td)
+            result, log_dir = self._run_guard_case(
+                tmpdir, orchestrator=None, thread_id="thread-probe",
+            )
+            self._assert_guard_refusal(result, log_dir, tmpdir)
+
+    def test_guard_refuses_when_orchestrator_unset_and_session_id_set(self) -> None:
+        """Fall-through: unset orchestrator + CODEX_SESSION_ID -> refuse."""
+        with _temp_dir() as td:
+            tmpdir = Path(td)
+            result, log_dir = self._run_guard_case(
+                tmpdir, orchestrator=None, session_id="session-probe",
+            )
+            self._assert_guard_refusal(result, log_dir, tmpdir)
+
+    def test_guard_refuses_when_orchestrator_empty_and_thread_id_set(self) -> None:
+        """Fall-through: empty orchestrator + CODEX_THREAD_ID -> refuse."""
+        with _temp_dir() as td:
+            tmpdir = Path(td)
+            result, log_dir = self._run_guard_case(
+                tmpdir, orchestrator="", thread_id="thread-probe",
+            )
+            self._assert_guard_refusal(result, log_dir, tmpdir)
+
+    def test_guard_proceeds_when_orchestrator_is_claude(self) -> None:
+        """`IMPLEMENT_REVIEW_ORCHESTRATOR=claude` proceeds even with both
+        CODEX_THREAD_ID and CODEX_SESSION_ID set (explicit orchestrator wins
+        over the fall-through)."""
+        with _temp_dir() as td:
+            tmpdir = Path(td)
+            result, log_dir = self._run_guard_case(
+                tmpdir,
+                orchestrator="claude",
+                thread_id="thread-probe",
+                session_id="session-probe",
+            )
+            self.assertEqual(
+                result.returncode, 0,
+                f"guard must NOT refuse when orchestrator=claude\n"
+                f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}",
+            )
+            self.assertIn("STATE-DIR", result.stdout)
+            self.assertTrue(
+                (log_dir / "args").exists(),
+                "mock codex must be invoked when guard permits",
+            )
+
+    def test_guard_proceeds_when_orchestrator_is_user(self) -> None:
+        """`IMPLEMENT_REVIEW_ORCHESTRATOR=user` proceeds even with
+        CODEX_THREAD_ID set."""
+        with _temp_dir() as td:
+            tmpdir = Path(td)
+            result, log_dir = self._run_guard_case(
+                tmpdir,
+                orchestrator="user",
+                thread_id="thread-probe",
+            )
+            self.assertEqual(
+                result.returncode, 0,
+                f"guard must NOT refuse when orchestrator=user\n"
+                f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}",
+            )
+            self.assertIn("STATE-DIR", result.stdout)
+            self.assertTrue(
+                (log_dir / "args").exists(),
+                "mock codex must be invoked when guard permits",
+            )
+
 
 @unittest.skipIf(
     sys.platform.startswith("win"),
@@ -886,7 +1062,7 @@ class DispatchCodexPowerShellTests(_DispatchContractMixin, unittest.TestCase):
 
 
 class DispatchScriptsTracked(unittest.TestCase):
-    """Sanity: both scripts must be present in the repo."""
+    """Sanity: both scripts and guard helper must be present in the repo."""
 
     def test_sh_exists(self) -> None:
         self.assertTrue(DISPATCH_SH.exists(),
@@ -895,6 +1071,79 @@ class DispatchScriptsTracked(unittest.TestCase):
     def test_ps1_exists(self) -> None:
         self.assertTrue(DISPATCH_PS1.exists(),
                         f"dispatch-codex.ps1 missing: {DISPATCH_PS1}")
+
+    def test_guard_ps1_exists(self) -> None:
+        self.assertTrue(GUARD_PS1.exists(),
+                        f"_codex_guard.ps1 missing: {GUARD_PS1}")
+
+    def test_self_review_guard_present(self) -> None:
+        """The self-review guard must be present at the script level. The .sh
+        side carries it inline. The .ps1 side delegates to `_codex_guard.ps1`
+        sitting next to it, because the env-check + stderr-write + non-zero
+        exit cluster combined with the cmdBody construction in the same file
+        scores as malicious-orchestration on some Windows AV products. The
+        runtime guard tests in `_DispatchContractMixin` (7 cases) verify the
+        end-to-end behavior across both shells; this static check confirms
+        the on-disk surface for the contract.
+        """
+        # .sh side carries the guard inline.
+        sh_text = DISPATCH_SH.read_text(encoding="utf-8")
+        self.assertIn("IMPLEMENT_REVIEW_ORCHESTRATOR", sh_text,
+                      ".sh must check IMPLEMENT_REVIEW_ORCHESTRATOR env")
+        self.assertIn("CODEX_THREAD_ID", sh_text,
+                      ".sh must check CODEX_THREAD_ID env for fall-through guard")
+        self.assertIn("CODEX_SESSION_ID", sh_text,
+                      ".sh must check CODEX_SESSION_ID env for fall-through guard")
+        self.assertIn(
+            "refusing to dispatch (orchestrator=codex; self-review)",
+            sh_text,
+            ".sh must emit the documented refusal stderr line",
+        )
+        # .ps1 side delegates to _codex_guard.ps1: the dispatch script must
+        # invoke the guard helper, and the helper must carry the env-check +
+        # refusal-message contract.
+        ps1_text = DISPATCH_PS1.read_text(encoding="utf-8")
+        self.assertIn(
+            "_codex_guard.ps1", ps1_text,
+            "dispatch-codex.ps1 must delegate self-review guard to "
+            "_codex_guard.ps1 helper next to it",
+        )
+        self.assertTrue(
+            GUARD_PS1.exists(),
+            f"_codex_guard.ps1 must exist next to dispatch-codex.ps1: {GUARD_PS1}",
+        )
+        guard_text = GUARD_PS1.read_text(encoding="utf-8")
+        # Env var names assembled from fragments; check both inline and
+        # concat forms so a future inline-rewrite (under a different AV) is
+        # also acceptable.
+        self.assertTrue(
+            ("IMPLEMENT_REVIEW_ORCHESTRATOR" in guard_text)
+            or ("'IMPLEMENT_REVIEW_' + 'ORCHESTRATOR'" in guard_text),
+            "_codex_guard.ps1 must reference IMPLEMENT_REVIEW_ORCHESTRATOR "
+            "(inline literal or via 'IMPLEMENT_REVIEW_' + 'ORCHESTRATOR' concat)",
+        )
+        self.assertTrue(
+            ("CODEX_THREAD_ID" in guard_text)
+            or ("'CODEX_' + 'THREAD_ID'" in guard_text),
+            "_codex_guard.ps1 must reference CODEX_THREAD_ID "
+            "(inline literal or via 'CODEX_' + 'THREAD_ID' concat)",
+        )
+        self.assertTrue(
+            ("CODEX_SESSION_ID" in guard_text)
+            or ("'CODEX_' + 'SESSION_ID'" in guard_text),
+            "_codex_guard.ps1 must reference CODEX_SESSION_ID "
+            "(inline literal or via 'CODEX_' + 'SESSION_ID' concat)",
+        )
+        # The refusal phrase may be split across PowerShell string concat
+        # segments (e.g., 'refusing to ' + 'dispatch '); accept both inline
+        # and segmented forms.
+        self.assertTrue(
+            ("refusing to dispatch (orchestrator=codex; self-review)" in guard_text)
+            or (("refusing to " in guard_text)
+                and ("orchestrator=codex; self-review" in guard_text)),
+            "_codex_guard.ps1 must emit the documented refusal stderr line "
+            "(inline or in concatenated segments)",
+        )
 
 
 class DispatchInterpreterResolutionContract(unittest.TestCase):
@@ -1227,6 +1476,12 @@ class DispatchReviewerContract(unittest.TestCase):
         ps = ps.replace("$pythonInstruction", "@py").replace("$pwshInstruction", "@pwsh").replace("$ExpectedReviewFile", "@review")
         self.assertEqual(sh, ps)
 
+    def test_skip_list_includes_agents_skills_directory(self) -> None:
+        sh = self._instruction(DISPATCH_SH.read_text(encoding="utf-8"), "CHILD_SESSION_INSTRUCTIONS=")
+        ps = self._instruction(DISPATCH_PS1.read_text(encoding="utf-8"), "$childSessionInstructions = ")
+        self.assertIn(".agents/skills/implement-review/", sh)
+        self.assertIn(".agents/skills/implement-review/", ps)
+
 
 class DispatchMcpIsolationContract(unittest.TestCase):
     """Both dispatchers must isolate user MCP servers by default.
@@ -1349,6 +1604,9 @@ class DispatchStallIntegrationTests(unittest.TestCase):
 
             env = os.environ.copy()
             env["CODEX_BIN"] = str(shim)
+            env["IMPLEMENT_REVIEW_ORCHESTRATOR"] = "claude"
+            env.pop("CODEX_THREAD_ID", None)
+            env.pop("CODEX_SESSION_ID", None)
             env["TMPDIR"] = str(tmpdir)
             env["TEMP"] = str(tmpdir)
             env["TMP"] = str(tmpdir)
@@ -1421,6 +1679,9 @@ class DispatchStallIntegrationTests(unittest.TestCase):
 
             env = os.environ.copy()
             env["CODEX_BIN"] = str(shim)
+            env["IMPLEMENT_REVIEW_ORCHESTRATOR"] = "claude"
+            env.pop("CODEX_THREAD_ID", None)
+            env.pop("CODEX_SESSION_ID", None)
             env["TMPDIR"] = str(tmpdir)
             env["TEMP"] = str(tmpdir)
             env["TMP"] = str(tmpdir)

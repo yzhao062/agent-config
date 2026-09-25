@@ -209,6 +209,9 @@ class _DispatchInvokerMixin:
             env["PATH"] = f"{path_prefix_dir}:/usr/bin:/bin"
 
         env["MOCK_CODEX_LOG"] = str(log_dir)
+        env["IMPLEMENT_REVIEW_ORCHESTRATOR"] = "claude"
+        env.pop("CODEX_THREAD_ID", None)
+        env.pop("CODEX_SESSION_ID", None)
         env["TMPDIR"] = str(tmpdir)
         env["TEMP"] = str(tmpdir)
         env["TMP"] = str(tmpdir)
@@ -371,6 +374,9 @@ class WindowsPathResolutionTests(_DispatchInvokerMixin, unittest.TestCase):
             env["Path"] = path_value
             env["PATH"] = path_value
             env["MOCK_CODEX_LOG"] = str(log_dir)
+            env["IMPLEMENT_REVIEW_ORCHESTRATOR"] = "claude"
+            env.pop("CODEX_THREAD_ID", None)
+            env.pop("CODEX_SESSION_ID", None)
             env["TMPDIR"] = str(tmpdir)
             env["TEMP"] = str(tmpdir)
             env["TMP"] = str(tmpdir)
@@ -426,6 +432,9 @@ class WindowsPathResolutionTests(_DispatchInvokerMixin, unittest.TestCase):
             env["Path"] = path_value
             env["PATH"] = path_value
             env["MOCK_CODEX_LOG"] = str(log_dir)
+            env["IMPLEMENT_REVIEW_ORCHESTRATOR"] = "claude"
+            env.pop("CODEX_THREAD_ID", None)
+            env.pop("CODEX_SESSION_ID", None)
             env["TMPDIR"] = str(tmpdir)
             env["TEMP"] = str(tmpdir)
             env["TMP"] = str(tmpdir)

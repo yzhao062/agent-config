@@ -343,6 +343,7 @@ class DispatchGeminiUnitTests(unittest.TestCase):
         preamble = relay.split("--- ORIGINAL REVIEW REQUEST ---", 1)[0]
         self.assertIn("Skip router dispatch and coordinator-workflow discovery", preamble)
         self.assertIn("skills/implement-review/", preamble)
+        self.assertIn(".agents/skills/implement-review/", preamble)
         self.assertIn("Files under review remain readable.", preamble)
         self.assertIn("including local overrides", preamble)
         self.assertIn("do not run git diff", preamble)

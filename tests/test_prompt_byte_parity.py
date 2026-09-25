@@ -92,6 +92,9 @@ def _dispatch_with(
     env = os.environ.copy()
     env["CODEX_BIN"] = str(codex_bin)
     env["MOCK_CODEX_LOG"] = str(log_dir)
+    env["IMPLEMENT_REVIEW_ORCHESTRATOR"] = "claude"
+    env.pop("CODEX_THREAD_ID", None)
+    env.pop("CODEX_SESSION_ID", None)
     env["TMPDIR"] = str(tmpdir)
     env["TEMP"] = str(tmpdir)
     env["TMP"] = str(tmpdir)
