@@ -121,7 +121,7 @@ Native effects and vector exports are separate properties. In an observed PowerP
 
 ### Inspect Physical Text Size
 
-The portable [inspect_figure_pdf.py](../scripts/inspect_figure_pdf.py) helper reads a PDF and prints JSON with its hash, scaled dimensions, smallest extractable text spans, and image occurrence count. It requires Python with the `pymupdf` package. Use the existing document runtime when it provides that dependency.
+The portable `scripts/inspect_figure_pdf.py` helper reads a PDF and prints JSON with its hash, scaled dimensions, smallest extractable text spans, and image occurrence count. It requires Python with the `pymupdf` package. Use the existing document runtime when it provides that dependency.
 
 ```bash
 python '<skill-root>/scripts/inspect_figure_pdf.py' '/absolute/path/figure.pdf' --width-mm 77 --min-font-pt 7

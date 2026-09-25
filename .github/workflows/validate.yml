@@ -59,7 +59,11 @@ jobs:
         # skips itself when the import fails. That makes it required here
         # rather than optional: without the package those tests would report
         # green while running nothing, which is how a feature ships broken.
-        run: python -m pip install --quiet pyyaml agent-style
+        #
+        # PyMuPDF backs skills/editable-figure/scripts/inspect_figure_pdf.py
+        # and is optional there for the same reason: without it,
+        # tests/test_inspect_figure_pdf.py skips its whole class.
+        run: python -m pip install --quiet pyyaml agent-style pymupdf
 
       - name: Run validation tests
         run: python -B -m unittest discover -s tests -p "test_*.py" -v
