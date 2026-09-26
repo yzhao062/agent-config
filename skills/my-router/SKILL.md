@@ -44,7 +44,6 @@ The user's prompt often contains the clearest signal. Match keywords to skills:
 | "figure", "diagram", "illustration", "schematic", "overview figure", "Figure 1", "总览图", "图 1" | `figure-prompt-builder`, with the `editable-figure` gallery for paper/proposal overviews | `skills/` (shared) |
 | "mockup", "HTML figure", "HTML mockup", "interactive figure", "dashboard mockup", "Gantt", "screenshotable figure", "capture mode", "skia-canvas", "TikZ figure", "arrow routing" | `ci-mockup-figure` | `skills/` (shared) |
 | "review staged", "review changes", "review the diff" | `implement-review` | `skills/` (shared) |
-| "two-pass", "first pass", "second pass", "audit" | `dual-pass-workflow` | `skills/` (shared) |
 | "polish README", "modernize README", "README audit", "README rewrite", "README badges", "README hero", "GitHub README patterns" | `readme-polish` | `skills/` (shared) |
 | "proposal", "nsf", "nih", "grant", "solicitation", "aim", "thrust" | Proposal skills (check for local `nsf-*`, `nih-*` skills first) | `reference-skills/` (project-local) |
 | "review paper", "peer review", "reviewer comments" | `cs-paper-review` | `reference-skills/` (project-local) |
@@ -110,15 +109,6 @@ Skills come from three sources with different availability:
 | `reference-skills/` (domain) | Only projects that have them locally | Copied manually into `skills/` in the project repo |
 
 Before invoking a reference skill, check that its `SKILL.md` exists in the current project (in `skills/`, `.claude/skills/`, or `.agent-config/repo/skills/`). If it does not exist, inform the user: "This task would use [skill name], but it is not available in this project. You can copy it from https://github.com/yzhao062/agent-config/tree/main/reference-skills/."
-
-## Combining with Dual-Pass Workflow
-
-For tasks that benefit from build-then-audit:
-
-- **First pass**: router dispatches to the domain skill (e.g., `bibref-filler` adds citations)
-- **Second pass**: router dispatches to `implement-review` or the domain skill's audit mode
-
-The user can say "two-pass this" and the router will wrap the domain skill in `dual-pass-workflow` automatically.
 
 ## Combining with Implement-Review
 

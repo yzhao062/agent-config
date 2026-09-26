@@ -1,7 +1,0 @@
----
-description: Structure a task into a first pass and an optional second pass without replacing the domain skill
----
-
-Read and follow the skill definition. Look for it at `skills/dual-pass-workflow/SKILL.md` first, then `.claude/skills/dual-pass-workflow/SKILL.md`, then `.agent-config/repo/skills/dual-pass-workflow/SKILL.md`.
-
-Apply it to the user's current task. Also read the supporting files under the skill's references/ and assets/ directories as needed.

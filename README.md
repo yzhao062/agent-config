@@ -28,7 +28,7 @@ Other project repos bootstrap from this repo to get shared agent defaults and sk
 
 - **`AGENTS.md`** — the shared rule baseline (bootstrap, precedence, agent roles, git safety and the mechanical gates, shell style, writing and formatting defaults, skills, environment, session banner); byte-identical to the `anywhere-agents` copy, with the maintainer's own lines in `AGENTS.local.md`
 - **`CLAUDE.md` and `agents/codex.md`** — regenerated on every bootstrap run from `AGENTS.md` via `scripts/generate_agent_configs.py`
-- **`skills/`** — shared skills (e.g., `dual-pass-workflow`, `bibref-filler`)
+- **`skills/`** — shared skills (e.g., `bibref-filler`, `editable-figure`)
 - **`.claude/commands/`** — Claude Code pointer commands for shared skills
 - **`.claude/settings.json`** — shared Claude project defaults (permissions, attribution, etc.)
 - **`user/settings.json`** — shared user-level Claude defaults (permissions, hook wiring, `CLAUDE_CODE_EFFORT_LEVEL=max` env entry that pins effort to max)
@@ -108,7 +108,6 @@ Codex is the `/vet` gatekeeper. On the Auto-terminal channel, `implement-review`
 
 | Skill | Description |
 |-------|-------------|
-| `dual-pass-workflow` | Outer shell for two-pass tasks: first pass builds the artifact, optional second pass audits and reconciles. Works with any domain skill (paper review, bug fix, writing, frontend edit, etc.). |
 | `bibref-filler` | Add new external verified citations while keeping curated bibliography files stable, placing machine-added entries in a separate `working.bib`, and leaving visible unresolved notes instead of guessing. |
 | `bibref-verify` | Audit existing bibliography entries before submission, keeping `.bib` read-only while checking for fabricated citations, stale venue metadata, and ready-to-paste fix blocks in `REFERENCE-CHECK.md`. |
 | `editable-figure` | Analyze source material, design a concise paper, proposal, or README figure, and deliver native editable PowerPoint objects with publication or web exports. |
@@ -147,11 +146,6 @@ skills/                            # Shared skills (bootstrapped to all projects
   ci-mockup-figure/
     SKILL.md                       # Skill definition
     agents/openai.yaml             # Codex wrapper
-  dual-pass-workflow/
-    SKILL.md                       # Skill definition (single source of truth)
-    agents/openai.yaml             # Codex wrapper
-    references/                    # contracts.md, task-mappings.md
-    assets/                        # workflow.yaml, handoff.md, audit.md, reconcile.md
   editable-figure/
     SKILL.md                       # Analyze, design, and build editable figures
     agents/openai.yaml             # Codex wrapper
@@ -226,7 +220,6 @@ docs/
   bibref-filler.md
   bibref-verify.md
   ci-mockup-figure.md
-  dual-pass-workflow.md
   editable-figure.md
   figure-prompt-builder.md
   implement-review.md
