@@ -33,6 +33,12 @@ One sentence stating what a reviewer should remember after seeing this figure.
 
 Describe left-to-right, top-to-bottom, layered, or other layout logic.
 
+## Style References
+
+Record selected gallery IDs or other reference locators, qualities to transfer,
+and qualities that should not transfer. Attach authorized reference images to
+the downstream prompt when supported and describe the selected qualities in words.
+
 ## In-Figure Text
 
 List the short labels or box text that should appear in the figure.

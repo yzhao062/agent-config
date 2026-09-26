@@ -36,6 +36,8 @@ reports, or demo writeups. It is especially effective when the figure needs
 to show multi-component structure, data flow, or step-by-step methodology
 and reviewers evaluate whether the design is credible and well-conceived.
 
+For paper and proposal overviews, including Figure 1, resolve `editable-figure` through the normal skill lookup and read its `references/gallery/index.md` and relevant images and feedback. Apply selected preference dimensions in the design brief and implementation, preserving meaningful technical detail and domain imagery when liked. Use its durable update procedure for new feedback. For these overviews, confirmed preferences override conflicting defaults below for the affected dimension. This includes the pre-flight color rule, light-tint fills, minimal panel elements, and low-opacity or desaturated domain imagery. Preserve the requested HTML, TikZ, or other output format.
+
 ### HTML mockups vs TikZ/LaTeX diagrams
 
 HTML and TikZ each have a clear strength. The deciding factor is **whether

@@ -2,7 +2,7 @@
 
 The author explicitly identified these three figures as preferred examples on 2026-09-05. They guide proposal composition and the use of concrete visual content. They supersede any inference that the preceding Figure 2 revision's plain rectangles and serif type are the author's ideal style.
 
-Locators are relative to the `NSF-Proposal-Template-Yue` repository. Open the actual PDFs when that collection is available. Do not copy the private artwork into this skill or send additional proposal content to a reviewer by default. The descriptions below keep the design lessons usable without the local collection.
+Locators are relative to the `NSF-Proposal-Template-Yue` repository. Open the actual PDFs when that collection is available. Selected paper and awarded-proposal figures may be collected in the [visual gallery](gallery/index.md) without a separate privacy confirmation for each image, as authorized by the author. Keep source locators with copied previews. These descriptions keep the design lessons usable without the local collection.
 
 ## NSF FIRE: a visually concrete research overview
 
@@ -43,7 +43,7 @@ Inspect the current assets and, when useful, their editable sources before borro
 
 ## What the preference changes
 
-The common lesson is meaningful visual richness: identifiable domain objects, scientific or system structure, purposeful labels, and a hierarchy that guides the first glance. The author's later clarification locates the unwanted "AI feel" in unnecessary text added to signal rigor. Shape geometry is not the criterion. Keep visual substance while removing redundant explanation; a dense collection of useful evidence does not justify explaining every element again.
+The common lesson is meaningful visual richness: identifiable domain objects, scientific or system structure, purposeful labels, and a hierarchy that guides the first glance. Feedback from [2026-09-25](gallery/preferences.md) identifies FIRE's real-world fire and roads and the compact framework's geographic map as specific attractions. For the ecosystem, the author found the tree form novel and likes its technical details and recognizable icons and logos. Preserve this visual substance while removing redundant explanation. Earlier author feedback identifies unnecessary text added to signal rigor as an unwanted source of "AI feel"; shape geometry is not the criterion. Feedback from 2026-09-25 also rates the AI feel of whole figures without naming further causes.
 
 Select the example by the figure's job: integrated research overview, ecosystem argument, or compact framework. Keep editable text, arrows, and semantic objects alongside replaceable image assets when a mixed composition is appropriate. Apply the manuscript's established palette, or [default-palette.md](default-palette.md) for a new identity, unless the author asks for a different color treatment.
 

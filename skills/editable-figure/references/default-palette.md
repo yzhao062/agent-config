@@ -4,6 +4,8 @@ The user selected CatchBench, Cat-DPO and No Attacker Needed as the lab's defaul
 
 For proposal composition, the separately selected [proposal examples](proposal-style-exemplars.md) guide visual richness and hierarchy. They do not replace these color defaults or the established palette of a manuscript being edited.
 
+The author's [later feedback](gallery/preferences.md) rates CatchBench's overall figure as average while confirming its colors. Do not use the palette choice as approval of that composition. Richly colored scenes, maps, icons, and logos are also liked: these tokens organize schematic elements, not a requirement to recolor all source imagery into mint and coral.
+
 `default-palette.json`, beside this file, is the canonical source of exact color values. Use it directly in a builder or copy its tokens into the figure's working brief. It is self-contained, so ordinary figure work does not depend on downloading the reference papers again.
 
 ## Roles and use
@@ -19,7 +21,7 @@ For proposal composition, the separately selected [proposal examples](proposal-s
 | `rule` | Quiet separators and non-data structure. |
 | `mintStroke`, `coralStroke` | Dark outlines, connectors or labels associated with the corresponding light fills. |
 
-Use a subset suited to the message. Most explanatory figures need mint, coral and neutrals. For a new two-series comparison, use `pairOrder`; `categoricalOrder` is a four-series preset, not a sequence to truncate for fewer series. For three series, retain the main mint/coral contrast and choose an additional color by its role. Establish a semantic mapping in the working brief and retain it across panels and related figures; existing identities take priority over either preset's order. Coral identifies the focal element, so it does not universally mean success, failure, danger or the proposed method. If a comparison is also shown in a results panel, its identities should retain their colors.
+Use a subset suited to the message. A compact mechanism or comparison figure often needs only mint, coral and neutrals. An overview can use the full family, with teal and gold distinguishing regions or categories alongside naturally colored scenes, maps, icons, and logos. Gallery 01 and 09 support rich color without making it a requirement for every figure. Use `pairOrder` for a new two-series comparison; `categoricalOrder` is a four-series preset, not a sequence to truncate for fewer series. With three series, retain the main mint/coral contrast and choose an additional color by its role. Establish a semantic mapping in the working brief and retain it across panels and related figures; existing identities take priority over either preset's order. Coral identifies the focal element, so it does not universally mean success, failure, danger or the proposed method. If a comparison is also shown in a results panel, its identities should retain their colors.
 
 Pastel fills work with dark text and visible outlines. Use the darker stroke tokens where a light fill would disappear as a thin line. For small scientific curves, retain distinguishable markers, line styles and direct labels; do not rely on a mint/coral hue difference alone. Check the actual document width and grayscale legibility. Keep a white figure canvas for README exports unless the repository has an explicit dark theme.
 

@@ -1,13 +1,13 @@
 # Find references before choosing a composition
 
-For a new figure or substantial redesign, search for relevant examples after understanding the source and before committing to a layout. The goal is a defensible design choice, not an exhaustive literature review. Reuse a relevant reference already inspected in the current task; a small correction to an accepted layout does not need another search.
+For a new figure or substantial redesign, start with the author's [visual gallery](gallery/index.md) after understanding the source and before committing to a layout. Inspect relevant available images and use the confirmed preference dimensions. The primary task is a paper or proposal overview, usually Figure 1; plotting examples alone do not establish a preferred overview composition. Search related work when no gallery example matches the figure's role and type of contribution. Gallery examples mainly supply taste references. Reuse a relevant reference already inspected in the current task; a small correction to an accepted layout does not need another search.
 
 ## Route by the requested document
 
 | Target | Search first | Inspect | Prefer |
 |---|---|---|---|
-| ML/AI paper | Related papers in NeurIPS, ICML, and ICLR; use other leading field venues when appropriate | The actual first figure or matching method figure, its caption, and nearby introduction | Similar scientific contribution and figure purpose, with a clear problem, example, mechanism, or result |
-| GitHub README | Current GitHub Trending in a relevant category, then related active repositories | The rendered README, actual hero/workflow asset, opening description, and quick start | A recognizable user benefit, honest input/output example, and readable composition at README width |
+| ML/AI paper | Relevant author-selected gallery examples, then related papers in NeurIPS, ICML, and ICLR when needed; use other leading field venues when appropriate | The actual first figure or matching method figure, its caption, and nearby introduction | Similar scientific contribution and figure purpose, with a clear problem, example, mechanism, or result |
+| GitHub README | Relevant author-selected gallery examples, then current GitHub Trending in a relevant category and related active repositories when needed | The rendered README, actual hero/workflow asset, opening description, and quick start | A recognizable user benefit, honest input/output example, and readable composition at README width |
 | Proposal | The author's selected proposal examples, then the local awarded/funded collection and its indexes as needed | Overview or aim figure with surrounding narrative, funding context, and available editable source | A match to the figure's job and the author's preference; agency/program and audience provide additional context |
 
 ### Paper references
@@ -28,7 +28,7 @@ Start with the author's [selected proposal examples](proposal-style-exemplars.md
 
 Use the user's explicit identification, a trusted local award index, or an award record to establish funding status. Otherwise mark the status unverified. If the collection path is unknown after checking the available project indexes, ask for its location while continuing source analysis and any available reference inspection. Do not invent a standard local path or scan unrelated personal folders.
 
-When the author asks to retain reference preferences or lessons in a local skill, record the source locators and concise design descriptions. This does not automatically authorize copying private artwork, PDF pages, or verbatim passages into that skill, a public reference bank, or an external prompt. Use any existing authorization for the actual material and destination; keep broader proposal contents outside a limited figure review.
+When retaining reference preferences in this skill, use the [visual gallery](gallery/index.md). The author permits collecting selected figures from papers and awarded proposals without a separate privacy confirmation for each image. Save available previews with source locators and concise preference notes using the gallery's durable update procedure; consumer feedback belongs outside installed skill copies. Whole proposal documents are unnecessary for this figure collection.
 
 Inspect the current proposal's figures alongside the awarded examples. The former establish the document's own typography, palette, object shapes, and icon vocabulary; the latter can supply useful composition ideas. Resolve figure numbers through the current manuscript's actual asset inclusions. A similarly named small export or an older PPTX may contain different artwork. When the author asks to reuse their own elements, look for the editable source first and retain exact asset or crop locations. See [proposal-figures.md](proposal-figures.md) for choosing what to reuse.
 

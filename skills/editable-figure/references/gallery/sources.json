@@ -1,0 +1,122 @@
+{
+  "collected_on": "2026-09-25",
+  "figures": [
+    {
+      "id": "01-nsf-fire",
+      "repository": "NSF-Proposal-Template-Yue",
+      "source_path": "proposals/awarded/nsf-fire/figure/main_figure.pdf",
+      "copied_file": "01-nsf-fire/main_figure.pdf",
+      "preview": "01-nsf-fire/preview.png",
+      "page": 1,
+      "sha256": "fcc9a47b3858ae9e1ab924e9b23c1d01df8b137a1e0d38897151af928c069659",
+      "title": "NSF FIRE",
+      "role": "研究总览：人物、四个研究方向、应用场景"
+    },
+    {
+      "id": "02-openlibsignal-ecosystem",
+      "repository": "NSF-Proposal-Template-Yue",
+      "source_path": "proposals/awarded/pose-phase1-openlibsignal/figs/ecosystem-pic-all.pdf",
+      "copied_file": "02-openlibsignal-ecosystem/ecosystem-pic-all.pdf",
+      "preview": "02-openlibsignal-ecosystem/preview.png",
+      "page": 1,
+      "sha256": "acad995f8c35eef685f23e829faf9fe6a80e3b4035fc3ee2d25d2b11b07b109f",
+      "title": "OpenLibSignal ecosystem",
+      "role": "生态总览：研究成果、系统资源、三个 aims"
+    },
+    {
+      "id": "03-openlibsignal-framework",
+      "repository": "NSF-Proposal-Template-Yue",
+      "source_path": "proposals/awarded/pose-phase1-openlibsignal/figs/plot.pdf",
+      "copied_file": "03-openlibsignal-framework/plot.pdf",
+      "preview": "03-openlibsignal-framework/preview.png",
+      "page": 1,
+      "sha256": "516ce2af3670fb7c29fd585c2a934b80109a25b33d441a8381d7eabf1a7b8d94",
+      "title": "OpenLibSignal compact framework",
+      "role": "紧凑框架：中央技术与地图、两侧输入和评价"
+    },
+    {
+      "id": "04-catchbench",
+      "repository": "internal-writing",
+      "source_path": "papers/iclr-2027-auditablebench/figure/CatchBench-figure1.pdf",
+      "copied_file": "04-catchbench/CatchBench-figure1.pdf",
+      "preview": "04-catchbench/preview.png",
+      "page": 1,
+      "sha256": "8c577380ca7498617126ba216b69c452369873b3a868edece46a2bf1d5e2e259",
+      "title": "CatchBench · Figure 1",
+      "role": "论文总览：三个审计阶段与右侧结果面板"
+    },
+    {
+      "id": "05-cat-dpo",
+      "repository": "internal-writing",
+      "source_path": "references/style-exemplars/catdpo/figures/method_overview.pdf",
+      "copied_file": "05-cat-dpo/method_overview.pdf",
+      "preview": "05-cat-dpo/preview.png",
+      "page": 1,
+      "sha256": "fe5c26001daacdcd56b17c55ac0b30d2a7df6a7b95ef5c164e87ec81db88702c",
+      "title": "Cat-DPO · Method overview",
+      "role": "方法总览：DPO 对照与 train/adapt 循环"
+    },
+    {
+      "id": "06-no-attacker-needed-example",
+      "source_url": "https://arxiv.org/html/2604.01350v1/fig_intro.png",
+      "paper_url": "https://arxiv.org/html/2604.01350v1",
+      "figure": 1,
+      "copied_file": "06-no-attacker-needed-example/fig_intro.png",
+      "preview": "06-no-attacker-needed-example/fig_intro.png",
+      "sha256": "a50328fff4120718bc5bec1d6edd170afc124b99a64335a3ad81fa1aefe0f552",
+      "attribution": "Tiankai Yang, Jiate Li, Yi Nian, Shen Dong, Ruiyao Xu, Ryan Rossi, Kaize Ding, Yue Zhao. No Attacker Needed: Unintentional Cross-User Contamination in Shared-State LLM Agents. arXiv:2604.01350v1 (2026).",
+      "license": "CC BY-NC-SA 4.0",
+      "license_url": "https://creativecommons.org/licenses/by-nc-sa/4.0/",
+      "changes": "None; original PNG downloaded without modification.",
+      "title": "No Attacker Needed · Figure 1",
+      "role": "问题情境：三个用户与共享状态"
+    },
+    {
+      "id": "07-no-attacker-needed-architecture",
+      "source_url": "https://arxiv.org/html/2604.01350v1/fig_main.png",
+      "paper_url": "https://arxiv.org/html/2604.01350v1",
+      "figure": 2,
+      "copied_file": "07-no-attacker-needed-architecture/fig_main.png",
+      "preview": "07-no-attacker-needed-architecture/fig_main.png",
+      "sha256": "2128e5ff8829900a5145614540658bdfa4f5893926c6c4b8647b03e813d2d8e0",
+      "attribution": "Tiankai Yang, Jiate Li, Yi Nian, Shen Dong, Ruiyao Xu, Ryan Rossi, Kaize Ding, Yue Zhao. No Attacker Needed: Unintentional Cross-User Contamination in Shared-State LLM Agents. arXiv:2604.01350v1 (2026).",
+      "license": "CC BY-NC-SA 4.0",
+      "license_url": "https://creativecommons.org/licenses/by-nc-sa/4.0/",
+      "changes": "None; original PNG downloaded without modification.",
+      "title": "No Attacker Needed · Figure 2",
+      "role": "系统总览：交互、共享状态与读写路径"
+    },
+    {
+      "id": "08-spatial-reasoning",
+      "source_path": "figures/overview.pdf",
+      "source_archive": "Overleaf Projects (1 items).zip",
+      "archive_member": "[NAACL 2027]When Worlds Change: Evaluating Dynamic Spatial Reasoning in LLMs.zip!figures/overview.pdf",
+      "archive_match": true,
+      "copied_file": "08-spatial-reasoning/overview.pdf",
+      "preview": "08-spatial-reasoning/preview.png",
+      "page": 1,
+      "sha256": "9b706221f1b74d9195318effd5ae18de7ac5e69b9ab886de6c1340725a80cb4f",
+      "title": "When Worlds Change · Spatial reasoning",
+      "role": "空间推理：2D / 3D 对照、分层网格与状态变化",
+      "project": "[NAACL 2027] When Worlds Change: Evaluating Dynamic Spatial Reasoning in LLMs",
+      "source_note": "Export supplied by the author on 2026-09-25."
+    },
+    {
+      "id": "09-memory-retrieval",
+      "source_url": "https://arxiv.org/html/2606.02976v1/demo2.png",
+      "paper_url": "https://arxiv.org/html/2606.02976v1#S1.F1",
+      "figure": 1,
+      "pdf_page": 2,
+      "copied_file": "09-memory-retrieval/demo2.png",
+      "preview": "09-memory-retrieval/demo2.png",
+      "sha256": "895528cba8a3dd990a1cbead59e8337c3839262fc228d0a740b9ad70f141ec72",
+      "attribution": "Yuehan Qin, Li Li, Linxin Song, Wei Yang, Jiate Li, Yuqing Yang, Yue Zhao. Memory Retrieval for Changing Preferences. arXiv:2606.02976v1 (2026).",
+      "license": "CC BY 4.0",
+      "license_url": "https://creativecommons.org/licenses/by/4.0/",
+      "changes": "None; original PNG downloaded without modification.",
+      "title": "Memory Retrieval for Changing Preferences",
+      "role": "论文图 1：偏好变化时间线与检索对照"
+    }
+  ],
+  "updated_on": "2026-09-25"
+}

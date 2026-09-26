@@ -1,11 +1,13 @@
 ---
 name: editable-figure
-description: Analyze source material, study relevant references, and create editable PowerPoint figures for papers, proposals, and READMEs. Use for overview, mechanism, workflow, or hero figures, including simplifying dense drafts and combining schematics with results. New overviews and substantial redesigns recommend two independently generated visual concepts first, subject to delegation authorization. Object art can remain pictures while diagram text and relationships stay native. Complements scientific plotting; does not replace screenshot capture, prompt-only work, or full slide-deck authoring. Completing a PPTX requires desktop PowerPoint on Windows or macOS for native rendering and editing checks; the bundled export helper is Windows-only. Assessment and prompt-only requests need neither.
+description: Design editable PowerPoint overview figures, especially Figure 1 for papers and proposals, using source material and the author's visual preferences. Also supports mechanism, workflow, and README figures, simplifying dense drafts, and combining schematics with results. New overviews and substantial redesigns recommend two independently generated visual concepts first, subject to delegation authorization. Object art can remain pictures while diagram text and relationships stay native. Standalone data-analysis plots belong to a plotting workflow such as Matplotlib. Does not replace screenshot capture, prompt-only work, or full slide-deck authoring. Completing a PPTX requires desktop PowerPoint on Windows or macOS for native rendering and editing checks; the bundled export helper is Windows-only. Assessment and prompt-only requests need neither.
 ---
 
 # Editable Figure
 
 ## Overview
+
+The author's primary use is the overview or Figure 1 in paper and proposal writing. Prioritize visual narrative, composition, concrete domain objects, and information hierarchy. Standalone data-analysis charts belong to a plotting workflow such as Matplotlib; a result inset may support an overview when it helps its argument.
 
 Turn a document's central idea into a figure that a reader can understand quickly, then deliver a PowerPoint source that the author can actually edit. For a new overview or substantial redesign, first analyze the source, study references, and design the takeaway. Then **generate two independent visual concepts, select and combine, build editable layers, and inspect in context**. Use existing authorization for both generators; otherwise propose that step before dispatch. Small revisions can reuse the accepted composition. Paper, proposal, and README figures share these principles but serve different reader decisions.
 
@@ -51,11 +53,15 @@ For a benchmark, distinguish the system producing the record from the method bei
 
 ## 2. Find and study references before designing
 
-For a new figure or substantial redesign, run a focused reference search before choosing the composition. Read [reference-search.md](references/reference-search.md) and use the route that matches the document:
+For a new figure or substantial redesign, first read the [personal visual gallery](references/gallery/index.md) and inspect relevant available images before choosing the composition. This applies to paper, proposal, and README work. Use it to distinguish author-confirmed preferences from candidates and color-only references. Record which visual qualities transfer into the working brief. Reuse suitable gallery examples; search externally when the gallery leaves a concrete gap. Read [reference-search.md](references/reference-search.md) for the route that matches the document:
 
 - **Paper:** related top-venue papers, typically NeurIPS, ICML, and ICLR for ML/AI. Inspect the actual figure, caption, and nearby prose.
 - **GitHub README:** current relevant trending projects and related active repositories. Inspect the rendered README and its actual visual assets.
 - **Proposal:** start with the author's [preferred examples](references/proposal-style-exemplars.md) when they fit the figure's job. Search the local awarded/funded collection further when needed, using figure purpose and agency/program as selection criteria. Check indexes and known collection paths first.
+
+Grow the gallery during real figure work using its [durable update procedure](references/gallery/index.md#grow-the-record-through-use). Read feedback in `figure-preferences/index.md` at the consumer repository root and any gallery location named in the project's instructions alongside the bundled record. Save consumer feedback outside bootstrap-managed skill copies so it survives refreshes and can be merged into the canonical gallery. Adding an image alone makes it a candidate, and accepting a deliverable does not establish approval of every stylistic choice. Do not turn inferred preferences into confirmed ones or interrupt every task with a preference questionnaire.
+
+Read the gallery's [confirmed feedback](references/gallery/preferences.md) when choosing a visual direction. These records describe Yue Zhao's taste; for another user they are candidates until confirmed. Yue Zhao values recognizable real-world content, visual variety, rich color, and clear organization, and likes visible technical detail and meaningful text that explain the mechanism. Reading-load rules below target redundant text while preserving this substance. CatchBench is a color reference with an average overall aesthetic assessment. Cartoon references are acceptable but not favorites. Orderly, clear 3D expression makes the spatial example appealing. Choose the relevant qualities for the current scientific story rather than imposing one minimal or cartoon style on every overview.
 
 Select a small number of references and state what transfers: information hierarchy, a concrete example, a mechanism, or a useful visual structure. Keep exact source locators in the working brief. Popularity, acceptance, and funding are discovery signals, not proof of figure quality.
 
@@ -85,7 +91,7 @@ Return reclaimed space to the destination. For a wrapfigure, reduce the placed w
 
 ### Use the lab's default palette
 
-For new paper, proposal, and GitHub README figures without a specified visual identity, use the shared CatchBench, Cat-DPO, and No Attacker Needed color family: white background, mint and coral as the main contrast, teal and warm gold when additional categories are needed, and dark text with quiet gray context. The latter two papers are Tiankai Yang's reference examples. Read [default-palette.md](references/default-palette.md) for color roles, source evidence, and the canonical reusable tokens in `references/default-palette.json`.
+For new paper, proposal, and GitHub README figures without a specified visual identity, use the shared CatchBench, Cat-DPO, and No Attacker Needed color family. Start with a white background, mint/coral contrast, teal and warm gold for additional categories or regions, and dark text with quiet gray context. Overviews may use the full family alongside naturally colored domain scenes. The latter two papers are Tiankai Yang's reference examples. Read [default-palette.md](references/default-palette.md) for color roles, source evidence, and the canonical reusable tokens in `references/default-palette.json`.
 
 An explicit user palette or an established document palette takes priority. Preserve accepted figures' colors when editing them. Carry the same color-to-meaning mapping across the schematic, results, caption keys, and other figures in a document. Reference searches may supply composition ideas without changing this default visual identity; do not repeat a paper search just to recover the stored colors.
 

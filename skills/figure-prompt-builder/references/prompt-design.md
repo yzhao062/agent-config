@@ -40,8 +40,9 @@ Write prompts in this order:
 4. `layout`
 5. `required elements`
 6. `required arrows or dependencies`
-7. `visual quality requirements`
-8. `output quality requirements`
+7. `selected style-reference images and qualities to transfer or avoid`
+8. `visual quality requirements`
+9. `output quality requirements`
 
 ## Visual Requirements To Reuse
 

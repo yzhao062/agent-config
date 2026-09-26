@@ -41,7 +41,7 @@ The user's prompt often contains the clearest signal. Match keywords to skills:
 |---|---|---|
 | "cite", "citation", "bibliography", "bib", "references" | `bibref-filler` (or local variant like `nsf-bibref-filler` if available) | `skills/` (shared), check local first |
 | "editable figure", "editable diagram", "PowerPoint figure", "PPTX figure", "可编辑图", "用PPT画图" | `editable-figure` | `skills/` (shared) |
-| "figure", "diagram", "illustration", "schematic", "overview figure" | `figure-prompt-builder` | `skills/` (shared) |
+| "figure", "diagram", "illustration", "schematic", "overview figure", "Figure 1", "总览图", "图 1" | `figure-prompt-builder`, with the `editable-figure` gallery for paper/proposal overviews | `skills/` (shared) |
 | "mockup", "HTML figure", "HTML mockup", "interactive figure", "dashboard mockup", "Gantt", "screenshotable figure", "capture mode", "skia-canvas", "TikZ figure", "arrow routing" | `ci-mockup-figure` | `skills/` (shared) |
 | "review staged", "review changes", "review the diff" | `implement-review` | `skills/` (shared) |
 | "two-pass", "first pass", "second pass", "audit" | `dual-pass-workflow` | `skills/` (shared) |
@@ -54,6 +54,8 @@ The user's prompt often contains the clearest signal. Match keywords to skills:
 | "reimbursement", "travel claim", "expense" | `usc-reimbursement` | `reference-skills/` (project-local) |
 
 When an explanatory figure request explicitly asks for PowerPoint or native editability, use `editable-figure` before the generic figure, proposal, README-polish, or slide routes. A request to simplify an existing editable figure stays on that route. A full slide deck still uses the presentation route, and an explicit SVG, TikZ, screenshot, or prompt-only request keeps its requested format. Before taking the route, check that the session can perform the desktop PowerPoint validation `editable-figure` requires. If it cannot, explain the limitation and offer `ci-mockup-figure` only when its output fits the request; do not silently substitute HTML for an explicitly requested PPTX.
+
+For a paper or proposal overview, including "Figure 1", read `editable-figure/references/gallery/index.md` through the normal skill lookup and include relevant recorded preferences in the chosen figure workflow. Preserve the requested output format; reading the gallery does not require PowerPoint or change a prompt-only task into a figure build.
 
 ### 2. File types in working directory
 

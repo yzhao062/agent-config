@@ -82,6 +82,8 @@ Read the smallest set of files needed to understand the figure's job:
 
 Do not read the whole repo just to draft one figure.
 
+For paper and proposal overviews, including Figure 1, resolve `editable-figure` through the normal skill lookup and read its `references/gallery/index.md` and the relevant feedback and images. Follow its durable update procedure for new preferences, including project feedback outside bootstrap-managed copies. Record selected reference IDs, qualities to transfer, and boundaries in the figure brief, then carry them into every downstream prompt with reference images when supported. These design references do not change the requested output format or require a PowerPoint build. Confirmed preferences override reusable defaults throughout this workflow for the affected dimension. This includes text density, cartoon treatment, and photorealism guidance in `references/prompt-design.md` and `references/external-handoff.md`. Reserve editable label regions when the image model cannot render the required technical text reliably.
+
 ### 2. Decide Whether The Figure Is Worth Making
 
 Add or refresh a figure only when it compresses logic better than prose.
@@ -114,7 +116,7 @@ Then choose the downstream generation path using
 When helpful, also choose:
 
 - one structural donor from `references/reference-bank.md`
-- at most one or two style donors from the same bank
+- at most one or two style donors from the same bank or the `editable-figure` gallery; confirmed preferences take priority over bank `liked_traits`
 
 Do not average many references into one prompt.
 
@@ -130,6 +132,7 @@ Before drafting the final prompt, distill a figure brief with:
 - suggested layout
 - short in-figure text
 - caption draft
+- selected gallery references: IDs, qualities to transfer, and qualities to avoid
 - recommended downstream generation path
 - recommended file or asset destinations
 
@@ -188,6 +191,7 @@ should usually contain these layers in this order:
 - reviewer takeaway
 - required layout and semantic elements
 - required arrows or dependencies
+- style references: gallery images when supported, plus transferable qualities in words
 - visual-quality layer
 - output-quality layer
 
