@@ -1,11 +1,13 @@
 ---
 name: ci-mockup-figure
-description: Create space-efficient figures for papers and proposals. HTML mockups for systems, dashboards, and timelines; TikZ or skia-canvas for abstract diagrams with arrow routing. Covers tool selection, design, capture, and LaTeX insertion. The primary goal is maximizing information per page — every figure must earn its space.
+description: Create paper and proposal figures guided by confirmed visual preferences and efficient use of page space. HTML mockups for systems, dashboards, and timelines; TikZ or skia-canvas for abstract diagrams with arrow routing. Covers tool selection, design, capture, and LaTeX insertion.
 ---
 
 # CI Mockup Figure
 
 ## Overview
+
+For Yue Zhao's paper and proposal figures, understanding and imitating the confirmed gallery references is the top design priority. Before layout or styling, resolve `editable-figure` and follow its `references/gallery/index.md#required-preference-first-design`. Inspect images and feedback, state the reference-to-design mapping, implement it, and compare the rendered output against those images. Revise unmet preference requirements before delivery. Current task instructions, scientific correctness, required output constraints, and an established document palette or figure-series identity govern; generic density, color, and icon defaults below must yield to confirmed preferences. For another user, use that user's confirmed preferences.
 
 The goal is **space-efficient, information-dense figures** that communicate
 a system's design, a method's pipeline, or an architectural flowchart in
@@ -36,7 +38,7 @@ reports, or demo writeups. It is especially effective when the figure needs
 to show multi-component structure, data flow, or step-by-step methodology
 and reviewers evaluate whether the design is credible and well-conceived.
 
-For paper and proposal overviews, including Figure 1, resolve `editable-figure` through the normal skill lookup and read its `references/gallery/index.md` and relevant images and feedback. Apply selected preference dimensions in the design brief and implementation, preserving meaningful technical detail and domain imagery when liked. Use its durable update procedure for new feedback. For these overviews, confirmed preferences override conflicting defaults below for the affected dimension. This includes the pre-flight color rule, light-tint fills, minimal panel elements, and low-opacity or desaturated domain imagery. Preserve the requested HTML, TikZ, or other output format.
+For paper and proposal explanatory figures, especially overviews and Figure 1, resolve `editable-figure` through the normal skill lookup and read its `references/gallery/index.md` and relevant images and feedback. Apply selected preference dimensions in the design brief and implementation, preserving meaningful technical detail and domain imagery when liked. Use its durable update procedure for new feedback. For these figures, confirmed preferences override conflicting defaults below for the affected dimension. This includes the pre-flight color rule, light-tint fills, minimal panel elements, and low-opacity or desaturated domain imagery. Preserve the requested HTML, TikZ, or other output format.
 
 ### HTML mockups vs TikZ/LaTeX diagrams
 
@@ -603,3 +605,4 @@ No LaTeX environments. No `pdfcrop`. The PNG is the deliverable.
 - [ ] Legend swatches match actual bar/card colors in the figure
 - [ ] Bib entries for any cited data products (NASA, USGS, etc.)
 - [ ] Codex review passed (scientific accuracy, legibility, differentiation)
+- [ ] For Yue Zhao's paper or proposal figure: compare the rendered output with the selected gallery images and reference-to-design mapping (Overview). Revise unmet requirements or report a necessary departure with its task constraint.

@@ -96,7 +96,7 @@ Required arrows or dependencies:
 - ...
 
 Style references:
-[Attach selected gallery images when supported. Describe the confirmed qualities to transfer and the reference-specific details that should not transfer.]
+[Primary aesthetic specification: attach selected gallery images when supported. Name the confirmed qualities to imitate, their concrete treatment here, and the details to avoid. For Yue Zhao, this mapping takes priority over generic visual defaults below; retain relevant technical detail, formulas, 3D objects, and domain imagery.]
 
 Visual quality requirements:
 - infer the correct scientific figure type from the context

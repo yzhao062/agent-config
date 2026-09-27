@@ -29,15 +29,22 @@ One sentence stating what a reviewer should remember after seeing this figure.
 - relationship 1
 - relationship 2
 
+## Style References
+
+Record selected gallery IDs or other reference locators, confirmed qualities
+to imitate, their concrete treatment here, and qualities to avoid. For Yue
+Zhao, complete this before the layout: read
+`editable-figure/references/gallery/index.md` through the normal skill lookup
+and `figure-preferences/index.md` at the repository root when present, then
+inspect the selected images and latest feedback. This mapping is the primary
+aesthetic specification, above generic style defaults. Attach authorized
+reference images to downstream prompts when supported. Compare generated
+output against this mapping and revise missing qualities; for prompt-only
+work, check that the mapping reaches the final prompt.
+
 ## Suggested Layout
 
 Describe left-to-right, top-to-bottom, layered, or other layout logic.
-
-## Style References
-
-Record selected gallery IDs or other reference locators, qualities to transfer,
-and qualities that should not transfer. Attach authorized reference images to
-the downstream prompt when supported and describe the selected qualities in words.
 
 ## In-Figure Text
 
@@ -62,6 +69,7 @@ final structured prompt here.
 
 - [ ] Finalize labels
 - [ ] Generate or build the figure
+- [ ] Check the output, or the final prompt, against the Style References mapping
 - [ ] Save or export the final deliverable
 """
 

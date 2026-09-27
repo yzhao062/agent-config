@@ -66,6 +66,10 @@ deck directory.
 Use `scripts/init_figure_spec.py` when the user wants a concrete local figure
 brief scaffold before writing the final prompt pack.
 
+## Top design priority for Yue Zhao
+
+For paper and proposal figures, understanding and imitating the author's confirmed preferences is required before drafting layout or prompt instructions. Resolve `editable-figure` through the normal skill lookup and follow `references/gallery/index.md#required-preference-first-design`: inspect the selected images, record the reference-to-design mapping, and carry it into every downstream prompt. Prefer those concrete references over generic prestige anchors or bank defaults. Current task instructions, scientific correctness, output requirements, and an established document palette or figure-series identity still govern. Check the prompt for explicit imitation instructions and exclusions; when an image is generated, compare its actual appearance against the references and revise unmet requirements. For another user, seek that user's preference evidence.
+
 ## Workflow
 
 ### 1. Read Only The Figure Context You Need
@@ -82,7 +86,7 @@ Read the smallest set of files needed to understand the figure's job:
 
 Do not read the whole repo just to draft one figure.
 
-For paper and proposal overviews, including Figure 1, resolve `editable-figure` through the normal skill lookup and read its `references/gallery/index.md` and the relevant feedback and images. Follow its durable update procedure for new preferences, including project feedback outside bootstrap-managed copies. Record selected reference IDs, qualities to transfer, and boundaries in the figure brief, then carry them into every downstream prompt with reference images when supported. These design references do not change the requested output format or require a PowerPoint build. Confirmed preferences override reusable defaults throughout this workflow for the affected dimension. This includes text density, cartoon treatment, and photorealism guidance in `references/prompt-design.md` and `references/external-handoff.md`. Reserve editable label regions when the image model cannot render the required technical text reliably.
+For paper and proposal explanatory figures, especially overviews and Figure 1, resolve `editable-figure` through the normal skill lookup. Read its `references/gallery/index.md` and the relevant feedback and images. Follow its durable update procedure for new preferences, including project feedback outside bootstrap-managed copies. Record the reference-to-design mapping in the figure brief: selected IDs, confirmed qualities to imitate, their concrete treatment, and boundaries. Carry it into every downstream prompt with reference images when supported. These design references do not change the requested output format or require a PowerPoint build. Confirmed preferences override reusable defaults throughout this workflow for the affected dimension. This includes text density, cartoon treatment, and photorealism guidance in `references/prompt-design.md` and `references/external-handoff.md`. Reserve editable label regions when the image model cannot render the required technical text reliably.
 
 ### 2. Decide Whether The Figure Is Worth Making
 
@@ -113,7 +117,7 @@ Reduce the request to one archetype first:
 Then choose the downstream generation path using
 `references/tool-selection.md`.
 
-When helpful, also choose:
+For Yue Zhao's paper and proposal figures, take the primary reference and any complementary donors from the required reference-to-design mapping above. They can set composition as well as style; bank donors fill only choices the mapping leaves open. Otherwise, when helpful, also choose:
 
 - one structural donor from `references/reference-bank.md`
 - at most one or two style donors from the same bank or the `editable-figure` gallery; confirmed preferences take priority over bank `liked_traits`
@@ -129,10 +133,10 @@ Before drafting the final prompt, distill a figure brief with:
 - target section and file
 - required boxes, actors, or stages
 - required arrows or dependencies
+- reference-to-design mapping: gallery IDs, confirmed qualities to imitate, their concrete treatment, and qualities to avoid
 - suggested layout
 - short in-figure text
 - caption draft
-- selected gallery references: IDs, qualities to transfer, and qualities to avoid
 - recommended downstream generation path
 - recommended file or asset destinations
 

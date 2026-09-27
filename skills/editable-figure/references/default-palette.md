@@ -1,8 +1,8 @@
 # Default figure palette
 
-The user selected CatchBench, Cat-DPO and No Attacker Needed as the lab's default color references on 2026-09-05. Apply this visual family to new paper, proposal and GitHub README figures unless the user or existing document specifies another palette. This preference concerns visual identity; it does not prescribe those papers' layouts, icon styles or scientific claims.
+The user selected CatchBench, Cat-DPO and No Attacker Needed as the lab's default color references on 2026-09-05. Use this visual family as a fallback for new paper, proposal and GitHub README figures. A selected reference with confirmed color feedback, the current user request, or an existing document palette takes priority. The 2026-09-26 feedback strongly likes MemoHarness (gallery 14), including its colors; preserve that direction when choosing it as the style donor. Avoid the heavy color treatment disliked in gallery 15. This preference concerns visual identity; it does not prescribe those papers' layouts, icon styles or scientific claims.
 
-For proposal composition, the separately selected [proposal examples](proposal-style-exemplars.md) guide visual richness and hierarchy. They do not replace these color defaults or the established palette of a manuscript being edited.
+For proposal composition, the separately selected [proposal examples](proposal-style-exemplars.md) guide visual richness and hierarchy. Their composition lessons do not by themselves change a palette, but explicit color feedback in the gallery does override these fallback defaults. Preserve an established manuscript palette unless the current request changes it.
 
 The author's [later feedback](gallery/preferences.md) rates CatchBench's overall figure as average while confirming its colors. Do not use the palette choice as approval of that composition. Richly colored scenes, maps, icons, and logos are also liked: these tokens organize schematic elements, not a requirement to recolor all source imagery into mint and coral.
 
