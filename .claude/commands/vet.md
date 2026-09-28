@@ -13,6 +13,6 @@ Treat the command arguments as part of the user's current task.
 `manual`, `back to manual`, and `use terminal-relay` force Terminal-relay.
 With Auto-terminal as the user default, `/vet agy` selects Antigravity directly;
 `gemini` and `antigravity` remain aliases. No reviewer token selects Codex.
-`/vet both` runs Codex and Agy for the same round, one after the other.
+`/vet both` runs Codex and Agy for the same round, in parallel when memory allows and one after the other otherwise.
 
 Apply it to the user's current task. Also read the supporting files under the skill's references/ directory as needed.

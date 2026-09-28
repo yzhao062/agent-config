@@ -157,9 +157,9 @@ claude -p "prompt" --max-turns 10 --max-budget-usd 5  # safety limits
 | Xhigh | Heavy multi-file or design work below Max |
 | Max | System design, deeply nested bugs (session only unless set through the env var) |
 
-Defaults and supported levels differ by model; Opus 5.5, for example, defaults to `medium`. A level the model lacks falls back to the highest one below it. The [model configuration page](https://code.claude.com/docs/en/model-config) keeps the current table. This repo requests `max` through the `CLAUDE_CODE_EFFORT_LEVEL` env var, which outranks the model default, `--effort`, and `/effort`.
+Defaults and supported levels differ by model; Opus 5.5, for example, defaults to `medium`. A level the model lacks falls back to the highest one below it. The [model configuration page](https://code.claude.com/docs/en/model-config) keeps the current table. This repo sets `xhigh` through the `CLAUDE_CODE_EFFORT_LEVEL` env var, which outranks the model default, `--effort`, and `/effort`; `/vet` Claude reviews pass `--effort max` separately.
 
-Set it with `/effort <level>` or, for one session, `claude --effort <level>`. In `/effort`, Enter saves `low` through `xhigh` for the current model under `modelSettings`; `max` lasts only for the session. Press `s` to keep any level to the session, or run `/effort auto` to clear the saved level. The `CLAUDE_CODE_EFFORT_LEVEL` env var is the only way to persist `max`, for example `"env": {"CLAUDE_CODE_EFFORT_LEVEL": "max"}` in `~/.claude/settings.json`. Left/right arrows in the `/model` picker also change the level.
+Set it with `/effort <level>` or, for one session, `claude --effort <level>`. In `/effort`, Enter saves `low` through `xhigh` for the current model under `modelSettings`; `max` lasts only for the session. Press `s` to keep any level to the session, or run `/effort auto` to clear the saved level. The `CLAUDE_CODE_EFFORT_LEVEL` env var is the only way to persist `max`. Bootstrap rewrites the user-level value, so to keep one repository at `max`, put `"env": {"CLAUDE_CODE_EFFORT_LEVEL": "max"}` in that repository's `.claude/settings.local.json`. Left/right arrows in the `/model` picker also change the level.
 
 ## 11. Cost & Performance
 

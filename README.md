@@ -31,7 +31,7 @@ Other project repos bootstrap from this repo to get shared agent defaults and sk
 - **`skills/`** — shared skills (e.g., `bibref-filler`, `editable-figure`)
 - **`.claude/commands/`** — Claude Code pointer commands for shared skills
 - **`.claude/settings.json`** — shared Claude project defaults (permissions, attribution, etc.)
-- **`user/settings.json`** — shared user-level Claude defaults (permissions, hook wiring, `CLAUDE_CODE_EFFORT_LEVEL=max` env entry that pins effort to max)
+- **`user/settings.json`** — shared user-level Claude defaults (permissions, hook wiring, `CLAUDE_CODE_EFFORT_LEVEL=xhigh` env entry that sets the daily effort default)
 - **`scripts/guard.py`** — deployed to `~/.claude/hooks/guard.py` as a PreToolUse hook (compound-`cd` guard, destructive Git/GitHub confirmation, writing-style deny on prose files, session-banner gate)
 - **`scripts/session_bootstrap.py`** — deployed to `~/.claude/hooks/session_bootstrap.py` as a SessionStart hook that re-runs bootstrap automatically on every session start, then publishes the session banner
 - **`scripts/render_banner.py`** with **`scripts/pack_identity.py`** — renders the seven-line session banner from files on disk. In a consumer it publishes `.agent-config/banner.txt` behind a metadata line (event timestamp, bootstrap `run_id`, completion) that the agent checks before printing it; in a source repo it prints to stdout. Both bootstrap entry points and the hook run it after every refresh attempt.
@@ -227,5 +227,5 @@ docs/
   prun.md
   readme-polish.md
 .claude/settings.json              # Shared Claude project defaults (permissions, attribution, etc.)
-user/settings.json                 # Shared user-level defaults (permissions, hooks, CLAUDE_CODE_EFFORT_LEVEL=max env entry)
+user/settings.json                 # Shared user-level defaults (permissions, hooks, CLAUDE_CODE_EFFORT_LEVEL=xhigh env entry)
 ```

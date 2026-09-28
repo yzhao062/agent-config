@@ -512,7 +512,7 @@ class RepoValidationTests(unittest.TestCase):
         tracked = self.tracked_files()
         self.assertIn(".claude/settings.json", tracked)
 
-    def test_max_effort_is_set_via_env_var_in_user_settings(self) -> None:
+    def test_daily_effort_and_autocompact_are_set_via_env_in_user_settings(self) -> None:
         tracked = self.tracked_files()
         self.assertIn("user/settings.json", tracked)
         user_settings = json.loads(
@@ -520,7 +520,11 @@ class RepoValidationTests(unittest.TestCase):
         )
         self.assertEqual(
             user_settings.get("env", {}).get("CLAUDE_CODE_EFFORT_LEVEL"),
-            "max",
+            "xhigh",
+        )
+        self.assertEqual(
+            user_settings.get("env", {}).get("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"),
+            "70",
         )
         claude_settings = json.loads(read_text(CLAUDE_SETTINGS))
         self.assertNotIn("effortLevel", claude_settings)

@@ -274,6 +274,19 @@ class ConsumerRenderTests(_HermeticCase):
         self.assertIn("effort=high", lines[2])
         self.assertIn("Claude effort is high", lines[6])
 
+    def test_effort_accepts_xhigh_and_max_and_names_xhigh_otherwise(self) -> None:
+        _write(self.root / ".agent-config" / "last-run.json", _ledger())
+        for level in ("xhigh", "max"):
+            _write(self.home / ".claude" / "settings.json",
+                   json.dumps({"env": {"CLAUDE_CODE_EFFORT_LEVEL": level}}))
+            _, lines = render_banner.render_consumer(str(self.root), None, 0)
+            self.assertIn("effort=%s" % level, lines[2])
+            self.assertNotIn("Claude effort is", lines[6])
+        _write(self.home / ".claude" / "settings.json",
+               json.dumps({"env": {"CLAUDE_CODE_EFFORT_LEVEL": "high"}}))
+        _, lines = render_banner.render_consumer(str(self.root), None, 0)
+        self.assertIn("Claude effort is high; set CLAUDE_CODE_EFFORT_LEVEL=xhigh", lines[6])
+
     def test_auto_update_off_from_env_block_or_claude_json(self) -> None:
         _write(self.root / ".agent-config" / "last-run.json", _ledger())
         _write(self.home / ".claude" / "settings.json",

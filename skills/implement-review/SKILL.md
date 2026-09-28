@@ -201,7 +201,7 @@ Start `dispatch-claude` through a resumable exec tool and retain its handle and 
 
 If the user selects scheduled background monitoring and this host exposes thread heartbeats, use the requested interval instead of concurrent active-turn polling. Confirm registration and save the repository, round, Claude state directory, original deadline, reviewer queue, and unconsumed tool handles before returning an explicitly pending status. Each wakeup uses `await-review.py --timeout 0` and consumes available dispatcher completion status. Stay quiet on unchanged `ALIVE` or `STALL`. Heartbeats are an optional host-specific handoff; do not assume Terminal provides them or promise automatic resumption without a registered mechanism. A background hook alone cannot provide that handoff: [its completion does not start a new turn](https://learn.chatgpt.com/docs/hooks#how-background-hooks-run).
 
-`DONE` or resolver `REVIEW-READY` permits reading the current Claude report and running the existing Phase 2 checks. Consume the dispatcher's exit before starting the next reviewer; publication alone is not process-completion evidence. Preserve the existing health checks, warning checkpoints, sequential queue, and confirmed-failure routing. A pre-publication silence warning is not permission to abandon the reviewer; assess any saved stall warning after publication under the existing health-check rules. A published report or exit 0 alone is not a final review conclusion.
+`DONE` or resolver `REVIEW-READY` permits reading the current Claude report and running the existing Phase 2 checks. In sequential mode, start the next reviewer only after the Claude dispatcher returns or identity-checked evidence shows its worker exited; publication alone is not process-completion evidence. In parallel mode, launch the other reviewer after the memory check without waiting for Claude's dispatcher to exit. Consume any available dispatcher exit before marking the Claude slot complete, and route a non-zero exit through the existing failover queue. Preserve the existing health checks and warning checkpoints. A pre-publication silence warning is not permission to abandon the reviewer; assess any saved stall warning after publication under the existing health-check rules. A published report or exit 0 alone is not a final review conclusion.
 
 Use the original 60-minute Phase 1d deadline unless the user specifies another budget, with no shorter harness kill timer. Pass a custom `--round-budget` on the first resolver call, before its immutable deadline is stamped. Preserve the deadline across tool yields and scheduled wakeups. At `TIMEOUT` or `REAP-UNKNOWN`, report the specific incomplete state and pause scheduled monitoring; do not kill the reviewer or invent a new deadline. A user-requested stop also pauses monitoring without treating silence as failure. Stop monitoring this Claude slot after its result is handed to the existing intake/queue flow; do not change how that flow runs the other reviewers.
 
@@ -231,26 +231,38 @@ Codex runs as an IDE plugin with direct access to the repo. The user tells Codex
      the tokens explicitly for any other combination. `/vet both`, `/vet codex
      agy`, and plain phrases such as `review with codex and agy` are the same
      request under the same negation guard. Everything downstream already takes
-     a set: `EXPECTED_REVIEWERS` is the comma-separated normalized list
-     (`Codex,Antigravity`), `FILE_GLOB` becomes `Review-*.md`, and Phase 2's
-     multi-reviewer consolidation classifies each finding as Convergent or
-     Single-source. With one reviewer token, or none, nothing here changes.
+     a set. The expected reviewer set is the comma-separated normalized list
+     (`Codex,Antigravity`), and each reviewer gets its own watcher on its
+     exact `Review-<Name>.md`. Phase 2's multi-reviewer consolidation
+     classifies each finding as Convergent or Single-source. With one
+     reviewer token, or none, nothing here changes.
 
-     **Dispatch them one after another, not at once.** Two concurrent
-     dispatches were both killed for low memory on a 32 GB workstation with
-     4.5 GB free, which costs the whole round and produces no review from
-     either. Sequential dispatch survived the same conditions.
+     **Dispatch them in parallel when memory allows, one after another
+     otherwise.** Before the second dispatch, check available memory. On
+     macOS, multiply the system-wide free percentage from
+     `memory_pressure -Q` by `sysctl -n hw.memsize`; Linux reports
+     `MemAvailable` in `/proc/meminfo`, and Windows reports
+     `FreePhysicalMemory` (in KB) through `Win32_OperatingSystem`. With at
+     least 16 GB available, dispatch the reviewers in parallel. Below that,
+     or when the check fails, dispatch them sequentially. With 4.5 GB free on
+     a 32 GB workstation, two concurrent dispatches were once both killed for
+     low memory, and neither produced a review. Sequential dispatch survived
+     the same conditions.
 
-     Sequential dispatch needs its own lifecycle, because the watcher is a
-     wait-for-any helper: `auto-watch` exits as soon as one file matching its
-     glob appears, so a single watcher over `Review-*.md` would report the
-     round finished while the second reviewer had not started. Run **one
-     dispatch, one watcher and one health check per reviewer**, each with that
-     reviewer's own `STATE-DIR` and its exact `Review-<Name>.md` rather than
-     the wildcard.
+     In both modes the watcher is a wait-for-any helper. `auto-watch` exits as
+     soon as one file matching its glob appears, so a single watcher over
+     `Review-*.md` would report the round finished while the second reviewer
+     was still working. Run **one dispatch, one watcher and one health check
+     per reviewer**, each with that reviewer's own `STATE-DIR` and its exact
+     `Review-<Name>.md` rather than the wildcard. Where a later step names a
+     single reviewer, a single `DONE`, or a whole-round fallback, apply it per
+     reviewer in a multi-reviewer round. A failing reviewer goes through the
+     failover queue while the other slots continue, and consolidation waits
+     for every expected reviewer.
 
-     Before launching the next reviewer, require that the previous dispatcher
-     returned, or identity-checked evidence that its worker exited. `DONE`,
+     In sequential mode, before launching the next reviewer, require that the
+     previous dispatcher returned, or identity-checked evidence that its worker
+     exited. `DONE`,
      `REVIEW-READY` and a clean health check authorize **intake only**: all
      three are computed from the review file's freshness and quietness, and
      each was reproduced while the worker was still alive, so none of them is
@@ -260,11 +272,12 @@ Codex runs as an IDE plugin with direct access to the repo. The user tells Codex
      cannot be established, hold the existing bounded checkpoint and ask,
      rather than reading `REVIEW-READY` as permission to launch: a file
      appearing is not proof the previous worker exited, and launching on that
-     signal alone would defeat the memory sequencing this rule exists for.
+     signal alone would defeat the memory sequencing this mode exists for.
      Phase 1d's `DONE` instruction resumes Phase 2 immediately for a
-     single-reviewer round; during an unfinished sequential queue it means
-     this reviewer is ready for intake, and the next dispatch is the next
-     step. Advance to Phase 2 only once the queue is done.
+     single-reviewer round. During an unfinished multi-reviewer round it
+     means this reviewer is ready for intake, and in sequential mode the next
+     dispatch is the next step. Advance to Phase 2 only once every reviewer in
+     the round has finished.
 
      Keep the full expected set for consolidation, so Phase 2 still classifies
      findings as Convergent or Single-source. If a reviewer fails, still run
@@ -398,7 +411,7 @@ If the scripts are present, Claude Code does NOT present a copy-paste prompt blo
 4. Writes the prompt to `<scratch>/agent-io/round-<N>-prompt.txt` under `%TEMP%` / `$TMPDIR`. See **Where the round's own files go** below for why the directory is named.
 5. Invokes the selected dispatcher from the same lookup root: `dispatch-codex.{ps1,sh}`, `dispatch-copilot.{ps1,sh}`, `dispatch-claude.{ps1,sh}`, or `<python> dispatch-gemini.py`. Pass `--prompt-file <temp-path>`, `--round <N>`, and the matching expected review file: `Review-Codex.md`, `Review-GitHub-Copilot.md`, `Review-Claude-Code.md`, or `Review-Antigravity.md`. Set `IMPLEMENT_REVIEW_ORCHESTRATOR` in the dispatcher's environment to the coordinator's own identity: `claude` for Claude Code, `codex` for Codex. Do this on every dispatch, including retries and failover, so an inherited runtime marker never decides who the coordinator is. Run in the background and size the timeout to the backend and reasoning tier. For Codex, use about 20 minutes (`1200000`) at `xhigh` and about 45 minutes (`2700000`) at `max`. Agy defaults its own `--print-timeout` to 45 minutes. Each dispatcher launches the shared `stall-watch` in the background. Its default 600-second silence threshold records `<state-dir>/stall-warning` without killing any process. A terminal Codex response-stream suffix records `<state-dir>/stream-death` and invokes the bounded reap contract below. Run the dispatcher from the reviewed repository's root, which is the session's working directory; to review another repository, change directory in its own tool call first, never as `cd <path> && <dispatcher>`, which the guard denies (23 of the 97 re-dispatches in 60 days were that denial).
 6. Reads the dispatch script's stdout: it emits exactly one line `STATE-DIR <abs-path>` (the only stdout line). Capture this path for Phase 2 to pass to `health-check --state-dir <abs-path> --round <N> --review-file Review-<Reviewer>.md`. Pass the backend's exact review filename explicitly. All other dispatch diagnostics plus the last 80 backend lines go to the script's stderr.
-7. Phase 1d auto-watch runs unchanged; it polls for the backend's review file with the current round marker. Phase 2 prologue (defined in Phase 2 below) adds Auto-terminal-specific gating before silent advance.
+7. Phase 1d auto-watch runs once per reviewer; each watcher polls for that backend's exact review file with the current round marker. Phase 2 prologue (defined in Phase 2 below) adds Auto-terminal-specific gating before silent advance.
 
 **Where the round's own files go**: this skill writes two kinds of file around the reviewer. One is the prompt handed over, the other is the output captured back. Both belong under an `agent-io` directory inside the session scratch area. Step 4 writes `<scratch>/agent-io/round-<N>-prompt.txt`, and a captured round output goes to `<scratch>/agent-io/round-<N>.txt`. That directory name is a declaration the writing-style hook reads, and it skips any path carrying the segment. Neither file is this skill's prose to rewrite: a prompt is an instruction to another agent, and a captured review is another agent's words. Files written for a human reader, such as `PLAN-<identifier>.md` or the review body itself, stay outside `agent-io` and stay covered.
 
@@ -442,13 +455,13 @@ Then wait for the user to relay the reviewer's feedback or confirm that the revi
 
 ### 1d. Auto-watch (Terminal-relay and Auto-terminal channels)
 
-After Phase 1c emits the Terminal-relay prompt or dispatches Auto-terminal (and records the expected reviewer set + emission/dispatch time), the skill **automatically** launches a background watcher that detects when the reviewer writes `Review-<expected>.md` and resumes Phase 2 — eliminating the manual "done" relay. The watcher runs by default for both channels; the user does not need to confirm. To opt out, the user can say so explicitly (e.g., "stop auto-watch", "manual mode this round") and the skill terminates the background process and falls through to the wait-for-user path. Plugin path skips this subsection entirely (IDE plugins typically have the file open and gain little from auto-watch).
+After Phase 1c emits the Terminal-relay prompt or dispatches Auto-terminal (and records the expected reviewer set + emission/dispatch time), the skill **automatically** launches one background watcher per expected reviewer. Each watcher detects when its reviewer writes its `Review-<Name>.md`, eliminating the manual "done" relay. The `DONE` handling below says when Phase 2 resumes. The watcher runs by default for both channels; the user does not need to confirm. To opt out, the user can say so explicitly (e.g., "stop auto-watch", "manual mode this round") and the skill terminates the background process and falls through to the wait-for-user path. Plugin path skips this subsection entirely (IDE plugins typically have the file open and gain little from auto-watch).
 
-Launch the platform-appropriate watcher script immediately after emitting the prompt, using positional arguments `(FILE_GLOB, ROUND_NUMBER, EXPECTED_REVIEWERS)`. Look up the script in this order: `skills/implement-review/scripts/auto-watch.{sh,ps1}` (repo-local), then `.claude/skills/implement-review/scripts/auto-watch.{sh,ps1}` (pack-deployed), then `.agent-config/repo/skills/implement-review/scripts/auto-watch.{sh,ps1}` (bootstrapped). Use the Bash variant on macOS / Linux and the PowerShell variant on Windows. `FILE_GLOB` is `Review-<expected>.md` for a single expected reviewer or `Review-*.md` for multiple; `EXPECTED_REVIEWERS` is the comma-separated normalized name list from Phase 1c (e.g., `Codex` or `Codex,GitHub-Copilot`). Run the watcher in the background so the skill can keep accepting user input while it polls. On the Auto-terminal path, set `IMPLEMENT_REVIEW_STATE_DIR` to the absolute path from the dispatcher's `STATE-DIR` line when launching the watcher. That hands the directory over instead of leaving the watcher to find it. Its fallback is a 30-second window around its own start time, which a contended process launch can miss.
+Launch the platform-appropriate watcher script immediately after emitting the prompt, using positional arguments `(FILE_GLOB, ROUND_NUMBER, EXPECTED_REVIEWERS)`. Look up the script in this order: `skills/implement-review/scripts/auto-watch.{sh,ps1}` (repo-local), then `.claude/skills/implement-review/scripts/auto-watch.{sh,ps1}` (pack-deployed), then `.agent-config/repo/skills/implement-review/scripts/auto-watch.{sh,ps1}` (bootstrapped). Use the Bash variant on macOS / Linux and the PowerShell variant on Windows. `FILE_GLOB` is the reviewer's exact `Review-<Name>.md` and `EXPECTED_REVIEWERS` its normalized name (e.g., `Codex`). A multi-reviewer round launches one watcher per reviewer, each with its own state directory, never one watcher over `Review-*.md`. Run the watcher in the background so the skill can keep accepting user input while it polls. On the Auto-terminal path, set `IMPLEMENT_REVIEW_STATE_DIR` to the absolute path from the dispatcher's `STATE-DIR` line when launching the watcher. That hands the directory over instead of leaving the watcher to find it. Its fallback is a 30-second window around its own start time, which a contended process launch can miss.
 
 The watcher polls every 5 seconds. It fires when (a) the file's mtime has advanced past the snapshot taken at watcher startup, (b) the file has been quiet for 10 seconds (mtime is at least 10 seconds in the past), AND (c) its first line equals `<!-- Round N -->` after stripping trailing `\r` and whitespace. Hard timeout is 60 minutes. Stdout starts with `WATCH-START round=N reviewers=<csv> timeout=3600s`. Each confirmed retry may add `AUTO-REDISPATCH attempt=N/M reason=codex-response-stream-disconnected state-dir=<abs-path>`. One terminal line then follows: `DONE <absolute-path>` (exit 0), `TIMEOUT` (exit 2), `REAP-UNKNOWN <state-dir>` (exit 2), `STREAM-DEAD <state-dir>` (exit 3), or `STALL <state-dir>` (exit 3). Output remains bounded by the configured retry limit.
 
-When the watcher emits `DONE <path>`, resume Phase 2 immediately. The watcher's path output is informational; Phase 2 still re-lists `Review-*.md` itself and applies the freshness + scope partition described below. If the expected set has multiple reviewers and only one fired, Phase 2's reviewer-specific follow-up handles the rest.
+When the watcher emits `DONE <path>`, resume Phase 2 immediately for a single-reviewer round. In a multi-reviewer round, that reviewer is ready for intake; begin consolidation only after every reviewer has a ready report or a confirmed failure. The watcher's path output is informational; Phase 2 still re-lists `Review-*.md` itself and applies the freshness + scope partition described below. A reviewer whose watcher ends without a report is handled by Phase 2's missing-reviewer steps once every other reviewer is resolved.
 
 When the watcher emits `AUTO-REDISPATCH ...`, the bounded retry has started; keep watching the same logical dispatch and state directory. No user action is required.
 
@@ -482,7 +495,7 @@ When the watcher emits `TIMEOUT`, print `Auto-watch timed out after 60 min; repl
 
 ### Phase 2.0 prologue: Auto-terminal Health check (Auto-terminal channel only; Terminal-relay and Plugin skip)
 
-For the Auto-terminal channel only, run 10 structural Health checks plus 3 Substance heuristics on `Review-Codex.md` before the existing freshness + scope partition begins. Required dispatch state files (`<state-dir>/pre-mtime`, `<state-dir>/timestamp`, `<state-dir>/tail`, plus optionally `<state-dir>/stall-warning` when stall-watch wrote it) come from the `dispatch-codex` and `stall-watch` scripts via dispatch-codex's stdout `STATE-DIR <abs-path>` line. Health checks 2, 7, 8, 9 and the Substance heuristics depend on these files.
+For the Auto-terminal channel only, run 10 structural Health checks plus 3 Substance heuristics on `Review-Codex.md` before the existing freshness + scope partition begins. In a multi-reviewer round, run them once per reviewer with that reviewer's state directory and exact review file. `Review-Codex.md` in the table below then means the file passed to that run. Required dispatch state files (`<state-dir>/pre-mtime`, `<state-dir>/timestamp`, `<state-dir>/tail`, plus optionally `<state-dir>/stall-warning` when stall-watch wrote it) come from the `dispatch-codex` and `stall-watch` scripts via dispatch-codex's stdout `STATE-DIR <abs-path>` line. Health checks 2, 7, 8, 9 and the Substance heuristics depend on these files.
 
 | # | Check | Failure → |
 |---|---|---|
@@ -503,7 +516,7 @@ For the Auto-terminal channel only, run 10 structural Health checks plus 3 Subst
 
 - Checks 1-6 and 10 all pass AND Checks 7, 8, and 9 all clear (0 suspicious phrases, 0 tool-failure markers, no stall-warning file present) → eligible for silent proceed (still subject to Substance heuristics and Phase 1d coordination below).
 - Checks 1-6 and 10 all pass AND Check 7, 8, OR 9 hit (any marker or stall-warning present) → emit the corresponding one-line note(s); block silent advance; ask user to Proceed or Downgrade.
-- Any of Checks 1-6 or Check 10 fails → refuse intake; surface specifically which check failed; offer Terminal-relay retry.
+- Any of Checks 1-6 or Check 10 fails → refuse that reviewer's intake and surface the failed check. Route its dispatch through the Phase 1c failover queue and keep other reviewer slots active.
 
 **Required dispatch state contract**: Missing or stale `<state-dir>/pre-mtime` or `<state-dir>/timestamp` is `FAIL` (Health check 2 freshness and the time-floor heuristic cannot be trusted). Missing `<state-dir>/tail` is `WARN check-8 1 missing-dispatch-tail` and blocks silent advance; it must NOT be silently treated as Check 8 hit 0. When `Review-Codex.md` is missing, Check `1` hard-fails while Check `8` and Check `9` still run against `<state-dir>/tail` and `<state-dir>/stall-warning`. A missing review file is exactly the case Check `8` exists to diagnose: a dispatch can spend a round retrying a shell spawn that always fails, write no review, and leave a growing tail. Reporting that state as tail-present-but-unscanned is incorrect. This replaces the pre-fix `PASS check-8 tail-present-not-scanned` and `check-9 stall-warning-present` output shapes; Check `9` now reports `N stall-periods` in both branches.
 
@@ -523,7 +536,7 @@ Substance heuristics are skipped for Terminal-relay and Plugin path (the user ha
 
 #### Phase 1d coordination (Auto-terminal-specific silent-intake rule)
 
-For Terminal-relay, auto-watch `DONE` is sufficient signal to silently advance into Phase 2. For Auto-terminal, `DONE` is necessary but not sufficient. Phase 2 may silently advance only when ALL of the following hold:
+For Terminal-relay, auto-watch `DONE` is sufficient signal to silently advance that reviewer into intake. For Auto-terminal, `DONE` is necessary but not sufficient, and the gates below apply to each reviewer. In a multi-reviewer round, consolidation starts only after every expected reviewer has a ready report or a confirmed failure. Phase 2 may silently advance a reviewer only when ALL of the following hold:
 
 1. Auto-watch emits `DONE <path>` (file appeared with current round marker).
 2. The dispatch subprocess exited 0 (Bash background task notification reports `exit code 0`), or the harness reported the task stopped and `await-review` then returned `REVIEW-READY`.
@@ -534,7 +547,7 @@ For Terminal-relay, auto-watch `DONE` is sufficient signal to silently advance i
 7. Health check 9 (stall-warning file absent) holds.
 8. Substance heuristics flag 0 signals.
 
-If 2, 3, or 4 fails, refuse intake and offer Terminal-relay retry. If 5 hits at least 1 phrase, 6 hits at least 1 marker, 7 detects the stall-warning file, or 8 flags at least 1 signal, Phase 2 stops at a human checkpoint with `Proceed? / Downgrade?`; no silent advance. Auto-watch `TIMEOUT`, `REAP-UNKNOWN`, and `STALL` also stop at a human checkpoint. `STREAM-DEAD` is an Auto-terminal runtime failure handled by the downgrade rules above.
+If 2, 3, or 4 fails for a reviewer, refuse that review and route its dispatch through the Phase 1c failover queue while other reviewer slots continue. If 5 hits at least 1 phrase, 6 hits at least 1 marker, 7 detects the stall-warning file, or 8 flags at least 1 signal, Phase 2 stops at a human checkpoint with `Proceed? / Downgrade?`; no silent advance. Auto-watch `TIMEOUT`, `REAP-UNKNOWN`, and `STALL` also stop at a human checkpoint. `STREAM-DEAD` is an Auto-terminal runtime failure handled by the downgrade rules above.
 
 #### False-positive tuning principle
 
@@ -553,7 +566,7 @@ Operational principle: better to under-flag a real signal than to cry wolf so of
 
 ### Phase 2.1: Partition and classify (all channels)
 
-Reviewers are instructed to write their review to a `Review-<AgentName>.md` file in the repository root, using their own self-reported name (see Phase 1c). When the user says a reviewer is done, or when multiple reviewers have been run in parallel for the same round, list the files matching `Review-*.md` at the repo root. Apply the two-axis partition described below (freshness + scope) to decide which files to read, and report any ignored files to the user.
+Reviewers are instructed to write their review to a `Review-<AgentName>.md` file in the repository root, using their own self-reported name (see Phase 1c). When every expected reviewer has a ready report or a confirmed failure, or the user says the reviewers are done, list the files matching `Review-*.md` at the repo root. Apply the two-axis partition described below (freshness + scope) to decide which files to read, and report any ignored files to the user.
 
 Multi-reviewer consolidation: if two or more current-round review sources are available (current-round `Review-*.md` files and/or reviewer feedback the user relays directly), classify each new finding as:
 
@@ -573,7 +586,7 @@ If a file is current-round but unexpected, flag it to the user before inclusion 
 
 If the expected reviewer set is unknown, treat mtime as weak evidence only: use it to rank candidates, not to auto-classify. Ask the user to confirm which current-round files belong to this review before consolidating.
 
-If the expected reviewer set is known and any reviewer in it is not represented in the current-round + expected bucket (absent entirely, or its file is stale, empty, unreadable, or unexpected):
+Keep a reviewer's slot pending while its dispatch is still active, and skip the steps below for a confirmed dispatch failure (see Path selection). If the expected reviewer set is known and any reviewer in it is not represented in the current-round + expected bucket (absent entirely, or its file is stale, empty, unreadable, or unexpected):
 1. Present a reviewer-specific follow-up prompt the user can paste back into that reviewer, identifying which reviewer is missing so the user knows where to paste it: `Save your review to Review-<YourAgentName>.md in the repo root. Normalize your name: pick the stable product name, whitespace → one dash, keep only ASCII letters/digits/dashes, collapse repeated dashes, trim edge dashes. Examples: Review-Codex.md, Review-GitHub-Copilot.md, Review-Antigravity.md, Review-Claude-Code.md. Use Review-Unknown.md if the result is empty or you cannot identify yourself, and note the uncertainty at the top. Write the complete review to a temporary file in the same directory, then rename it over that filename rather than clearing the target first. Start with <!-- Round N -->. Begin with a "Verification notes" paragraph or short bulleted list. Separate findings into New and Previously raised (Fixed / Still open / Reopened / Deferred) sections. For High-priority findings, include an exact rewrite with file:line.`
 2. If the file is still missing, still empty, or still carries a stale round marker after the follow-up, ask the user to paste that reviewer's feedback directly.
 

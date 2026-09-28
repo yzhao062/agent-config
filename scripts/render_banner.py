@@ -489,8 +489,8 @@ def session_check(fields: dict) -> str:
     if not hooks["session_bootstrap"]:
         issues.append("session_bootstrap.py missing from ~/.claude/hooks (run bootstrap)")
     claude = fields["claude"]
-    if claude["effort"] != "max":
-        issues.append("Claude effort is %s; set CLAUDE_CODE_EFFORT_LEVEL=max in ~/.claude/settings.json env" % claude["effort"])
+    if claude["effort"] not in ("xhigh", "max"):
+        issues.append("Claude effort is %s; set CLAUDE_CODE_EFFORT_LEVEL=xhigh in ~/.claude/settings.json env" % claude["effort"])
     issues.extend(codex_issues(fields["codex"]))
     issues.extend(fields["workflows"])
     packs = fields["packs"]
