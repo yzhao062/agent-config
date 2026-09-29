@@ -52,7 +52,7 @@ or a unit's result cannot be checked without redoing it.
 
 | Executor | Quota | Notes |
 |---|---|---|
-| Agy (`agy`) | Google AI plan authenticated in Antigravity | **The only worker.** Gemini 3.8 Flash High at `high` effort; fast, separately funded, and dispatched with full unattended tool permission inside a scratch dir or throwaway clone. |
+| Agy (`agy`) | Google AI plan authenticated in Antigravity | **The only worker.** The newest Gemini Flash High the account lists, at `high` effort; fast, separately funded, and dispatched with full unattended tool permission inside a scratch dir or throwaway clone. |
 | Claude session (this session) | Current Claude account; check Settings > Usage for the applicable limits or credits | Coordinator and integrator only, on whatever model is selected. Never a unit. |
 
 Rules:
@@ -60,7 +60,8 @@ Rules:
 - **Every unit runs on Agy.** Research, verification, extraction, cross-checks, and code-writing
   units in a throwaway clone all go through `dispatch-task-agy`. The dispatcher gives a unit the
   same unattended capability as the `/vet` Agy reviewer, so it can verify numbers, run experiments,
-  and fetch the web. Agy defaults to `gemini-3.8-flash-high` at the CLI's maximum `high` effort.
+  and fetch the web. Agy defaults to the newest `gemini-*-flash-high` the account lists
+  (`gemini-3.8-flash-high` as of 2026-09) at the CLI's maximum `high` effort.
 - **Never a Claude-side worker.** Do not spawn an Agent-tool subagent (Sonnet or any other model)
   or a Workflow agent for a unit, including as a fallback when the Agy pool is short. Those workers
   spend the coordinating session's own Claude account. When Agy cannot take a batch, queue it or
@@ -192,14 +193,24 @@ Resolve scripts via this order, first hit wins: `skills/prun/scripts/`, then
 - Emits exactly one stdout line `STATE-DIR <abs-path>`; Agy stream events and stderr land in the
   state directory, the conversation id from Agy's `init` event is recorded to
   `<state-dir>/conversation-id`, and the final response is published atomically to the result path.
-- Defaults to `gemini-3.8-flash-high` at `high` effort. Override with
-  `ANTIGRAVITY_DISPATCH_MODEL` and `ANTIGRAVITY_DISPATCH_EFFORT`. Agy takes
+- Defaults to the newest `gemini-*-flash-high` at `high` effort. The constants
+  `DEFAULT_MODEL` (`gemini-3.8-flash-high`) and `SECOND_MODEL`
+  (`claude-sonnet-4-6`) are family templates. The preflight's `agy models`
+  listing floats each one's version, so a new Flash or Sonnet release runs
+  without an edit. The switch shows as a `MODEL-RESOLVE from=... to=...` line
+  on stderr and in `<state-dir>/quota-note`, and `<state-dir>/model` names the
+  model that ran. Quota routing
+  picks the group first, and floating never moves a unit to the other group.
+  A model named in `ANTIGRAVITY_DISPATCH_MODEL` runs verbatim, and
+  `ANTIGRAVITY_PREFLIGHT=off` skips the listing, so the templates run as
+  written. `ANTIGRAVITY_DISPATCH_EFFORT` overrides the effort. Agy takes
   `--effort` for its Gemini models only, so the dispatcher omits the flag for
   the second group below rather than having Agy reject the whole call.
-- Agy Ultra exposes a second quota group for `claude-sonnet-4-6`,
-  `claude-opus-4-6-thinking`, and `gpt-oss-120b-medium`, metered apart from the
-  Gemini group. **A unit that names no model goes to whichever group has the
-  freer meter**, with `claude-sonnet-4-6` as the second group's model. A unit is
+- Agy Ultra exposes a second quota group for Claude and GPT-OSS models
+  (`claude-sonnet-4-6`, `claude-opus-4-6-thinking`, and `gpt-oss-120b-medium`
+  as of 2026-09), metered apart from the Gemini group. **A unit that names no
+  model goes to whichever group has the freer meter**, with the newest Claude
+  Sonnet as the second group's model. A unit is
   shallow work that either group handles, so the meter decides rather than the
   model family. The worker is the Agy CLI either way, so a Claude model here
   spends Agy quota and never the Claude account the coordinator runs on. This is
@@ -217,7 +228,7 @@ Resolve scripts via this order, first hit wins: `skills/prun/scripts/`, then
   34m`. Before launching, the dispatcher reads the snapshot `agent-quota`
   maintains and decides:
   - No model was named: each unit starts from the Gemini default. When both
-    groups are reported, it moves to `claude-sonnet-4-6` if the second group's
+    groups are reported, it moves to the Sonnet model if the second group's
     lowest remaining fraction is at least 15 points higher, or if Gemini is
     empty and the second group has quota left. A move on headroom also needs
     both metered windows of the destination present in the snapshot, since a

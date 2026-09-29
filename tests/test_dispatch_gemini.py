@@ -388,6 +388,105 @@ class DispatchGeminiUnitTests(unittest.TestCase):
         self.assertEqual(observed, line, "tail did not grow while the pipe stayed open")
         self.assertFalse(pump.is_alive(), "the pump did not return at EOF")
 
+    def test_newest_in_family_version_comparison_major_minor(self) -> None:
+        self.assertEqual(
+            self.module.newest_in_family(
+                "gemini-3.8-flash-high",
+                ["gemini-3.9-flash-high", "gemini-3.10-flash-high"],
+            ),
+            "gemini-3.10-flash-high",
+        )
+        self.assertEqual(
+            self.module.newest_in_family(
+                "gemini-3.8-flash-high",
+                ["gemini-3.8-flash-high", "gemini-4-flash-high"],
+            ),
+            "gemini-4-flash-high",
+        )
+
+    def test_newest_in_family_variants_not_candidates(self) -> None:
+        self.assertEqual(
+            self.module.newest_in_family(
+                "gemini-3.8-flash-high",
+                [
+                    "gemini-3.8-flash-medium",
+                    "gemini-3.8-flash-lite-high",
+                    "gemini-3.8-pro-high",
+                    "gemini-3.1-pro-high",
+                    "gemini-3.9-flash-medium",
+                ],
+            ),
+            "gemini-3.8-flash-high",
+        )
+
+    def test_newest_in_family_claude_thinking_suffix_respected_both_ways(self) -> None:
+        self.assertEqual(
+            self.module.newest_in_family(
+                "claude-sonnet-4-6",
+                ["claude-sonnet-4-6-thinking", "claude-sonnet-4-5"],
+            ),
+            "claude-sonnet-4-5",
+        )
+        self.assertEqual(
+            self.module.newest_in_family(
+                "claude-opus-4-6-thinking",
+                ["claude-opus-4-7", "claude-opus-4-5-thinking"],
+            ),
+            "claude-opus-4-5-thinking",
+        )
+
+    def test_newest_in_family_no_candidates_returns_template(self) -> None:
+        self.assertEqual(
+            self.module.newest_in_family("gemini-3.8-flash-high", []),
+            "gemini-3.8-flash-high",
+        )
+        self.assertEqual(
+            self.module.newest_in_family(
+                "gemini-3.8-flash-high", ["unrelated-model-1", "gpt-4"]
+            ),
+            "gemini-3.8-flash-high",
+        )
+
+    def test_newest_in_family_unparseable_template_unchanged(self) -> None:
+        for bad in ("", "custom-template", "gemini", "gemini-flash", "Fetching models..."):
+            with self.subTest(bad=bad):
+                self.assertEqual(
+                    self.module.newest_in_family(bad, ["gemini-3.9-flash-high"]),
+                    bad,
+                )
+
+    def test_newest_in_family_tie_handling(self) -> None:
+        self.assertEqual(
+            self.module.newest_in_family(
+                "gemini-3.8-flash-high",
+                ["gemini-3-8-flash-high", "gemini-3.8-flash-high"],
+            ),
+            "gemini-3.8-flash-high",
+        )
+        self.assertEqual(
+            self.module.newest_in_family(
+                "gemini-1.0-flash-high",
+                ["gemini-3-8-flash-high", "gemini-3.8-flash-high"],
+            ),
+            "gemini-3-8-flash-high",
+        )
+        self.assertEqual(
+            self.module.newest_in_family(
+                "gemini-1.0-flash-high",
+                ["gemini-3.8-flash-high", "gemini-3-8-flash-high"],
+            ),
+            "gemini-3.8-flash-high",
+        )
+
+    def test_newest_in_family_fetching_token_does_not_match(self) -> None:
+        self.assertEqual(
+            self.module.newest_in_family(
+                "gemini-3.8-flash-high",
+                ["Fetching", "available", "models..."],
+            ),
+            "gemini-3.8-flash-high",
+        )
+
 
 @unittest.skipUnless(GIT, "git is required for dispatcher integration tests")
 @unittest.skipUnless(GIT, "git is required")
@@ -954,6 +1053,72 @@ class DispatchGeminiIntegrationTests(unittest.TestCase):
             review.read_text(encoding="utf-8").splitlines()[0],
             "<!-- Round 2 -->",
         )
+
+    def test_model_floats_to_newest_in_family_when_no_env_model(self) -> None:
+        listing = (
+            "gemini-3.8-flash-high\n"
+            "gemini-3.9-flash-high\n"
+            "gemini-3.9-flash-medium\n"
+            "gemini-3.1-pro-high\n"
+        )
+        result = self._run({"MOCK_AGY_MODELS": listing})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        args = json.loads((self.log / "args.json").read_text(encoding="utf-8"))
+        self.assertIn("gemini-3.9-flash-high", args)
+        self.assertNotIn("gemini-3.8-flash-high", args)
+        self.assertIn(
+            "dispatch-gemini: MODEL-RESOLVE from=gemini-3.8-flash-high "
+            "to=gemini-3.9-flash-high reason=newest-in-family",
+            result.stderr,
+        )
+
+    def test_blank_named_model_is_still_refused(self) -> None:
+        # A blank override is a mistake to report, not a request for the
+        # floating default.
+        result = self._run(
+            {"ANTIGRAVITY_DISPATCH_MODEL": "   ", "MOCK_AGY_MODELS": "gemini-3.9-flash-high"}
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("must be non-empty", result.stderr)
+
+    def test_named_model_override_never_floats(self) -> None:
+        listing = (
+            "gemini-3.8-flash-high\n"
+            "gemini-3.9-flash-high\n"
+            "gemini-3.9-flash-medium\n"
+            "gemini-3.1-pro-high\n"
+        )
+        result = self._run(
+            {
+                "ANTIGRAVITY_DISPATCH_MODEL": "gemini-3.8-flash-high",
+                "MOCK_AGY_MODELS": listing,
+            }
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        args = json.loads((self.log / "args.json").read_text(encoding="utf-8"))
+        self.assertIn("gemini-3.8-flash-high", args)
+        self.assertNotIn("gemini-3.9-flash-high", args)
+        self.assertNotIn("MODEL-RESOLVE", result.stderr)
+
+    def test_listing_with_only_template_does_not_emit_model_resolve(self) -> None:
+        result = self._run({"MOCK_AGY_MODELS": "gemini-3.8-flash-high"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        args = json.loads((self.log / "args.json").read_text(encoding="utf-8"))
+        self.assertIn("gemini-3.8-flash-high", args)
+        self.assertNotIn("MODEL-RESOLVE", result.stderr)
+
+    def test_preflight_off_uses_constant(self) -> None:
+        result = self._run(
+            {
+                "ANTIGRAVITY_PREFLIGHT": "off",
+                "MOCK_AGY_MODELS": "gemini-3.9-flash-high",
+            }
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        args = json.loads((self.log / "args.json").read_text(encoding="utf-8"))
+        self.assertIn("gemini-3.8-flash-high", args)
+        self.assertNotIn("gemini-3.9-flash-high", args)
+        self.assertNotIn("MODEL-RESOLVE", result.stderr)
 
     def test_self_review_guard_refuses_gemini_orchestrator(self) -> None:
         result = self._run({"IMPLEMENT_REVIEW_ORCHESTRATOR": "gemini"})

@@ -105,6 +105,106 @@ class DispatchTaskAgyUnitTests(unittest.TestCase):
         # for belonging to no known group would block a model that works.
         self.assertIsNone(self.module.model_pool("some-future-model"))
 
+    def test_newest_in_family(self) -> None:
+        newest = self.module.newest_in_family
+        # 3.10 beats 3.9
+        self.assertEqual(
+            newest(
+                "gemini-3.9-flash-high",
+                ["gemini-3.9-flash-high", "gemini-3.10-flash-high"],
+            ),
+            "gemini-3.10-flash-high",
+        )
+        # 4 beats 3.8
+        self.assertEqual(
+            newest(
+                "gemini-3.8-flash-high",
+                ["gemini-3.8-flash-high", "gemini-4-flash-high"],
+            ),
+            "gemini-4-flash-high",
+        )
+        # Components: 3.8.1 beats 3.8
+        self.assertEqual(
+            newest(
+                "gemini-3.8-flash-high",
+                ["gemini-3.8-flash-high", "gemini-3.8.1-flash-high"],
+            ),
+            "gemini-3.8.1-flash-high",
+        )
+        # medium/lite/pro not candidates
+        self.assertEqual(
+            newest(
+                "gemini-3.8-flash-high",
+                [
+                    "gemini-3.8-flash-medium",
+                    "gemini-3.8-flash-lite-high",
+                    "gemini-3.1-pro-high",
+                ],
+            ),
+            "gemini-3.8-flash-high",
+        )
+        # -thinking suffix respected both ways
+        self.assertEqual(
+            newest(
+                "claude-sonnet-4-6",
+                ["claude-sonnet-4-6", "claude-sonnet-4-6-thinking"],
+            ),
+            "claude-sonnet-4-6",
+        )
+        self.assertEqual(
+            newest(
+                "claude-opus-4-6-thinking",
+                ["claude-opus-4-6", "claude-opus-4-6-thinking"],
+            ),
+            "claude-opus-4-6-thinking",
+        )
+        self.assertEqual(
+            newest(
+                "claude-opus-4-6-thinking",
+                ["claude-opus-4-6", "claude-opus-4-7-thinking"],
+            ),
+            "claude-opus-4-7-thinking",
+        )
+        # no candidates returns the template
+        self.assertEqual(newest("gemini-3.8-flash-high", []), "gemini-3.8-flash-high")
+        self.assertEqual(
+            newest("gemini-3.8-flash-high", ["claude-sonnet-4-6"]),
+            "gemini-3.8-flash-high",
+        )
+        # unparseable template unchanged
+        self.assertEqual(newest("unknown", ["unknown-2"]), "unknown")
+        self.assertEqual(newest("not_a_model", ["not_a_model-2"]), "not_a_model")
+        # tie handling: keep template if among tied candidates
+        self.assertEqual(
+            newest(
+                "gemini-3.8-flash-high",
+                ["gemini-3-8-flash-high", "gemini-3.8-flash-high"],
+            ),
+            "gemini-3.8-flash-high",
+        )
+        self.assertEqual(
+            newest(
+                "gemini-3.8-flash-high",
+                ["gemini-3.8-flash-high", "gemini-3-8-flash-high"],
+            ),
+            "gemini-3.8-flash-high",
+        )
+        # tie handling: first tied candidate in input order if template not among tied
+        self.assertEqual(
+            newest(
+                "gemini-3.7-flash-high",
+                ["gemini-3-8-flash-high", "gemini-3.8-flash-high"],
+            ),
+            "gemini-3-8-flash-high",
+        )
+        self.assertEqual(
+            newest(
+                "gemini-3.7-flash-high",
+                ["gemini-3.8-flash-high", "gemini-3-8-flash-high"],
+            ),
+            "gemini-3.8-flash-high",
+        )
+
     def test_a_group_is_read_at_its_emptiest_bucket(self) -> None:
         # A full weekly allowance is no help to a unit the 5-hour bucket
         # stops, and the 5-hour bucket is the one that emptied on 2026-09-11.
@@ -1148,6 +1248,151 @@ class DispatchTaskAgyIntegrationTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertEqual(target.read_text(encoding="utf-8"), "keep me\n")
         self.assertEqual(result.stdout, "")
+
+    def test_unpinned_unit_floats_to_newest_gemini_model(self) -> None:
+        result, target = self._run(
+            extra_env={
+                "MOCK_AGY_MODELS": (
+                    "gemini-3.8-flash-high\n"
+                    "gemini-3.9-flash-high\n"
+                    "claude-sonnet-4-6"
+                ),
+            }
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        argv = json.loads((self.log / "args.json").read_text(encoding="utf-8"))
+        self.assertIn("gemini-3.9-flash-high", argv)
+        self.assertEqual(argv[argv.index("--effort") + 1], "high")
+        state_dir = Path(result.stdout.split("STATE-DIR ", 1)[1].strip())
+        self.assertEqual(
+            (state_dir / "model").read_text(encoding="utf-8").strip(),
+            "gemini-3.9-flash-high",
+        )
+        self.assertIn(
+            "MODEL-RESOLVE from=gemini-3.8-flash-high to=gemini-3.9-flash-high reason=newest-in-family",
+            result.stderr,
+        )
+        self.assertTrue(target.is_file())
+
+    def test_balanced_unit_floats_to_newest_claude_model(self) -> None:
+        result, target = self._run(
+            extra_env={
+                "AGY_QUOTA_CACHE": self._quota(gemini=0.2, second=1.0),
+                "MOCK_AGY_MODELS": (
+                    "claude-sonnet-4-6\n"
+                    "claude-sonnet-4-7\n"
+                    "claude-opus-4-6-thinking"
+                ),
+            }
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        argv = json.loads((self.log / "args.json").read_text(encoding="utf-8"))
+        self.assertIn("claude-sonnet-4-7", argv)
+        self.assertNotIn("--effort", argv)
+        state_dir = Path(result.stdout.split("STATE-DIR ", 1)[1].strip())
+        self.assertEqual(
+            (state_dir / "model").read_text(encoding="utf-8").strip(),
+            "claude-sonnet-4-7",
+        )
+        self.assertIn(
+            "MODEL-RESOLVE from=claude-sonnet-4-6 to=claude-sonnet-4-7 reason=newest-in-family",
+            result.stderr,
+        )
+        self.assertTrue(target.is_file())
+
+    def test_named_model_is_never_floated(self) -> None:
+        result, target = self._run(
+            extra_env={
+                "ANTIGRAVITY_DISPATCH_MODEL": "claude-sonnet-4-6",
+                "MOCK_AGY_MODELS": "claude-sonnet-4-6\nclaude-sonnet-4-7",
+            }
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        argv = json.loads((self.log / "args.json").read_text(encoding="utf-8"))
+        self.assertIn("claude-sonnet-4-6", argv)
+        self.assertNotIn("claude-sonnet-4-7", argv)
+        self.assertNotIn("MODEL-RESOLVE", result.stderr)
+        state_dir = Path(result.stdout.split("STATE-DIR ", 1)[1].strip())
+        self.assertEqual(
+            (state_dir / "model").read_text(encoding="utf-8").strip(),
+            "claude-sonnet-4-6",
+        )
+        self.assertTrue(target.is_file())
+
+    def test_model_fallback_path_floats_to_newest_gemini(self) -> None:
+        result, target = self._run(
+            extra_env={
+                "AGY_QUOTA_CACHE": self._quota(gemini=0.86, second=0.0),
+                "ANTIGRAVITY_DISPATCH_MODEL": "claude-opus-4-6-thinking",
+                "MOCK_AGY_MODELS": (
+                    "gemini-3.8-flash-high\n"
+                    "gemini-3.9-flash-high\n"
+                    "claude-opus-4-6-thinking"
+                ),
+            }
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        argv = json.loads((self.log / "args.json").read_text(encoding="utf-8"))
+        self.assertIn("gemini-3.9-flash-high", argv)
+        self.assertNotIn("claude-opus-4-6-thinking", argv)
+        self.assertEqual(argv[argv.index("--effort") + 1], "high")
+        self.assertIn("MODEL-FALLBACK", result.stderr)
+        self.assertIn(
+            "MODEL-RESOLVE from=gemini-3.8-flash-high to=gemini-3.9-flash-high reason=newest-in-family",
+            result.stderr,
+        )
+        state_dir = Path(result.stdout.split("STATE-DIR ", 1)[1].strip())
+        self.assertEqual(
+            (state_dir / "model").read_text(encoding="utf-8").strip(),
+            "gemini-3.9-flash-high",
+        )
+        # The saved trail explains the gap between the routed template and
+        # the model that ran.
+        note = (state_dir / "quota-note").read_text(encoding="utf-8").splitlines()
+        self.assertTrue(note[0].startswith("MODEL-FALLBACK from=claude-opus-4-6-thinking"))
+        self.assertEqual(
+            note[1],
+            "MODEL-RESOLVE from=gemini-3.8-flash-high to=gemini-3.9-flash-high reason=newest-in-family",
+        )
+        self.assertTrue(target.is_file())
+
+    def test_preflight_off_keeps_constant_model(self) -> None:
+        result, target = self._run(
+            extra_env={
+                "ANTIGRAVITY_PREFLIGHT": "off",
+                "MOCK_AGY_MODELS": "gemini-3.9-flash-high",
+            }
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        argv = json.loads((self.log / "args.json").read_text(encoding="utf-8"))
+        self.assertIn("gemini-3.8-flash-high", argv)
+        self.assertNotIn("gemini-3.9-flash-high", argv)
+        self.assertNotIn("MODEL-RESOLVE", result.stderr)
+        state_dir = Path(result.stdout.split("STATE-DIR ", 1)[1].strip())
+        self.assertEqual(
+            (state_dir / "model").read_text(encoding="utf-8").strip(),
+            "gemini-3.8-flash-high",
+        )
+        self.assertTrue(target.is_file())
+
+    def test_user_named_default_model_is_not_floated(self) -> None:
+        result, target = self._run(
+            extra_env={
+                "ANTIGRAVITY_DISPATCH_MODEL": "gemini-3.8-flash-high",
+                "MOCK_AGY_MODELS": "gemini-3.8-flash-high\ngemini-3.9-flash-high",
+            }
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        argv = json.loads((self.log / "args.json").read_text(encoding="utf-8"))
+        self.assertIn("gemini-3.8-flash-high", argv)
+        self.assertNotIn("gemini-3.9-flash-high", argv)
+        self.assertNotIn("MODEL-RESOLVE", result.stderr)
+        state_dir = Path(result.stdout.split("STATE-DIR ", 1)[1].strip())
+        self.assertEqual(
+            (state_dir / "model").read_text(encoding="utf-8").strip(),
+            "gemini-3.8-flash-high",
+        )
+        self.assertTrue(target.is_file())
 
 
 if __name__ == "__main__":

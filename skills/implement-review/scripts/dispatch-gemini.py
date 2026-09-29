@@ -22,7 +22,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, Iterable
 
 
 DEFAULT_MODEL = "gemini-3.8-flash-high"
@@ -94,20 +94,67 @@ def positive_int_env(name: str, default: int) -> int:
     return value
 
 
-def run_preflight(executable: str, model: str, state_dir: Path) -> int:
+def newest_in_family(template: str, available: Iterable[str]) -> str:
+    """The newest model `available` lists in the same family as `template`.
+
+    A family keeps the template's name and tier and floats only its version:
+    `gemini-3.8-flash-high` admits `gemini-3.9-flash-high` and
+    `gemini-4-flash-high` but no medium, lite, or pro variant, and
+    `claude-sonnet-4-6` admits `claude-sonnet-4-7` but no `-thinking` variant.
+    Versions compare as integer tuples, so 3.10 is newer than 3.9. A tie keeps
+    the template, else the first tied slug in listing order. A template that
+    does not parse, or whose family `available` does not list, comes back
+    unchanged. The pinned constants are therefore family templates, and a new
+    Agy model needs no edit here. The /vet reviewer and the prun worker each
+    carry an identical copy, because the two skills deploy separately.
+    """
+    match = re.match(
+        r"^(?P<prefix>[a-z]+(?:-[a-z]+)*-)"
+        r"(?P<version>\d+(?:[.-]\d+)*)"
+        r"(?P<suffix>(?:-[a-z][a-z0-9]*)*)$",
+        template,
+    )
+    if not match:
+        return template
+    candidate_re = re.compile(
+        "^" + re.escape(match.group("prefix")) + r"(\d+(?:[.-]\d+)*)"
+        + re.escape(match.group("suffix")) + "$"
+    )
+    candidates: list[tuple[str, tuple[int, ...]]] = []
+    for slug in available:
+        found = candidate_re.match(slug)
+        if found:
+            version = tuple(int(part) for part in re.split(r"[.-]", found.group(1)))
+            candidates.append((slug, version))
+    if not candidates:
+        return template
+    newest = max(version for _, version in candidates)
+    tied = [slug for slug, version in candidates if version == newest]
+    return template if template in tied else tied[0]
+
+
+def run_preflight(
+    executable: str,
+    model: str,
+    state_dir: Path,
+    allow_resolution: bool = False,
+) -> tuple[int, str]:
     mode = os.environ.get("ANTIGRAVITY_PREFLIGHT", "auto").strip().lower()
     if mode not in {"auto", "force", "off"}:
-        return fail(
-            "ANTIGRAVITY_PREFLIGHT must be auto, force, or off "
-            f"(got: {mode})",
+        return (
+            fail(
+                "ANTIGRAVITY_PREFLIGHT must be auto, force, or off "
+                f"(got: {mode})",
+            ),
+            model,
         )
     if mode == "off":
-        return 0
+        return 0, model
 
     try:
         timeout = positive_int_env("ANTIGRAVITY_PREFLIGHT_TIMEOUT_SECONDS", 60)
     except ValueError as exc:
-        return fail(str(exc))
+        return fail(str(exc)), model
 
     output_parts: list[str] = []
     for args in (["--version"], ["models"]):
@@ -125,42 +172,61 @@ def run_preflight(executable: str, model: str, state_dir: Path) -> int:
             (state_dir / "preflight-tail").write_text(
                 "\n".join(output_parts), encoding="utf-8"
             )
-            return fail(
-                f"preflight timed out after {timeout}s; refusing to spend a review round",
-                124,
+            return (
+                fail(
+                    f"preflight timed out after {timeout}s; refusing to spend a review round",
+                    124,
+                ),
+                model,
             )
         except OSError as exc:
-            return fail(f"could not launch Antigravity CLI preflight: {exc}", 70)
+            return fail(f"could not launch Antigravity CLI preflight: {exc}", 70), model
 
         output_parts.extend([result.stdout, result.stderr])
         if result.returncode != 0:
             (state_dir / "preflight-tail").write_text(
                 "\n".join(output_parts), encoding="utf-8"
             )
-            return fail(
-                "Antigravity authentication or model-list preflight failed; "
-                "run 'agy' interactively and sign in",
-                70,
+            return (
+                fail(
+                    "Antigravity authentication or model-list preflight failed; "
+                    "run 'agy' interactively and sign in",
+                    70,
+                ),
+                model,
             )
         if args == ["models"]:
-            available = {
+            available_list = [
                 line.strip().split()[0]
                 for line in result.stdout.splitlines()
                 if line.strip()
-            }
+            ]
+            if allow_resolution:
+                resolved = newest_in_family(model, available_list)
+                if resolved != model:
+                    print(
+                        f"dispatch-gemini: MODEL-RESOLVE from={model} to={resolved} reason=newest-in-family",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                model = resolved
+            available = set(available_list)
             if model not in available:
                 (state_dir / "preflight-tail").write_text(
                     "\n".join(output_parts), encoding="utf-8"
                 )
-                return fail(
-                    f"model {model!r} is not available to the signed-in Antigravity account",
-                    70,
+                return (
+                    fail(
+                        f"model {model!r} is not available to the signed-in Antigravity account",
+                        70,
+                    ),
+                    model,
                 )
 
     (state_dir / "preflight-tail").write_text(
         "\n".join(output_parts), encoding="utf-8"
     )
-    return 0
+    return 0, model
 
 
 def git_output(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -597,6 +663,9 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     model = os.environ.get("ANTIGRAVITY_DISPATCH_MODEL", DEFAULT_MODEL).strip()
+    # A model the caller named runs verbatim; only the default floats to the
+    # newest member of its family during the preflight.
+    allow_resolution = "ANTIGRAVITY_DISPATCH_MODEL" not in os.environ
     effort = os.environ.get("ANTIGRAVITY_DISPATCH_EFFORT", DEFAULT_EFFORT).strip()
     if not model or not effort:
         return fail("model and effort overrides must be non-empty")
@@ -630,7 +699,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     print(f"STATE-DIR {state_dir}", flush=True)
 
-    preflight_code = run_preflight(executable, model, state_dir)
+    preflight_code, model = run_preflight(
+        executable, model, state_dir, allow_resolution=allow_resolution
+    )
     if preflight_code:
         return preflight_code
 

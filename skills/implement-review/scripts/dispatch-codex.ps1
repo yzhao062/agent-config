@@ -210,6 +210,39 @@ function Resolve-ProbedPython {
     return $resolvedPath
 }
 
+$codexFallbackModel = 'gpt-6.1-sol'
+
+# The review model, in the order dispatch-codex.sh documents: the env
+# override, the top-level model in config.toml, then the fallback. A config
+# model is skipped under a non-OpenAI model_provider, which isolation drops.
+function Resolve-CodexReviewModel {
+    if ($env:CODEX_DISPATCH_MODEL) { return @($env:CODEX_DISPATCH_MODEL, 'env') }
+    $codexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HOME '.codex' }
+    $configFile = Join-Path $codexHome 'config.toml'
+    $configModel = ''
+    $provider = ''
+    if (Test-Path -LiteralPath $configFile -PathType Leaf) {
+        try {
+            foreach ($line in Get-Content -LiteralPath $configFile -ErrorAction Stop) {
+                if ($line -match '^\s*\[') { break }
+                if ($line -cmatch '^\s*(?<key>model_provider|model)\s*=\s*(["''])(?<val>.*?)\1') {
+                    $key = $Matches['key']
+                    $value = $Matches['val']
+                    if ($key -eq 'model_provider') {
+                        $provider = $value
+                    } elseif (-not $configModel -and $value -cmatch '^[A-Za-z0-9._:/-]+$') {
+                        $configModel = $value
+                    }
+                }
+            }
+        } catch {
+            # An unreadable config means no config model; the fallback applies.
+        }
+    }
+    if ($configModel -and (-not $provider -or $provider -eq 'openai')) { return @($configModel, 'config') }
+    return @($codexFallbackModel, 'fallback')
+}
+
 function Use-PythonPath {
     param([string]$Candidate)
     if (-not $Candidate -or -not (Test-Path -LiteralPath $Candidate -PathType Leaf)) {
@@ -446,6 +479,14 @@ if ($pwshBin) {
     [System.IO.File]::WriteAllText((Join-Path $stateDir 'pwsh-interpreter'), "$pwshBin`n")
 }
 
+# Resolve the review model here, well away from the cmdBody construction,
+# and record which source won. Isolation off leaves codex to read its config.
+$model = ''
+if ($env:CODEX_DISPATCH_ISOLATE_MCP -ne 'off') {
+    $model, $modelSource = Resolve-CodexReviewModel
+    [System.IO.File]::WriteAllText((Join-Path $stateDir 'review-model'), "model=$model source=$modelSource`n")
+}
+
 # Emit STATE-DIR on stdout (first and only machine-readable line)
 [Console]::Out.WriteLine("STATE-DIR $stateDir")
 [Console]::Out.Flush()
@@ -570,7 +611,6 @@ $sandboxModeEsc = $sandboxMode -replace '%', '%%'
 # Reviewer isolation (default on; CODEX_DISPATCH_ISOLATE_MCP=off opts out).
 # --ignore-user-config drops user MCP/plugins/hooks; model and reasoning are
 # re-passed. See dispatch-codex.sh for the defaults and what is not kept.
-$model = if ($env:CODEX_DISPATCH_MODEL) { $env:CODEX_DISPATCH_MODEL } else { 'gpt-6-sol' }
 $reasoning = if ($env:CODEX_DISPATCH_REASONING) { $env:CODEX_DISPATCH_REASONING } else { 'xhigh' }
 $isolateArg = if ($env:CODEX_DISPATCH_ISOLATE_MCP -eq 'off') { '' } else { "--ignore-user-config -c model=$model -c model_reasoning_effort=$reasoning " }
 $pythonInstruction = if ($pythonBin) {

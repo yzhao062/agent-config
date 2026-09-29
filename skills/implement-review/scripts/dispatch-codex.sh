@@ -429,12 +429,23 @@ CODEX_DISPATCH_SANDBOX="${CODEX_DISPATCH_SANDBOX:-danger-full-access}"
 # CODEX_HOME. It also drops the configured model, leaving codex's built-in
 # recommended one (server-chosen, so it can change under us), and reasoning
 # effort drops to "none". Re-pass -c model and -c model_reasoning_effort to
-# keep reviews on the chosen model and effort. Their defaults are the model
-# AGENTS.md names for Codex (a contract test keeps them in step) and xhigh;
-# CODEX_DISPATCH_MODEL (e.g. for an account without that model) and
-# CODEX_DISPATCH_REASONING override them. What is NOT re-passed: service_tier and
-# any custom model_provider / base_url. service_tier is left to codex's default
-# on purpose -- hardcoding the maintainer's "fast" tier would make every round
+# keep reviews on the chosen model and effort. The model comes from, in order:
+# CODEX_DISPATCH_MODEL (e.g. for an account without the usual model); the
+# top-level `model` in $CODEX_HOME/config.toml (default ~/.codex), read back
+# because --ignore-user-config drops it; then CODEX_FALLBACK_MODEL, which a
+# contract test keeps equal to the model AGENTS.md names for Codex. Following
+# config.toml means a model switch there reaches reviews without an edit here.
+# A config value is taken only when quoted and made of [A-Za-z0-9._:/-], so a
+# stray config line cannot reach the -c argument or the .ps1's generated cmd
+# helper; CODEX_DISPATCH_MODEL is the operator's own value and passes as given.
+# A config model is skipped when a top-level model_provider other than openai
+# is set: isolation drops that provider, and its model names (ollama's
+# name:tag, a gateway's vendor/model) would reach the default provider. The
+# parser runs under LC_ALL=C so every awk strips a UTF-8 BOM byte-wise.
+# <state-dir>/review-model records the model and which source won.
+# CODEX_DISPATCH_REASONING (default xhigh) overrides the effort. What is NOT
+# re-passed: service_tier and any custom model_provider / base_url.
+# service_tier is left to codex's default on purpose -- hardcoding the maintainer's "fast" tier would make every round
 # fail for a consumer whose account lacks it. A review that genuinely
 # needs a custom provider or a specific tier should set
 # CODEX_DISPATCH_ISOLATE_MCP=off; full config-preserving
@@ -445,11 +456,53 @@ CODEX_DISPATCH_SANDBOX="${CODEX_DISPATCH_SANDBOX:-danger-full-access}"
 # the .ps1 copy of this note is kept short on purpose -- a longer comment
 # beside its cmdBody construction trips a Windows-AV heuristic (Bitdefender
 # AMSI parse block), so the full rationale lives here, not there.
-CODEX_DISPATCH_MODEL="${CODEX_DISPATCH_MODEL:-gpt-6-sol}"
+CODEX_FALLBACK_MODEL="gpt-6.1-sol"
 CODEX_DISPATCH_REASONING="${CODEX_DISPATCH_REASONING:-xhigh}"
-CODEX_ISOLATE_ARGS=(--ignore-user-config -c "model=$CODEX_DISPATCH_MODEL" -c "model_reasoning_effort=$CODEX_DISPATCH_REASONING")
-if [ "$(printf '%s' "${CODEX_DISPATCH_ISOLATE_MCP:-}" | tr '[:upper:]' '[:lower:]')" = "off" ]; then
-    CODEX_ISOLATE_ARGS=()
+CODEX_ISOLATE_ARGS=()
+if [ "$(printf '%s' "${CODEX_DISPATCH_ISOLATE_MCP:-}" | tr '[:upper:]' '[:lower:]')" != "off" ]; then
+    CODEX_REVIEW_MODEL=""
+    CODEX_REVIEW_SOURCE=""
+    if [ -n "${CODEX_DISPATCH_MODEL:-}" ]; then
+        CODEX_REVIEW_MODEL="$CODEX_DISPATCH_MODEL"
+        CODEX_REVIEW_SOURCE="env"
+    else
+        CODEX_HOME_DIR="${CODEX_HOME:-${HOME:-}/.codex}"
+        CODEX_CONFIG_FILE="$CODEX_HOME_DIR/config.toml"
+        if [ -f "$CODEX_CONFIG_FILE" ] && [ -r "$CODEX_CONFIG_FILE" ]; then
+            CODEX_REVIEW_MODEL=$(LC_ALL=C awk '
+NR == 1 { sub(/^\357\273\277/, "") }
+/^[[:space:]]*\[/ { exit }
+/^[[:space:]]*(model|model_provider)[[:space:]]*=[[:space:]]*["\047]/ {
+    key = $0
+    sub(/^[[:space:]]*/, "", key)
+    sub(/[[:space:]]*=.*/, "", key)
+    line = $0
+    sub(/^[^=]*=[[:space:]]*/, "", line)
+    q = substr(line, 1, 1)
+    sub(/^./, "", line)
+    idx = index(line, q)
+    if (idx > 0) {
+        val = substr(line, 1, idx - 1)
+        if (key == "model_provider") {
+            provider = val
+        } else if (model == "" && val ~ /^[A-Za-z0-9._:\/-]+$/) {
+            model = val
+        }
+    }
+}
+END { if (provider == "" || provider == "openai") print model }
+' "$CODEX_CONFIG_FILE" 2>/dev/null || true)
+            if [ -n "$CODEX_REVIEW_MODEL" ]; then
+                CODEX_REVIEW_SOURCE="config"
+            fi
+        fi
+        if [ -z "$CODEX_REVIEW_MODEL" ]; then
+            CODEX_REVIEW_MODEL="$CODEX_FALLBACK_MODEL"
+            CODEX_REVIEW_SOURCE="fallback"
+        fi
+    fi
+    printf 'model=%s source=%s\n' "$CODEX_REVIEW_MODEL" "$CODEX_REVIEW_SOURCE" > "$STATE_DIR/review-model"
+    CODEX_ISOLATE_ARGS=(--ignore-user-config -c "model=$CODEX_REVIEW_MODEL" -c "model_reasoning_effort=$CODEX_DISPATCH_REASONING")
 fi
 # The parent session already refreshed the consumer repo at startup. Repeating
 # that setup inside every review child adds latency and can mutate the deployed

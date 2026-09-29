@@ -39,7 +39,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import BinaryIO, NamedTuple
+from typing import BinaryIO, Iterable, NamedTuple
 
 
 DEFAULT_MODEL = "gemini-3.8-flash-high"
@@ -517,16 +517,57 @@ def quota_route(model: str, pinned: bool = False) -> tuple[str, str, str]:
     return model, "", reason
 
 
-def run_preflight(executable: str, model: str, state_dir: Path) -> tuple[int, str]:
+def newest_in_family(template: str, available: Iterable[str]) -> str:
+    """The newest model `available` lists in the same family as `template`.
+
+    A family keeps the template's name and tier and floats only its version:
+    `gemini-3.8-flash-high` admits `gemini-3.9-flash-high` and
+    `gemini-4-flash-high` but no medium, lite, or pro variant, and
+    `claude-sonnet-4-6` admits `claude-sonnet-4-7` but no `-thinking` variant.
+    Versions compare as integer tuples, so 3.10 is newer than 3.9. A tie keeps
+    the template, else the first tied slug in listing order. A template that
+    does not parse, or whose family `available` does not list, comes back
+    unchanged. The pinned constants are therefore family templates, and a new
+    Agy model needs no edit here. The /vet reviewer and the prun worker each
+    carry an identical copy, because the two skills deploy separately.
+    """
+    match = re.match(
+        r"^(?P<prefix>[a-z]+(?:-[a-z]+)*-)"
+        r"(?P<version>\d+(?:[.-]\d+)*)"
+        r"(?P<suffix>(?:-[a-z][a-z0-9]*)*)$",
+        template,
+    )
+    if not match:
+        return template
+    candidate_re = re.compile(
+        "^" + re.escape(match.group("prefix")) + r"(\d+(?:[.-]\d+)*)"
+        + re.escape(match.group("suffix")) + "$"
+    )
+    candidates: list[tuple[str, tuple[int, ...]]] = []
+    for slug in available:
+        found = candidate_re.match(slug)
+        if found:
+            version = tuple(int(part) for part in re.split(r"[.-]", found.group(1)))
+            candidates.append((slug, version))
+    if not candidates:
+        return template
+    newest = max(version for _, version in candidates)
+    tied = [slug for slug, version in candidates if version == newest]
+    return template if template in tied else tied[0]
+
+
+def run_preflight(
+    executable: str, model: str, state_dir: Path, allow_resolution: bool = False
+) -> tuple[int, str, str]:
     mode = os.environ.get("ANTIGRAVITY_PREFLIGHT", "auto").strip().lower()
     if mode not in {"auto", "force", "off"}:
-        return 2, f"ANTIGRAVITY_PREFLIGHT must be auto, force, or off (got: {mode})"
+        return 2, f"ANTIGRAVITY_PREFLIGHT must be auto, force, or off (got: {mode})", model
     if mode == "off":
-        return 0, ""
+        return 0, "", model
     try:
         timeout = positive_int_env("ANTIGRAVITY_PREFLIGHT_TIMEOUT_SECONDS", 60)
     except ValueError as exc:
-        return 2, str(exc)
+        return 2, str(exc), model
 
     output_parts: list[str] = []
     for args in (["--version"], ["models"]):
@@ -545,30 +586,40 @@ def run_preflight(executable: str, model: str, state_dir: Path) -> tuple[int, st
             (state_dir / "preflight-tail").write_text(
                 "\n".join(output_parts), encoding="utf-8"
             )
-            return 124, message
+            return 124, message, model
         except OSError as exc:
-            return 70, f"could not launch Antigravity preflight: {exc}"
+            return 70, f"could not launch Antigravity preflight: {exc}", model
         output_parts.extend([result.stdout, result.stderr])
         if result.returncode != 0:
             (state_dir / "preflight-tail").write_text(
                 "\n".join(output_parts), encoding="utf-8"
             )
-            return 70, "Antigravity preflight failed; run 'agy' interactively and sign in"
+            return 70, "Antigravity preflight failed; run 'agy' interactively and sign in", model
         if args == ["models"]:
-            available = {
+            available_listing = [
                 line.strip().split()[0]
                 for line in result.stdout.splitlines()
                 if line.strip()
-            }
+            ]
+            available = set(available_listing)
+            if allow_resolution:
+                resolved = newest_in_family(model, available_listing)
+                if resolved != model:
+                    print(
+                        f"dispatch-task-agy: MODEL-RESOLVE from={model} to={resolved} reason=newest-in-family",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    model = resolved
             if model not in available:
                 (state_dir / "preflight-tail").write_text(
                     "\n".join(output_parts), encoding="utf-8"
                 )
-                return 70, f"model {model!r} is unavailable to this Antigravity account"
+                return 70, f"model {model!r} is unavailable to this Antigravity account", model
     (state_dir / "preflight-tail").write_text(
         "\n".join(output_parts), encoding="utf-8"
     )
-    return 0, ""
+    return 0, "", model
 
 
 def copy_stream(source: BinaryIO, target: BinaryIO) -> None:
@@ -819,8 +870,9 @@ def main(argv: list[str] | None = None) -> int:
     if not executable:
         return fail("no runnable Antigravity CLI found; install agy or set ANTIGRAVITY_BIN", 70)
     model = os.environ.get("ANTIGRAVITY_DISPATCH_MODEL", DEFAULT_MODEL).strip()
+    named_model = os.environ.get("ANTIGRAVITY_DISPATCH_MODEL", "").strip()
     # A model the caller named is a choice the meters do not overrule.
-    pinned_model = bool(os.environ.get("ANTIGRAVITY_DISPATCH_MODEL", "").strip())
+    pinned_model = bool(named_model)
     effort = os.environ.get("ANTIGRAVITY_DISPATCH_EFFORT", DEFAULT_EFFORT).strip()
     if not model or not effort:
         return fail("model and effort overrides must be non-empty")
@@ -869,13 +921,30 @@ def main(argv: list[str] | None = None) -> int:
     # The ledger's executor column reads this, so a fallback unit is not
     # recorded as having run on the model the caller asked for.
     (state_dir / "model").write_text(model + "\n", encoding="utf-8")
-    preflight_code, preflight_error = run_preflight(executable, model, state_dir)
+    # Only a model the constants supplied floats to the newest member of its
+    # family, which keeps its quota group. A named model runs verbatim, but a
+    # named one that the quota route replaced with a constant floats.
+    allow_resolution = (
+        model in (DEFAULT_MODEL, SECOND_MODEL) and model != named_model
+    )
+    routed_model = model
+    preflight_code, preflight_error, model = run_preflight(
+        executable, model, state_dir, allow_resolution=allow_resolution
+    )
     if preflight_code:
         stderr_path.write_text(preflight_error + "\n", encoding="utf-8")
         publish_fallback(
             result_path, args.unit_id, preflight_error, tail_path, stderr_path, nonce
         )
         return fail(preflight_error, preflight_code)
+    (state_dir / "model").write_text(model + "\n", encoding="utf-8")
+    if model != routed_model:
+        # A quota note names the family template it routed to; this line
+        # explains why `model` names a newer member.
+        with (state_dir / "quota-note").open("a", encoding="utf-8") as note:
+            note.write(
+                f"MODEL-RESOLVE from={routed_model} to={model} reason=newest-in-family\n"
+            )
 
     relay = build_prompt(original, args.unit_id)
     (state_dir / "prompt-relay").write_text(relay, encoding="utf-8")
