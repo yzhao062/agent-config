@@ -1,0 +1,9 @@
+name: base
+channels:
+- conda-forge
+dependencies:
+- python=3.14
+- conda[version='>=26.7.2']
+- mamba[version='>=2.9.0']
+- pip
+- pipx

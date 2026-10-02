@@ -1,0 +1,34 @@
+{
+  "captured_date": "2026-10-01",
+  "purpose": "Allowlisted reference only; merge intentionally after reinstall. Not a complete config.",
+  "codex": {
+    "model": "gpt-6-astra",
+    "model_reasoning_effort": "high",
+    "service_tier": "default",
+    "approval_policy": "on-request",
+    "project_doc_max_bytes": 262144,
+    "features": {
+      "fast_mode": false
+    },
+    "desktop": {
+      "followUpQueueMode": "steer",
+      "conversationDetailMode": "STEPS_COMMANDS",
+      "ambient-suggestions-enabled": false,
+      "preventSleepWhileRunning": true
+    }
+  },
+  "claude": {
+    "effortLevel": "xhigh",
+    "theme": "auto",
+    "feedbackDrafts": "off",
+    "env": {
+      "CLAUDE_CODE_EFFORT_LEVEL": "xhigh",
+      "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "70",
+      "CLAUDE_CODE_MAX_WEB_SEARCHES_PER_SESSION": "1000",
+      "IMPLEMENT_REVIEW_DEFAULT_CHANNEL": "auto"
+    }
+  },
+  "agy": {
+    "model": "Gemini 3.8 Flash (High)"
+  }
+}

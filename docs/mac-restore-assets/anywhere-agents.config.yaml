@@ -1,0 +1,17 @@
+packs:
+- name: profile
+  source:
+    url: https://github.com/yzhao062/agent-pack
+    ref: main
+- name: paper-workflow
+  source:
+    url: https://github.com/yzhao062/agent-pack
+    ref: main
+- name: acad-skills
+  source:
+    url: https://github.com/yzhao062/agent-pack
+    ref: main
+- name: agent-style
+  source:
+    url: https://github.com/yzhao062/agent-style
+    ref: v0.4.1

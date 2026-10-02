@@ -1,0 +1,15 @@
+name: py312
+channels:
+- conda-forge
+dependencies:
+- python=3.12
+- pip
+- ripgrep
+- git-delta
+- bat
+- fd-find
+- cairo
+- lightgbm
+- boto3
+- awscli
+- pandoc

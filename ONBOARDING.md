@@ -2,6 +2,8 @@
 
 One-page index for a new maintainer machine or future-you coming back after a gap. Read this file first; it points at the right deeper docs for whatever task you are starting.
 
+For a Mac reinstall or personal machine setup, read [Mac settings and recovery guide](docs/mac-mouse-preferences.md) first. It records development tools, agent settings, credentials to back up separately, automatic updates, mouse/window preferences, PyCharm, and recovery checks. Reviewed local startup scripts are preserved in `docs/mac-restore-assets/`; credentials are not stored there.
+
 ## New machine in 3 steps
 
 ```bash

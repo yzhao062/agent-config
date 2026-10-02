@@ -1,0 +1,312 @@
+{
+  "captured_date": "2026-10-01",
+  "purpose": "Observed selected preferences, not an automatic import or user-confirmed desired state.",
+  "rectangle": {
+    "version": "1.100 (106)",
+    "launch_on_login": true,
+    "automatic_update_checks": true,
+    "allow_any_shortcut": true,
+    "alternate_default_shortcuts": true,
+    "window_snapping_mode": 2,
+    "window_snapping_note": "Dragging snap disabled (windowSnapping=2), relying on macOS native tiling",
+    "subsequent_execution_mode": 1,
+    "shortcuts": {
+      "left_half": "Control + Option + Left Arrow",
+      "right_half": "Control + Option + Right Arrow",
+      "left_third": "Control + Option + D",
+      "center_third": "Control + Option + F",
+      "right_third": "Control + Option + G",
+      "maximize": "Control + Option + Return",
+      "restore": "Control + Option + Delete/Backspace",
+      "reflow_todo": "Control + Option + N (keyCode 45, modifierFlags 786432)",
+      "toggle_todo": "Control + Option + B (keyCode 11, modifierFlags 786432)"
+    }
+  },
+  "terminal_profiles": {
+    "application": "Apple Terminal (com.apple.Terminal)",
+    "startup_window_settings": "Clear Light",
+    "default_window_settings": "Clear Dark",
+    "profiles": {
+      "Clear Light": {
+        "font": "SFMonoTerminal-Regular",
+        "font_size": 12.0,
+        "font_antialias": true,
+        "columns": 120,
+        "rows": 30,
+        "background_blur": 0.5
+      },
+      "Clear Dark": {
+        "font": "SFMonoTerminal-Regular",
+        "font_size": 12.0,
+        "font_antialias": true,
+        "columns": 120,
+        "rows": 30,
+        "background_blur": 0.5,
+        "bell": false,
+        "use_option_as_meta_key": true
+      }
+    },
+    "drift_note": "Startup profile is Clear Light (white background) while Default profile is Clear Dark (black background); Guide correctly identified this split.",
+    "other_terminal_apps": [
+      "Termius.app (sandboxed container ~/Library/Containers/com.termius.mac)"
+    ]
+  },
+  "pycharm": {
+    "version": "2026.2",
+    "vmoptions_path": "~/Library/Application Support/JetBrains/PyCharm2026.2/pycharm.vmoptions",
+    "vmoptions": {
+      "xms": "256m",
+      "xmx": "12288m",
+      "reserved_code_cache_size": "512m",
+      "metal_rendering": true
+    },
+    "settings_sync": {
+      "sync_enabled": true,
+      "git_repo_path": "~/Library/Application Support/JetBrains/PyCharm2026.2/settingsSync/"
+    },
+    "fonts": {
+      "terminal_font": {
+        "font_size": 14.0,
+        "path": "options/terminal-font.xml"
+      },
+      "editor_font": {
+        "font_size": 15.0,
+        "line_spacing": 1.5,
+        "path": "options/editor-font.xml",
+        "guide_omission_note": "Guide only documented Terminal font 14; Editor font 15 with 1.5 line spacing was omitted."
+      },
+      "wheel_font_resize": true
+    },
+    "terminal_options": {
+      "use_option_as_meta_key": true,
+      "path": "options/terminal.xml"
+    },
+    "keymaps": {
+      "active_keymap": "macOS copy",
+      "active_keymap_path": "options/mac/keymap.xml",
+      "customizations": {
+        "OptimizeImports": "meta alt o (Cmd + Option + O)",
+        "GotoSymbol": "unbound"
+      },
+      "other_available_keymaps": [
+        "Windows Proper Redo"
+      ]
+    },
+    "plugins": {
+      "installed_user_plugins": [
+        "claude-code-jetbrains-plugin",
+        "intellij-pdf-viewer",
+        "intellij-powershell",
+        "packageChecker",
+        "space",
+        "vcs-hg",
+        "vcs-perforce",
+        "vcs-svn"
+      ],
+      "disabled_plugins_count": 22,
+      "disabled_plugins_list": [
+        "JavaScriptDebugger",
+        "Karma",
+        "NodeJS",
+        "Pythonid",
+        "com.deadlock.scsyntax",
+        "com.intellij.dataWrangler.plugin",
+        "com.intellij.database",
+        "com.intellij.plugins.watcher",
+        "com.intellij.python.django",
+        "com.intellij.tailwindcss",
+        "com.intellij.tasks.timeTracking",
+        "com.jetbrains.gateway",
+        "com.jetbrains.plugins.webDeployment",
+        "com.jetbrains.python.pyscript",
+        "intellij.nextjs",
+        "org.intellij.plugins.postcss",
+        "org.jetbrains.plugins.docker.gateway",
+        "org.jetbrains.plugins.less",
+        "org.jetbrains.plugins.node-remote-interpreter",
+        "org.jetbrains.plugins.remote-run",
+        "org.jetbrains.plugins.sass",
+        "org.jetbrains.plugins.vue"
+      ]
+    },
+    "mcp_server": {
+      "enable_mcp_server": true,
+      "path": "options/mcpServer.xml"
+    },
+    "theme": {
+      "theme_id": "Islands Light",
+      "autodetect": true,
+      "path": "options/laf.xml"
+    }
+  },
+  "input_method": {
+    "system_keyboard_layout": "U.S. (com.apple.keylayout.US)",
+    "active_input_source": "WeType Pinyin (com.tencent.inputmethod.wetype.pinyin)",
+    "fn_key_behavior": "Change Input Source (AppleFnUsageType = 1)",
+    "symbolic_hotkeys": {
+      "select_previous_source": "Control + Space (HotKey 60)",
+      "select_next_source": "Control + Option + Space (HotKey 61)"
+    },
+    "wetype_full_half_width_toggle": "Option + Shift + H",
+    "wetype_paths": [
+      "~/Library/Application Support/WeType",
+      "~/Library/Preferences/com.tencent.inputmethod.wetype.plist",
+      "~/Library/Preferences/com.tencent.WeTypeSettings.plist"
+    ]
+  },
+  "shortcuts": {
+    "total_count": 7,
+    "items": [
+      "New Shortcut 2",
+      "Open App",
+      "New Shortcut",
+      "New Shortcut 1",
+      "Take a Break",
+      "Text Last Image",
+      "Shazam shortcut"
+    ],
+    "test_cleanup_verified": "New Shortcut 3 is deleted and absent.",
+    "storage_path": "~/Library/Group Containers/group.is.workflow.shortcuts/Shortcuts.sqlite"
+  },
+  "mission_control_and_spaces": {
+    "displays_have_separate_spaces": true,
+    "dock_settings": {
+      "autohide": false,
+      "show_recents": false,
+      "persistent_apps_count": 20
+    },
+    "trackpad_gestures": {
+      "three_finger_drag": true,
+      "tap_to_click": true,
+      "four_finger_horizontal_swipe": "Switch between Desktops / Full-screen apps",
+      "four_finger_vertical_swipe": "Mission Control"
+    },
+    "finder_desktop_settings": {
+      "show_external_hard_drives_on_desktop": true,
+      "show_hard_drives_on_desktop": false,
+      "show_removable_media_on_desktop": true,
+      "last_search_scope": "SCcf (Search current folder)"
+    },
+    "shortcuts": {
+      "mission_control": "Control + Up Arrow; mouse thumb button is Launchpad, not Mission Control.",
+      "move_left_space": "Control + Left Arrow (HotKey 79/80)",
+      "move_right_space": "Control + Right Arrow (HotKey 81/82)",
+      "macos_half_screen_tiling": "Control + Fn + Arrow Keys (HotKeys 240/241/242/243)"
+    }
+  },
+  "keyboard_mappings": {
+    "modifier_keys": "Default (no ByHost modifier remaps)",
+    "full_keyboard_access": "Disabled (AppleKeyboardUIMode = 0)",
+    "function_keys_mode": "Standard media keys (fnState not enabled)",
+    "hidutil_user_key_mapping": "None (all (null))",
+    "global_custom_shortcuts": "None (NSUserKeyEquivalents = {})",
+    "app_specific_custom_shortcuts": "None across ~/Library/Preferences/*.plist"
+  },
+  "login_items": {
+    "user_login_items": [
+      "Rectangle",
+      "Amphetamine",
+      "Acrobat Collaboration Synchronizer"
+    ],
+    "user_launch_agents": [
+      "io.github.yzhao062.cli-auto-update.plist",
+      "io.github.yzhao062.vibesignal.plist"
+    ],
+    "vendor_launch_agents_daemons": [
+      "com.google.GoogleUpdater.wake.plist",
+      "com.google.keystone.agent.plist",
+      "com.google.keystone.xpcservice.plist",
+      "com.microsoft.EdgeUpdater.wake.plist",
+      "com.adobe.ccxprocess.plist",
+      "com.logi.optionsplus.plist",
+      "com.logitech.LogiRightSight.Agent.plist",
+      "com.microsoft.update.agent.plist",
+      "us.zoom.updater.plist",
+      "us.zoom.ZoomDaemon.plist"
+    ]
+  },
+  "custom_fonts": {
+    "user_fonts_dir": "~/Library/Fonts",
+    "user_fonts_exist": false,
+    "installed_count": 0,
+    "note": "No user custom fonts installed. System and IDE fonts are bundled (SF Mono, JetBrains Mono)."
+  },
+  "tex_user_trees": {
+    "texmf_home": "/Users/yzhao062/Library/texmf",
+    "texmf_home_exists": false,
+    "home_texmf_exists": false,
+    "installed_user_files_count": 0,
+    "distribution": "MacTeX / TeX Live 2026 (/Library/TeX/texbin, /Applications/TeX)",
+    "path_config": "/etc/paths.d/TeX",
+    "note": "No user TeX trees (~/Library/texmf or ~/texmf) exist. Recovery only requires installing MacTeX package."
+  },
+  "logi_mappings": {
+    "global_default": {
+      "top_button_c196": "Cmd + W (Keyboard Shortcut)",
+      "thumb_button_c195": "Launchpad",
+      "thumb_wheel": "Switch between desktops",
+      "back_button_c83": "OSX Gesture Back",
+      "forward_button_c86": "OSX Gesture Forward",
+      "middle_button_c82": "MB3 (Middle Click)"
+    },
+    "app_overrides": {
+      "google_chrome": {
+        "top_button_c196": "Browser Close Tab (Cmd + W)",
+        "thumb_button_c195": "Launchpad",
+        "thumb_wheel": "Switch between desktops"
+      },
+      "apple_safari": {
+        "top_button_c196": "MODE_SHIFT (drift/deviation from global Cmd+W)",
+        "thumb_button_c195": "Launchpad",
+        "thumb_wheel": "Switch between desktops"
+      },
+      "microsoft_excel": {
+        "top_button_c196": "MODE_SHIFT",
+        "back_button_c83": "Undo (Cmd + Z)",
+        "forward_button_c86": "Redo (Shift + Cmd + Z)",
+        "thumb_button_c195": "Launchpad",
+        "thumb_wheel": "Switch between desktops"
+      },
+      "microsoft_powerpoint": {
+        "top_button_c196": "MODE_SHIFT",
+        "back_button_c83": "Undo (Cmd + Z)",
+        "forward_button_c86": "Redo (Shift + Cmd + Z)",
+        "thumb_button_c195": "Launchpad",
+        "thumb_wheel": "Switch between desktops"
+      },
+      "microsoft_word": {
+        "top_button_c196": "MODE_SHIFT",
+        "back_button_c83": "Undo (Cmd + Z)",
+        "forward_button_c86": "Redo (Shift + Cmd + Z)",
+        "thumb_button_c195": "Launchpad",
+        "thumb_wheel": "Switch between desktops"
+      }
+    }
+  },
+  "brio_saved_presets": {
+    "crop": {
+      "preset": "PRESETS_CROP_MANUAL",
+      "fov": 90,
+      "zoom": 120,
+      "pan": "MANUAL",
+      "tilt": "MANUAL"
+    },
+    "exposure": {
+      "preset": "WEBCAM_PRESETS_EXPOSURE_DEFAULT",
+      "mode": "AUTO",
+      "value": 60,
+      "gain": 100,
+      "hdr": true,
+      "priority": "EXPOSURE"
+    },
+    "video": {
+      "preset": "PRESETS_IMAGE_MANUAL",
+      "brightness": 153,
+      "contrast": 89,
+      "saturation": 130,
+      "sharpness": 137,
+      "white_balance": "AUTO (4000K)"
+    },
+    "verification_limit": "Saved Logi Options+ values only. Active camera/preset in Zoom and image result were not verified."
+  }
+}
