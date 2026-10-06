@@ -123,7 +123,7 @@ VibeSignal 的 widget 由下文 LaunchAgent 启动，状态目录为 `~/.vibesig
 
 ### Agent 恢复遗漏项
 
-[agent-preferences.json](mac-restore-assets/agent-preferences.json) 保存经过字段筛选的参考值，不是可以整体覆盖安装的配置。额外实测值包括：Codex 的 `preventSleepWhileRunning=true`、`ambient-suggestions-enabled=false`、`followUpQueueMode=steer`；Claude 的自动压缩阈值环境项为 `70`、每 session web search 上限为 `1000`、review channel 为 `auto`。这些是当前个人设置，不把它们改成共享默认。
+[agent-preferences.json](mac-restore-assets/agent-preferences.json) 保存经过字段筛选的参考值，不是可以整体覆盖安装的配置。Codex 的额外实测值仍以 2026-10-01 的记录为准：`preventSleepWhileRunning=true`、`ambient-suggestions-enabled=false`、`followUpQueueMode=steer`。Claude 的环境项在 2026-10-05 更新：自动压缩阈值 `65`、子 agent 默认模型 `sonnet`、每 session web search 上限 `1000`。这三项来自共享的 `user/settings.json`，bootstrap 会自动写回。review channel `auto` 只在本机设置，恢复时要手动加回。
 
 个人规则包选择已保存为 [anywhere-agents.config.yaml](mac-restore-assets/anywhere-agents.config.yaml)：agent-pack 的 profile、paper-workflow、acad-skills 指向 main，agent-style 指向 v0.4.1。恢复到 `~/.config/anywhere-agents/config.yaml` 后，再运行 consumer bootstrap。规则包 pin 与 py312 中安装的 agent-style Python 包版本属于不同层，不要求两个数字机械相等。
 
