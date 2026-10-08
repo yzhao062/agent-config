@@ -38,7 +38,7 @@ Cross-repo backlog for the maintainer's source repos (ac, aa, ap, as), tracked h
 |---|---|---|---|
 | [as-awesome-list-submissions](2026-05-16-as-awesome-list-submissions.md) | distribution / public-listing | 2 drafted (awesome-claude-code, awesome-copilot) + 3 queued | Human form-submission window (~30 min) |
 | [as-pep639-license-migration](2026-05-16-as-pep639-license-migration.md) | PyPI packaging | Migrate to PEP 639 license metadata before setuptools cliff | **2027-02-18 hard deadline** |
-| [defensive-writing-trial](2026-10-06-defensive-writing-trial.md) | RULE-03 / RULE-08 calibration (as, with ac, aa, ap) | v0.5.0 shipped 2026-10-06 as a field trial with two unmet bench criteria; watch list, revision path, one-project rollback | Revise when daily drafts show an overclaiming pattern or persisting caveat tails |
+| [defensive-writing-trial](2026-10-06-defensive-writing-trial.md) | RULE-03 / RULE-08 calibration (as, with ac, aa, ap) | Field trial of agent-style v0.5.0 calibration (2026-10-06, two unmet bench criteria) and of revise-in-place against patch accretion (2026-10-08); watch list, revision path, one-project rollback | Revise when daily drafts show an overclaiming pattern, persisting caveat tails, or round-over-round growth |
 
 ## Conventions
 

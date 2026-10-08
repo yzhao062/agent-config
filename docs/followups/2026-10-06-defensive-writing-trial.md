@@ -38,3 +38,11 @@ Signs that the old habits persist:
 ## How to Roll Back in One Project
 
 Pin agent-style to `v0.4.2` under `packs:` in that project's `agent-config.yaml`. aa never bundled v0.4.2 as its default, so the ref ledger reads the pin as deliberate and leaves it in place. The pin rolls back the rule pack only; the `AGENTS.md` bullet and the `/vet` lenses stay.
+
+## Patch Accretion (Added 2026-10-08)
+
+The internal-writing records show a third form of defensive writing: each review round answers a finding by adding material, and nobody owns the total. QEMScore grew from 46 to 80 pages over its panel rounds before a dedicated trim cut it to 31. The agent-risk paper reached 59 to 63 pages and needed a readability round that cut its appendix from 48 to 37 pages. The shared `AGENTS.md` had the same history before its diet (74.6 KB to about 23 KB).
+
+`AGENTS.md` adds revise-in-place, and the `/vet` lenses check accretion. For papers, proposals, and plans, `/vet` tracks size and consolidates after two rounds of growth with no new result or step. The panel protocol favors rewriting, moving, or cutting; repeat panels compare page counts.
+
+Watch for papers or plans that grow without a new result or step, or requests for additions that name no missing evidence or explanation. Also watch for consolidation that cuts evidence a retained claim needs. The round-11 QEMScore panel found five trim defects; the fixes restored or corrected the affected passages.
