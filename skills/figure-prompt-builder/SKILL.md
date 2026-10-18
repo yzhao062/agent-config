@@ -150,6 +150,8 @@ restrained illustrative cues when those cues improve readability.
 
 ### 5. Choose The Downstream Generation Path Before Writing The Prompt
 
+For Yue Zhao's new paper/proposal overviews, new standalone mechanism figures, and substantial redesigns, apply the concept-first default in `editable-figure`: plan an actual whole-figure image-generation draft before editable reconstruction. An object asset sheet or a code-rendered box layout does not complete that stage. Keep a prompt-only request prompt-only, while making this intended downstream sequence explicit. Use `editable-figure`'s scoped exceptions for accepted-layout edits, small insets within accepted figures, exact supplied-layout reproduction, and explicitly requested native-only drafts; do not launch extra generators without authorization.
+
 Do not over-prioritize format purity. First choose the prompt and tool path
 most likely to yield a strong final figure within the user's time, tooling,
 and revision constraints.
