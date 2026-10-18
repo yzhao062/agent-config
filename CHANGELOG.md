@@ -4,6 +4,15 @@ All notable changes to the shared agent configuration are documented here.
 Consuming projects pull the latest on every bootstrap run; this log helps
 track what changed between runs.
 
+## Unreleased
+
+### Added
+- With `agent-style` 0.8.0 or newer, the style advisory in `scripts/guard.py` runs a document-level RULE-12 profile in place of the per-sentence rule. It also runs RULE-08, which reports the same caveat framing stated three or more times outside a limitations section. The profile reports a share of long sentences outside the human range, a run of `, so` clause joins, and sentences over 80 words, each worded as a departure from human-written papers. Releases before 0.8.0 keep their rule sets, and the summary line now says that a finding which reads well can stay.
+- `skills/implement-review/scripts/style-audit.py` reports RULE-12 through the profile when the guard's set holds it. It keeps a document-level finding for a changed file even when the diff misses its anchor line, because a revision elsewhere can move the share, the `, so` rate, or the count of long sentences. That covers every finding that starts with `_PF_DOCUMENT_PREFIX` and every RULE-12 finding of the profile. Findings about one place keep the changed-line scoping.
+
+### Fixed
+- The style advisory reports the line numbers of the file that was written. Blanking fenced code, inline code, and LaTeX verbatim used to collapse a multi-line span to one space, which moved every later line up. Each blank now keeps the newlines of the span it replaces.
+
 ## 2026-04-29
 
 ### Changed
