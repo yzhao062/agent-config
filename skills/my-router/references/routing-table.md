@@ -7,6 +7,7 @@
 | `bibref-filler` | citation/bibliography work | Add verified citations to `working.bib`, keep curated bib files stable |
 | `bibref-verify` | citation audit / verification before submission | Audit an existing `.bib` for hallucinated citations or stale metadata (fabricated authors, future arXiv IDs, already-published preprints); companion to `bibref-filler` |
 | `ci-mockup-figure` | HTML mockups, TikZ/skia-canvas figures, dashboards, Gantt charts | Build space-efficient figures via HTML capture or abstract figure toolchain |
+| `editable-figure` | editable, PowerPoint, or PPTX figure requests | Design paper, proposal, or README figures as native editable PowerPoint objects; a finished build needs desktop PowerPoint validation |
 | `figure-prompt-builder` | figure/diagram requests | Build copy-ready prompts for explanatory figures |
 | `implement-review` | staged changes + review request | Multi-round review loop with Codex, content-aware lenses |
 | `my-router` | any task (this skill) | Detects context and dispatches to the right skill |

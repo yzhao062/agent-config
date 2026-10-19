@@ -19,9 +19,7 @@ The router decides this. Not all tasks need superpowers' full ceremony.
 | Open-ended, multi-step, or ambiguous task (e.g., "improve the proposal", "build a new feature", "restructure the related work") | **Superpowers first** — brainstorm → plan → execute (router dispatches during execute) → verify | These benefit from thinking before doing |
 | Quick edit or fix (e.g., "fix the typo on line 42", "rename this variable") | **Neither** — just do it directly | No routing or workflow needed |
 
-| Effort signal words in prompt (e.g., "extensively", "extensive", "deep", "thorough", "in-depth", "carefully", "comprehensive") | **Superpowers + extended thinking** — enable extended thinking (`Alt+T`) and route through superpowers regardless of task shape | The user is explicitly asking for more deliberation |
-
-The rule: **if the domain skill is obvious and the scope is clear, skip superpowers and dispatch directly. If the task needs exploration or planning, let superpowers run the outer loop and the router dispatches during execution. If the user signals they want deep effort, always use superpowers with extended thinking enabled.**
+The rule: **if the domain skill is obvious and the scope is clear, skip superpowers and dispatch directly. If the task needs exploration or planning, let superpowers run the outer loop and the router dispatches during execution.**
 
 ## Integration with Superpowers
 
@@ -92,7 +90,7 @@ Some projects declare their type in `AGENTS.local.md` or directory naming:
 In consuming project repos, skills can be project-local, pack-deployed, or bootstrapped from shared config. When dispatching, look for each skill in this order:
 
 1. `skills/<name>/SKILL.md`: project-local (highest priority). Projects may have their own custom skills here that are not in the shared config. The router should scan `skills/` for any available SKILL.md files, not just the ones listed in the routing table below.
-2. `.claude/skills/<name>/SKILL.md`: pack-deployed by `anywhere-agents pack install`. The `.claude/` prefix is a historical Claude Code convention; the SKILL.md contents are agent-agnostic.
+2. `.claude/skills/<name>/SKILL.md`: pack-deployed by bootstrap from the configured packs (`anywhere-agents pack add` adds one). The `.claude/` prefix is a historical Claude Code convention; the SKILL.md contents are agent-agnostic.
 3. `.agent-config/repo/skills/<name>/SKILL.md`: bootstrapped from shared config.
 4. **Installed plugins**: Claude Code plugins (e.g., `frontend-design`, `superpowers`, `pyright-lsp`) provide their own skills and capabilities. Check `/skills` output for plugin-provided skills alongside the three locations above. Plugin skills may overlap with custom skills; prefer the more specific one (e.g., a project-local `nsf-proposal-composer` over a generic plugin writing skill).
 
@@ -105,7 +103,7 @@ Skills come from three sources with different availability:
 | Source | Available where | How |
 |---|---|---|
 | `skills/` (shared) | All projects | Copied by bootstrap into `.agent-config/repo/skills/` |
-| Pack-deployed (third-party packs) | Projects that install the pack | `anywhere-agents pack install` writes into `.claude/skills/<name>/` |
+| Pack-deployed (third-party packs) | Projects that configure the pack | Bootstrap writes into `.claude/skills/<name>/` for each pack added with `anywhere-agents pack add` or listed in `agent-config.yaml` |
 | `reference-skills/` (domain) | Only projects that have them locally | Copied manually into `skills/` in the project repo |
 
 Before invoking a reference skill, check that its `SKILL.md` exists in the current project (in `skills/`, `.claude/skills/`, or `.agent-config/repo/skills/`). If it does not exist, inform the user: "This task would use [skill name], but it is not available in this project. You can copy it from https://github.com/yzhao062/agent-config/tree/main/reference-skills/."

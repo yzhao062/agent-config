@@ -82,6 +82,14 @@ STRICT_MEMBERSHIP_FLOOR = (
     "tests/test_prun_snapshot.py",
     "tests/test_style_audit.py",
     "tests/test_prun_executors.py",
+    "tests/test_agent_quota_refresh.py",
+    "tests/test_figure_gallery.py",
+    "tests/test_gather.py",
+    "tests/test_generator.py",
+    "tests/test_inspect_figure_pdf.py",
+    "tests/test_monitor.py",
+    "tests/test_shell_nounset_arrays.py",
+    "tests/test_skill_size.py",
 )
 
 
