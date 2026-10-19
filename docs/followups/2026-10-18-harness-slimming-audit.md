@@ -1,0 +1,121 @@
+# Harness slimming audit, 2026-10-18
+
+A consistency and slimming pass over the four source repositories (ac, aa, as, ap) and the 26 distinct local consumers. The goal is a cleanup list for now and a repeatable check that keeps the harness from growing back. The harness serves the maintainer first; outside users are optional, so a cost that only serves other people is a policy question rather than a defect.
+
+The largest cost is what loads in every session. The composed `CLAUDE.md` sits 9 bytes under its 61,440-byte ceiling in every consumer, `paper-workflow` and `acad-skills` load in 18 repositories that hold no paper, and `usc-admin/AGENTS.local.md` carries tens of kilobytes of dated administrative records. The two coordinator skills keep growing past the ceilings their own diet plan set. Most other findings are drift (docs that no longer match the code) and residue (closed plans, stale memory, Windows-era paths after the 2026-09-22 move to macOS).
+
+## Method and limits
+
+Fifteen Agy units (Gemini 3.8 Flash High, `prun`) read a snapshot of the four source trees and a structural snapshot of each consumer, plus a full `pytest -rs --durations` run of aa and per-skill usage counts from local transcripts. Six Claude verifiers (one Workflow run) then checked every high-impact claim against the real files and refuted what did not hold; the list of refuted claims is at the end. Nothing was edited during the audit except one stale memory entry (see P1).
+
+Usage evidence is thin. Claude transcripts on this Mac start 2026-09-22 and most Codex sessions are from October, so this sample cannot show whether a skill used once a semester (a CV, a COA export, a poster) is unused. Older transcripts are also pruned after `cleanupPeriodDays`, which `~/.claude/settings.json` leaves at its default. The periodic check below therefore keeps its own usage ledger and records the date range it covers.
+
+The raw unit results, verifier verdicts, usage counts, test run, and scanner scripts are kept locally in `archive/audits/2026-10-18-harness-slimming/` (gitignored, because they quote consumer content); this file carries the conclusions with their file and line evidence.
+
+## P1: fix now
+
+| Item | Evidence | Action |
+|---|---|---|
+| Dead Windows paths in the instructions every source-repo session loads | `agent-config/CLAUDE.local.md:23,69` pointed at obsolete Windows locations of the agent-style and agent-pack rule packs, and `anywhere-agents/CLAUDE.local.md:10` and `agent-style/CLAUDE.local.md:10` at the agent-pack one. The files exist under `~/PycharmProjects/`. These pointers are the only route by which ac and aa sessions see the full writing rules and the decision-support stance, because those two repos compose no packs; aa had no agent-style pointer at all. | Done 2026-10-19 (the files are untracked, so no commit). The paths now name `~/PycharmProjects/agent-style/docs/rule-pack.md` and `~/PycharmProjects/agent-pack/docs/rule-pack.md`, aa gained the agent-style pointer, and `agent-config/CLAUDE.local.md` no longer cites the old "Agent Fungibility" section (now part of Agent Roles) or four acad-skills (there are six). |
+| Paper packs load in repositories without papers | Survey of `*.tex`, `.gitmodules` Overleaf entries, and `papers/` or `proposals/` directories: only NSF-Proposal-Template-Yue, internal-writing, usc-slides, agent-startup-thesis, and qlab hold manuscripts. research-compute, yzhao062.github.io, and internal-review may want `acad-skills` alone. The other 18 load 7,174 bytes of `paper-workflow` plus about 3.2 KB of `acad-skills` descriptions per session, and `paper-workflow-compact.md:11` itself says to skip prototype and OSS repos. Two layers select them: the user-level `~/.config/anywhere-agents/config.yaml`, and the project `agent-config.yaml` of 24 consumers, including 16 of the 18. | Layers union and a project cannot subtract a single pack in YAML (only `AGENT_CONFIG_PACKS=-name` can; `anywhere-agents/scripts/packs/config.py:234-283,291-322`), so trimming one layer is not enough. First fix `pack_identity.gap_count`, which already reports "3 user-level pack(s) not deployed" in repos that lack a project yaml (audit-commons). Then trim the user-level list to `profile` and `agent-style`, keep both paper packs in the five manuscript repos, decide which of the three academic-support repos keep `acad-skills`, and remove the two packs from the other project lists. Check the effective selection and the composed size in each consumer before re-bootstrapping. |
+| State inside a rules file | `usc-admin/AGENTS.local.md` is 59,172 bytes. The dated-record spans at lines 1-79 and 215-379 alone occupy 43,803 bytes, and lines 165-171 hold a Windows-only Python-shim instruction. | Move the dated records into `knowledge/` (an open-items log and a roster file), keep the rules, and amend lines 80-85 and 115-116 so new state goes to `knowledge/`. Classify the remaining 15,369 bytes before setting a size target. Owner reviews the move and commits. |
+| A shared rule names a command that does not exist | `anywhere-agents/AGENTS.md:149` and `docs/skills/index.md:62` say pack skills are "deployed by `anywhere-agents pack install`"; the CLI has `pack add` and the bare apply command. `skills/my-router/SKILL.md` repeats it (aa lines 68 and 84, ac lines 95 and 108). | Fix in ac and aa together, regenerate `CLAUDE.md` and `agents/codex.md`, sync the wheel mirror, then re-bootstrap one consumer to confirm (this file reaches every consumer). |
+| ac is public while its documents say private | `gh repo view` reports PUBLIC. `vision.md:13`, `anywhere-agents.md:3,9,41,58`, `docs/specs/open-source-framework.md`, `docs/codex-desktop-custom-instructions.md:85`, and `ONBOARDING.md:143` call it private. `ONBOARDING.md:89` names a host suffix and a username; `docs/mac-mouse-preferences.md:188-204` lists where credentials are kept; `docs/mac-restore-assets/` and `docs/mac-storage-audit.md` are personal machine records. | Owner decision. Either make the repository private, or keep it public, correct the "private" wording, redact `ONBOARDING.md:89`, and move the machine-recovery records to a private or untracked location. Removing files from the current tree leaves them in public commit history; making the repository private restricts access to it, but existing public forks and other copies may remain available. |
+| Stale memory that told agents to wave off a real check | `memory/feedback_implement_review_check8_fp.md` said aa#17 was open and to treat health-check 8 hits as noise; #17 closed 2026-08-08 and the fix shipped in 0.7.8. The note asked to be deleted once that happened. | Done 2026-10-18: file and index line removed under the CLAUDE.local.md memory policy. |
+
+## P2: next cleanup pass
+
+### Consumer rule files and configuration
+
+- `random/AGENTS.local.md` (4,999 bytes) is an April copy of the profile pack with no rule specific to the repo. Delete it.
+- `NSF-Proposal-Template-Yue/CLAUDE.local.md`: replace the `cd` into submodule steps (lines 193-198) with `git -C <submodule-path>`; reconcile the tracking policy at line 166 with `paper-workflow-compact.md:21`; move about 4.6 KB of checkout tables, SHAs, and resolved incidents (lines 15-30, 49-66, 92-121) into proposal notes.
+- Windows paths in hand-authored consumer files: `research-impact/AGENTS.local.md:24-25`, `agent-startup-thesis/AGENTS.local.md:10,23`, `research-compute/skills/mint-student-key/SKILL.md:70`, `NSF-Proposal-Template-Yue/skills/figure-candidate-gallery/SKILL.md:168`, `NSF-Proposal-Template-Yue/skills/md-to-docx/SKILL.md:47`, `NSF-Proposal-Template-Yue/skills/nsf-proposal-composer/references/idea-to-aim-files.md:80`, `usc-slides/README.md:587,596`.
+- The deprecated `rule_packs:` key remains in `agent-style`, `pyod`, and `vibesignal` `agent-config.yaml`.
+- `awesome-auditable-ai` does not ignore `.claude/`; `git status` shows about 30 MB of deployed skill copies untracked in a public repository. Add `.claude/skills/` to its `.gitignore` before the next commit.
+- `ai-research-resources` became a symlink to `research-compute` on 2026-10-18. A re-bootstrap loop over `*/.agent-config/bootstrap.sh` now runs that checkout twice and spends two settings backups. Skip symlinks in the loop (`test -L`) and count 26 consumers.
+
+### Skills
+
+- `implement-review/SKILL.md` is 154,545 bytes and `prun/SKILL.md` 39,629 bytes, against Milestone B ceilings of 85,000 and 22,000 in `PLAN-skills-diet.md`; both grew since that plan (137,076 and 36,473), and no test caps either. Every `/vet` round loads the first file whole. Decide whether to run Milestone B or record a decision to stop. Either way, add a no-growth size test now so the files cannot keep creeping. Milestone C landed in a different shape: the three legacy prun scripts moved out of the skill into `legacy/prun-codex-worker/` (tracked in both source repos, no longer shipped) instead of being deleted, and `prun/SKILL.md:335` documents keeping them. Rewrite the plan's section 4 to match before resuming.
+- `implement-review/SKILL.md:383` says "Validation notes" is an accepted heading, but health-check 5 accepts only "Verification notes" and fails intake otherwise. Delete the clause in all three copies (ac, aa, wheel mirror).
+- `my-router`: delete the Alt+T extended-thinking row and its closing clause (ac `SKILL.md:22,24`, aa `:23,25`, wheel copy); add the missing `editable-figure` row to ac `references/routing-table.md`. With the reference-skills removal, drop the hard-coded routes to retired skills such as `paper-to-beamer`, and keep the conditional lookups for project-local `nsf-*` and `nih-*` skills with their shared-skill fallbacks.
+- `agent-config/reference-skills/` (12 skills, about 600 KB on disk): ten have a current consumer copy, two of them byte-identical, and `paper-to-beamer` and `nsf-figure-builder` have none. Confirm those two are retired and keep any assets still needed, then delete the directory after editing `tests/test_repo.py` (line 33 and the three `test_reference_skills_*` tests), `README.md:7,177-189`, the my-router rows, `anywhere-agents.md:9,56`, `ONBOARDING.md:55,150`, and `docs/migrations.md:100,210`.
+- NSF shadow copies: `skills/figure-prompt-builder` is strictly older than the installed pack copy, so delete it. `skills/ci-mockup-figure` carries proposal float-placement rules worth keeping, so rename it to a proposal-specific skill holding only those rules (or upstream them). `skills/figure-candidate-gallery` is a newer fork, so backport it to agent-pack first. The redirect preludes in two of these files are uncommitted edits.
+- `pyod/skills/ci-mockup-figure` is an untracked full stale copy of the core skill, not a stub. Delete it after approval.
+
+### Documentation
+
+- aa `docs/rule-pack-composition.md` still teaches `bootstrap/rule-packs.yaml`, the `rule_packs:` key, `AGENT_CONFIG_RULE_PACKS`, and a default of `[agent-style]`; the code uses `bootstrap/packs.yaml`, `packs:`, `AGENT_CONFIG_PACKS`, and `(agent-style, aa-core-skills)`. `README.md:58,287`, `README.zh-CN.md:58,289`, and `docs/index.md:28` repeat the old key. This page should also document the three ways to narrow packs per project (see the P1 pack row).
+- aa `docs/install.md` and `docs/faq.md` list the guard escape hatches without `AGENT_NESTED_GIT_INIT_HOOK`; `README.md:377` counts four gate families. Replace counts with a pointer to AGENTS.md.
+- aa `MIGRATIONS.md` stops at v0.5.0 and teaches `ANYWHERE_AGENTS_UPDATE=apply`, which v0.6.0 made the default; `RELEASING.md:88-90` calls `MIGRATIONS.md` and `check-parity.sh` "agent-config only". Delete or correct.
+- aa `README.md:46` ("As of v0.7.7") and the version summary at `:302` stop aging only if cut to a pointer at `CHANGELOG.md`; `CONTRIBUTING.md:15` lists five shipped skills; `docs/banner.html` shows old model names.
+- ac `README.md:7,15` says changes land ac-first; `ONBOARDING.md:48-61` says ac is being retired and aa-first is preferred. Pick one and edit the other. `ONBOARDING.md:46` still says aa is at v0.7.7.
+- ac `CHANGELOG.md` has no dated section after 2026-04-29. Replace its body with a pointer to the aa CHANGELOG as the release record.
+- `anywhere-agents.md:61` names `Review-Gemini.md`; the scripts write `Review-Antigravity.md`.
+- Root `PLAN-*.md` status lines are stale: `PLAN-skills-diet.md` (Milestone C landed as an archive move rather than the planned deletion), and `PLAN-agents-md-diet.md`, `PLAN-defensive-writing.md`, `PLAN-prun-state-manifest.md` describe shipped work. Mark them shipped or move them to `archive/plans/`.
+- `docs/followups/README.md` keeps shipped, decided, and superseded rows in its open tables, and ten files (about 168 KB) are not indexed. `as-pep639-license-migration` is already done (`agent-style/packages/pypi/pyproject.toml:25,32`). Two drafted CHANGELOG entries (`2026-08-26-prun-part-a-pending-changelog.md`, `2026-08-28-windows-rename-failure-class-pending-changelog.md`) were never placed, although 0.8.0 to 0.10.0 have shipped. Add a closed table, then place or drop the two drafts.
+
+### Tests, CI, memory, settings
+
+- `real-agent-smoke.yml:102-120` runs a four-job `multi_agent_smoke` matrix that only echoes "Deferred", and `validate.yml:138-146` carries a stale v0.5.1/v0.6.0 TODO. Remove both in ac and aa together (STRICT).
+- Seven test files are byte-identical in ac and aa but missing from the `strict_test_files` list in `scripts/check-parity.sh` (test_agent_quota_refresh, test_figure_gallery, test_gather, test_generator, test_inspect_figure_pdf, test_monitor, test_shell_nounset_arrays), so they can drift silently. Register them.
+- Memory: seven entries are project state, version facts, or duplicates of shipped rules (mac-migration-2026-09, project_agent_style, project_agent_config, reference_claude_code_install, user_primary_skills, feedback_deny_vs_ask_autonomous, feedback_overleaf_merge; about 13 KB), and four state facts false on this machine (feedback_auto_permissions; the Windows halves of feedback_python_floor_39 and feedback_git_push_gcm_hang; a dangling link in feedback_own_style_over_rules). CLAUDE.local.md's memory policy says to delete superseded entries; awaiting a yes for the batch.
+- Sixteen `.claude/settings.local.json` files restored from the Windows backup hold 385 of 840 permission entries that only work on Windows (paths under `/c/Users/<user>` or `C:/`, `.exe`, PowerShell); ac alone has 129. User-level `Bash(*)` already covers the rest. Prune the dead entries; a dry-run script with a backup step is kept in the audit archive and needs the owner to run it, because an agent editing its own permission files is blocked.
+
+## P3: owner policy and optional
+
+- **Windows support.** 177 of the 181 tests that skip on this Mac are Windows or PowerShell twins; the `.ps1` twins total about 208 KB per copy, held in three copies (ac, aa, wheel); four open aa issues are Windows-only (#11, #39, #40, #55). Options: keep as is, declare best-effort and stop gating releases on Windows jobs, or freeze the twins.
+- **Copilot reviewer backend.** No run since 2026-09-22 and no Copilot CLI on this machine, yet about 220 KB across scripts, tests, and the SKILL.md section, and README advertises `/vet copilot`. Keep for agent fungibility or drop in one coordinated change.
+- **Unused pack kinds.** `kind: hook`, `permission`, and `command` (23 KB of code plus 32 KB of tests, plus the wheel copy) have no first-party manifest, but public docs advertise them. They are platform surface for third-party pack authors. `kind: command` is a no-op stub and the cheapest to drop.
+- **ac copies of agent-pack skills.** `agent-config/skills/{bibref-filler,bibref-verify,figure-prompt-builder}` are byte-identical to agent-pack, mirrored by hand with no check (figure-prompt-builder carries 12.7 MB of assets). Either move their tests to agent-pack and remove the ac copies, or add a parity check.
+- **CHANGELOG length.** aa `CHANGELOG.md` is 305,531 bytes and renders whole into the docs site; single entries run to about 970 words. Leave history alone and cap new entries (what changed and how to adapt, in two or three sentences, with rationale in the linked issue).
+- **AGENTS.md trims.** About 1.7 KB of mechanism text and about 0.9 KB that repeats agent-style rules could move out, but ac and aa compose no packs, so the bullets are their only copy of those rules. Trim only after the CLAUDE.local.md paths work, and only when AGENTS.md is edited for another reason. The banned-word list stays: Codex and chat replies have no guard. A one-line test that pins the AGENTS.md list to `guard.py` would stop the two from drifting.
+- **Test hygiene.** Make `tests/integration/test_v0_5_auth_chain.py` opt-in with an env-var skip; it caused the only two failures in a bare `pytest` run. Remove the empty skipped stub at `test_packs_cli_v0_5.py:2037`. Delete `legacy/prun-codex-worker/` once the sentence at `prun/SKILL.md:335` goes. When Milestone B lands, drop prose-only phrase pins (byte-identical, trust model, diff-scoped, and similar) and keep the pins on tokens the scripts print. Fix the Windows `ROOT` in `agent-style/scripts/smoke-test-python.py:8`.
+- **Disk.** `.agent-config/cache` keeps every historical pack snapshot: about 8.5 GiB across consumers, the largest item found. File an aa issue to keep only the pinned snapshot per source. Smaller: a 667 MB dated scratch directory in `yzhao062.github.io/.agent-config/scratch`, 2.7 GB of Agy staged-snapshot trees in `$TMPDIR` (macOS clears them at boot; `dispatch-gemini.py` could remove its own), about 4 GB of old Codex releases in `~/.codex/packages/standalone/releases`, and about 780 MB of deployed figure assets across consumers (gitignored, no context cost).
+- **aa issues.** Close #26 (Codex-worker reaping; prun is Agy-only), retitle or close #29, narrow #57 to the dispatchers that still skip the staged-drift check, label the Windows-only issues.
+- **Codex configuration.** `~/.codex/config.toml` runs `gpt-6-astra` at `medium` with `service_tier = "default"`, so every `/vet` Codex round records `model=gpt-6-astra source=config`, while AGENTS.md names `gpt-6.1-sol`, `xhigh`, and `standard`. Change one side. The file also carries 72 `[projects.*]` trust entries for paths that no longer exist.
+- **Consumer residue.** Root `Review-*.md` files in about 15 repositories, finished plans (agent-startup-thesis 14 files and 210 KB, trading-doc 120 KB, usc-slides 38 KB, internal-writing r1 to r5), and old binaries in `todo/` (figwork-advisor 75 MB video, two 2.2 MB zips, 6 MB in internal-writing, a 0.7 MB PDF in internal-review). Move aside; commits stay with the owner. `trading-doc/skills/tollbooth-hunt` is marked closed but still has a command pointer.
+- **Dormant consumers.** venture-initiative and vibesignal have no commit since 2026-08-18 and figwork-advisor one since September. The re-bootstrap loop can skip them.
+
+## Refuted or downgraded
+
+These looked like waste or contradictions to the first pass and are not:
+
+- The 20 and 45 minute Codex timeouts and the 60-minute round deadline are two different timers, and the text says so.
+- `IMPLEMENT_REVIEW_DEFAULT_CHANNEL` is live: `~/.claude/settings.json` sets it and the coordinator reads it by design.
+- RULE-A covers LaTeX table cells in `RULES.md` since agent-style 0.7.0, so the detector label is documented; RULE-D and the House Style agree since 0.9.0.
+- The profile's "strongest objection first" specializes AGENTS.md's ban on manufactured opposition, and the role-reversal rule and Claude-only prose drafting cover different work.
+- The five "unused" usc-slides skills belong to the active deck pipeline (the transcript base for that repo is seven files), the missing schema spec exists, and `nsf-coa-export` is a once-per-proposal task.
+- `test_packs_cli.py`, the rescore test (README cites the rescored report), the example reviews, the full agent-pack variants (documented, and the compact keeps the same stance), and the prun second-group text (a Claude model run through the Agy CLI on the Google plan) are by design.
+- Deployed asset copies cost disk only, and the 32 identical ac test files follow the documented rule that a test of STRICT code lives on both sides.
+- Two Gemini claims were factually wrong: agent-pack has a `v0.1.0` tag (2026-04-26; the problem is that every consumer pins `main`), and aa is at 0.10.0, not 0.5.7.
+
+## Periodic check
+
+Build `scripts/harness-audit.py` in ac from the archived scanners. Its first version measures composed-file sizes, effective pack selections, coordinator-skill sizes, path existence in loaded rule files, and cache use, and appends skill opens to the usage ledger, because low-use skills are what the owner asked this check to find and pruned transcripts cannot show them later. Keep the script maintainer-only (not mirrored to aa) and run it monthly and before each aa release. Detailed output stays local, and a sanitized summary appends to a dated followup like this one. The other rows are candidates, added when the same drift shows up twice; pack fit, stale prose, seasonal skills, and policy questions still need the owner's judgment. Checks and thresholds:
+
+| Check | Signal | Threshold |
+|---|---|---|
+| Session load | composed `CLAUDE.md` headroom; `AGENTS.local.md` plus `CLAUDE.local.md` bytes per consumer; share of dated lines in those files | headroom under 4 KB; local files over 10 KB; dated lines over 20 percent or 2 KB |
+| Pack fit | `paper-workflow` or `acad-skills` in a repo with no `.tex`, Overleaf submodule, or proposals directory; deprecated `rule_packs:` | any |
+| Path existence | concrete paths in loaded rule files and memory resolve on the current platform; obsolete Windows path patterns in files loaded on macOS | any miss |
+| Skill size | SKILL.md bytes against a recorded baseline | any growth for the two coordinator skills; any SKILL.md over 40 KB |
+| Usage ledger | dated skill-open events from main and worker sessions, appended to a TSV each run with duplicates removed and collection gaps recorded, because transcripts are pruned | zero observed use across 90 days of adequate coverage, reported for the owner, never auto-deleted |
+| Shadows and copies | consumer `skills/<name>` matching a pack or core skill; byte-identical skill directories across ac, ap, aa outside the STRICT list | any |
+| Router | every route target resolves to a skill somewhere | any miss |
+| Trackers | followup rows vs `gh issue view` state; unindexed followup files; PLAN status lines; memory entries that cite closed issues or "as of v" | any mismatch; more than 5 unindexed files |
+| Doc symbols | env vars, YAML keys, and CLI verbs named in docs exist in the code | any miss |
+| Tests | skip share by reason on macOS; unconditional skips; tests over 1 s | skip share over 15 percent from one reason; any unconditional skip |
+| Residue | `Review-*.md` and `PLAN-*.md` in repo roots; `todo/` files; dead `settings.local.json` entries; `.claude/` not ignored | over 14 days, 30 days, 1 MB, any |
+| Disk | `.agent-config/cache`, `$TMPDIR` review state, transcript stores, Codex releases | cache over 1 GB per consumer; `$TMPDIR` over 2 GB; more than 3 Codex releases |
+| Config drift | `~/.codex/config.toml` model, effort, and tier vs AGENTS.md § Environment | any mismatch, reported once per change |
+| Dormancy | last commit per consumer | over 60 days: skip in the re-bootstrap loop |
+
+## Suggested order
+
+1. Fix the CLAUDE.local.md paths in ac, aa, and agent-style (done 2026-10-19).
+2. Fix the banner gap count and trim the user-level packs to `profile` and `agent-style`. Keep both paper packs in the five manuscript repositories, decide which academic-support repositories keep `acad-skills`, and remove the unwanted packs from every other project list. Check the effective pack set and composed size in each affected consumer.
+3. Move the usc-admin state into `knowledge/`.
+4. Correct `pack install` in AGENTS.md and my-router, then re-bootstrap one consumer.
+5. Write `scripts/harness-audit.py` with the core measurements and the usage ledger; run it before and after the cleanup to measure the result.
+6. Work the P2 list, then take the P3 policy questions one at a time.
