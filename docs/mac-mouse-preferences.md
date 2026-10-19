@@ -213,6 +213,8 @@ macOS Terminal 历史偏好为白色背景。2026-10-01 实测 `com.apple.Termin
 
 日常应用恢复范围包括 PyCharm、ChatGPT、Claude、Chrome、Edge、Microsoft Office/Outlook、Logi Options+、Rectangle、Amphetamine、Zoom、WeChat、Lark、Termius 和所需 VPN。浏览器分别恢复各自的同步/登录；不要把 Google 登录当成 Chrome 与 Edge 的本地缓存已共享。
 
+2026-10-10 已在 Finder Settings > Sidebar 勾选 Pictures，并验证 Finder 左侧 Favorites 出现 Pictures。它指向 `~/Pictures` 图片文件夹；重装后在同一设置中恢复。
+
 ### 桌面偏好补充快照
 
 [desktop-preferences.json](mac-restore-assets/desktop-preferences.json) 保存经筛选的参考值。它不是 macOS 可直接导入的配置，也不代表所有值都由本次会话设置。恢复后逐项验证，特别是权限、插件和跨版本界面行为。
@@ -312,6 +314,10 @@ Rectangle 的左右半屏及 `D / F / G` 三列快捷键已再次在界面核对
 ## 性能排查和未实施的建议
 
 2026-10-01 的高 CPU 已追溯到 internal-writing 中由 PyCharm 终端内 Claude 启动的 `regen.py` 和 `mlpseeds.py`。前者当时占用约 10 至 16 个核心，属于数据重建计算；后者在做多随机种子的 MLP 比较。用户确认让其继续运行。没有因此修改进程优先级、线程数、电源配置或 PyCharm 堆上限，也没有杀进程。PID 和瞬时占用不属于需要恢复的配置。
+
+2026-10-10 凌晨用户报告整个界面冻结并断电重启，系统启动时间为 01:10。当天只读排查发现，00:18:43 触控板进入 Mission Control，00:18:44 选中 Codex 窗口，00:18:44.972 至 00:32:31 出现 147 条 WindowServer `timed out fence` 记录。该应用在日志中的进程显示名为 ChatGPT，但 bundle ID 为 `com.openai.codex`。选中窗口前已有多个系统进程响应超时，不能据此认定 Codex 或 Mission Control 是根因。未找到对应的 kernel panic、内存耗尽报告或指向具体显示器的故障记录；当前连接 Lenovo P32p-20 和 LG ULTRAFINE。图形/窗口系统是排查线索，具体触发源仍未确认。本次未调整显示器、电源或应用配置。
+
+同日 22:55 用户再次报告鼠标卡顿。现场记录出现 WindowServer `Cursor disabled: failed set_cursor_surface` 和渲染超时。一次 CPU 采样约 66% idle，内存压力级别为 1，swap 为 0；不能据此归因于 CPU 满载或内存耗尽。用户随后拔插 LG，日志确认 display id 1 在 22:58:33 断开、22:58:54 接入；重新接入后至 22:59:03 仍报光标表面设置失败，不能认定拔插已解决问题或 LG 硬件有故障。私有日志、进程快照和一个 Agy 进程采样保存在 `~/.local/state/mac-recovery/2026-10-10-live-freeze/`，不提交原始日志。WindowServer 堆栈采样需要管理员权限，本次未取得。Agent 没有停止任务、重启或修改显示设置。
 
 以后遇到卡顿，先看当前 CPU、内存压力和 swap，再定位具体进程及项目。浏览器和桌面应用的多个 renderer 不能直接当作相同数量的遗留标签页；RSS 求和可能重复计算共享内存。此前没有设置自动清理 Codex 闲置浏览器的任务，也没有建立定时重启机制。CPU 满载时降低后台计算优先级只是建议，未实施。
 
