@@ -11,6 +11,7 @@ track what changed between runs.
 - `skills/implement-review/scripts/style-audit.py` reports RULE-12 through the profile when the guard's set holds it. It keeps a document-level finding for a changed file even when the diff misses its anchor line, because a revision elsewhere can move the share, the `, so` rate, or the count of long sentences. That covers every finding that starts with `_PF_DOCUMENT_PREFIX` and every RULE-12 finding of the profile. Findings about one place keep the changed-line scoping.
 
 ### Fixed
+- The banned-word gate in `scripts/guard.py` covers prose written through a shell. A `Bash` or `PowerShell` command that writes a prose file through a redirection, `tee`, an in-place `sed` or `perl`, or a PowerShell content cmdlet is denied when its text carries a banned word. Before, a heredoc into a Markdown file passed while the same text through `Write` was denied. Targets come from a small lexer, so a redirection spelled inside quotes, a comment, or a heredoc body is not a write. The target path meets the `Write` scope test, so a scratch `agent-io` path stays exempt. A script that opens the file itself stays unread.
 - The style advisory reports the line numbers of the file that was written. Blanking fenced code, inline code, and LaTeX verbatim used to collapse a multi-line span to one space, which moved every later line up. Each blank now keeps the newlines of the span it replaces.
 
 ## 2026-04-29
