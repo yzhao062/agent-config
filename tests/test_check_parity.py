@@ -167,6 +167,7 @@ def _build_fake_tree(base: pathlib.Path):
         "scripts/agent-quota.py": "# agent-quota stub\n",
         "scripts/generate_agent_configs.py": "# generator stub\n",
         "scripts/merge_settings.py": "# settings merge stub\n",
+        "scripts/merge_codex_hooks.py": "# codex hooks merge stub\n",
         "scripts/render_banner.py": "# banner renderer stub\n",
         "scripts/pack_identity.py": "# pack identity stub\n",
         "scripts/pre-push-smoke.sh": "#!/bin/bash\nexit 0\n",
