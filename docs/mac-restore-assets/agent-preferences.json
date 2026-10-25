@@ -15,6 +15,12 @@
       "conversationDetailMode": "STEPS_COMMANDS",
       "ambient-suggestions-enabled": false,
       "preventSleepWhileRunning": true
+    },
+    "shell_environment_policy": {
+      "set": {
+        "IMPLEMENT_REVIEW_DEFAULT_CHANNEL": "auto",
+        "IMPLEMENT_REVIEW_DEFAULT_REVIEWER": "both"
+      }
     }
   },
   "claude": {
@@ -26,7 +32,8 @@
       "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "65",
       "CLAUDE_CODE_SUBAGENT_MODEL": "sonnet",
       "CLAUDE_CODE_MAX_WEB_SEARCHES_PER_SESSION": "1000",
-      "IMPLEMENT_REVIEW_DEFAULT_CHANNEL": "auto"
+      "IMPLEMENT_REVIEW_DEFAULT_CHANNEL": "auto",
+      "IMPLEMENT_REVIEW_DEFAULT_REVIEWER": "both"
     }
   },
   "agy": {
