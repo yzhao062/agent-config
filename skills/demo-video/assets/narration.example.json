@@ -1,0 +1,42 @@
+[
+ {
+  "scene": "title",
+  "offset": 0.8,
+  "text": "This is agent pile."
+ },
+ {
+  "scene": "overview",
+  "offset": 0.6,
+  "text": "It reads fourteen public agent trajectory datasets, trace files and live agent runs into one run record, and hands that record to the tools you already use."
+ },
+ {
+  "scene": "load",
+  "offset": 1.0,
+  "text": "Load a dataset by name. Each run keeps its steps, tool calls, outcome, and the dataset's own labels, like this expert-marked mistake."
+ },
+ {
+  "scene": "compare",
+  "offset": 1.0,
+  "text": "Who and When, TRAIL and MAST label failures in different ways. One labels table holds all three."
+ },
+ {
+  "scene": "chat",
+  "offset": 1.0,
+  "text": "Turn runs into OpenAI-style chat rows for fine-tuning and evaluation, with tool calls kept as function calls."
+ },
+ {
+  "scene": "capture",
+  "offset": 1.0,
+  "text": "Capture your own Pydantic AI or OpenAI Agents SDK agent, and its runs land in the same record."
+ },
+ {
+  "scene": "viewer",
+  "offset": 0.5,
+  "text": "Then open any run in Phoenix, Jaeger or MLflow."
+ },
+ {
+  "scene": "end",
+  "offset": 0.8,
+  "text": "pip install agent pile."
+ }
+]

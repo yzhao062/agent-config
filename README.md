@@ -110,6 +110,7 @@ Codex is the `/vet` gatekeeper. On the Auto-terminal channel, `implement-review`
 |-------|-------------|
 | `bibref-filler` | Add new external verified citations while keeping curated bibliography files stable, placing machine-added entries in a separate `working.bib`, and leaving visible unresolved notes instead of guessing. |
 | `bibref-verify` | Audit existing bibliography entries before submission, keeping `.bib` read-only while checking for fabricated citations, stale venue metadata, and ready-to-paste fix blocks in `REFERENCE-CHECK.md`. |
+| `demo-video` | Make a one-minute demo or promo video of a code project for X, LinkedIn or a README from code alone: real REPL output captured from the released package, HTML scenes rendered frame by frame in headless Chromium, an original synthesized music bed, and optional edge-tts narration. |
 | `editable-figure` | Analyze source material, design a concise paper, proposal, or README figure, and deliver native editable PowerPoint objects with publication or web exports. |
 | `figure-prompt-builder` | Build copy-ready prompts for explanatory figures such as overviews, workflows, mechanisms, timelines, and conceptual illustrations, using a small bundled reference bank when helpful. |
 | `implement-review` | Cross-model review loop for staged changes. Bare `/vet` uses Codex, and `/vet agy` uses the newest Gemini Argon High the Antigravity account lists, or Gemini Flash High when it lists no Argon model. Copilot and headless Claude Code remain available. Every automated backend can run tests, experiments, shell commands, and network verification without interactive permission gates. It applies code, paper, and proposal review lenses, categorizes feedback, revises, and iterates. |
@@ -146,6 +147,11 @@ skills/                            # Shared skills (bootstrapped to all projects
   ci-mockup-figure/
     SKILL.md                       # Skill definition
     agents/openai.yaml             # Codex wrapper
+  demo-video/
+    SKILL.md                       # Make a demo or promo video from real output, by script
+    agents/openai.yaml             # Codex wrapper
+    assets/                        # Scene engine template and the agentpile worked example
+    scripts/                       # capture_repl, render, music, narrate, mix
   editable-figure/
     SKILL.md                       # Analyze, design, and build editable figures
     agents/openai.yaml             # Codex wrapper
@@ -220,6 +226,7 @@ docs/
   bibref-filler.md
   bibref-verify.md
   ci-mockup-figure.md
+  demo-video.md
   editable-figure.md
   figure-prompt-builder.md
   implement-review.md

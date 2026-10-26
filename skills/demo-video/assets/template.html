@@ -1,0 +1,273 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>demo video</title>
+<!-- The demo-video scene engine. Copy to SITE/index.html; put the scene list in SITE/video.js (see video.example.js)
+     and the captured REPL output in SITE/data.js (capture_repl.py). render.py drives window.renderFrame(t). -->
+<style>
+  :root {
+    --ink: #1D2A2E; --sub: #5E6B70; --faint: #8A979C; --accent: #287887; --mark: #ED8D5A; --kicker: #8E3F26;
+    --term: #0E2326; --termbar: #0A1B1D; --termtext: #E4ECEE; --prompt: #5FAE8E; --pill: #183F43; --pilltext: #EAF4F2;
+    --bg0: #FFFFFF; --bg1: #F1F6F7; --sans: "Helvetica Neue", Arial, sans-serif; --mono: Menlo, "SF Mono", Consolas, monospace;
+  }
+  html, body { margin: 0; background: #fff; }
+  #stage { position: relative; width: 1920px; height: 1080px; overflow: hidden; font-family: var(--sans); color: var(--ink);
+           background: linear-gradient(180deg, var(--bg0) 0%, var(--bg1) 100%); }
+  .scene { position: absolute; inset: 0; opacity: 0; visibility: hidden; }
+  .solid { background: var(--bg0); }
+  .head { position: absolute; left: 180px; top: 52px; width: 1560px; }
+  .kicker { display: inline-block; font-family: var(--mono); font-size: 22px; color: var(--kicker); background: #fff;
+            border: 1px solid #E4ECEE; border-radius: 8px; padding: 4px 12px; margin-bottom: 14px; }
+  .title { font-size: 58px; font-weight: 700; letter-spacing: -1px; line-height: 1.05; }
+  .subtitle { font-size: 30px; color: var(--sub); margin-top: 12px; }
+  .logo { position: absolute; left: 50%; transform: translateX(-50%); }
+  .tagline { position: absolute; left: 0; right: 0; text-align: center; font-size: 46px; color: var(--sub); letter-spacing: -0.3px; }
+  .pill { position: absolute; left: 50%; transform: translateX(-50%); font-family: var(--mono); font-size: 44px; color: var(--pilltext);
+          background: var(--pill); border-radius: 18px; padding: 22px 40px; white-space: nowrap; box-shadow: 0 18px 40px rgba(24,63,67,.22); }
+  .pill b { color: #BFDFD2; font-weight: 400; }
+  .url { position: absolute; left: 0; right: 0; text-align: center; font-size: 40px; color: var(--accent); font-weight: 700; }
+  .fine { position: absolute; left: 0; right: 0; text-align: center; font-size: 28px; color: var(--faint); }
+  .cap { position: absolute; left: 0; right: 0; top: 936px; text-align: center; font-size: 40px; opacity: 0; }
+  .cap b { color: var(--accent); }
+  .fig { position: absolute; }
+  .fig img { position: absolute; left: 0; top: 0; width: 100%; }
+  .cam { position: absolute; left: 180px; top: 262px; width: 1560px; height: 790px; transform-origin: 0 0; }
+  .win { position: absolute; inset: 0; background: var(--term); border-radius: 18px; overflow: hidden;
+         box-shadow: 0 30px 70px rgba(14,35,38,.28), 0 2px 6px rgba(14,35,38,.18); }
+  .bar { height: 44px; background: var(--termbar); display: flex; align-items: center; padding-left: 20px; gap: 10px; }
+  .bar i, .bbar i { width: 14px; height: 14px; border-radius: 50%; display: block; }
+  .bar span { margin-left: 18px; font-family: var(--mono); font-size: 17px; color: #7F9296; }
+  .screen { position: absolute; left: 0; right: 0; top: 44px; bottom: 0; padding: 22px 30px; overflow: hidden; }
+  .content { position: relative; font-family: var(--mono); color: var(--termtext); }
+  .ln { white-space: pre; }
+  .pr { color: var(--prompt); }
+  .cursor { display: inline-block; width: .6em; height: 1.15em; vertical-align: -.25em; background: var(--termtext); }
+  .hl { position: absolute; border: 3px solid var(--mark); border-radius: 10px; opacity: 0; }
+  .dim i { position: absolute; display: block; background: rgba(6,18,20,.66); opacity: 0; }
+  .note { position: absolute; font-family: var(--sans); font-size: 23px; font-weight: 600; color: var(--ink); background: #fff;
+          border-left: 6px solid var(--mark); border-radius: 8px; padding: 8px 14px; white-space: nowrap; box-shadow: 0 8px 24px rgba(0,0,0,.25); }
+  .shotwin { position: absolute; left: 50%; top: 262px; border-radius: 16px; overflow: hidden; background: #111;
+             box-shadow: 0 30px 70px rgba(14,35,38,.28), 0 2px 6px rgba(14,35,38,.18); }
+  .bbar { height: 44px; background: #E8EEF0; display: flex; align-items: center; padding-left: 20px; gap: 10px; }
+  .addr { margin-left: 24px; font-size: 17px; color: var(--sub); background: #fff; border-radius: 8px; padding: 5px 16px; }
+  .shot { position: absolute; left: 0; right: 0; bottom: 0; overflow: hidden; }
+  .shot img { position: absolute; left: 0; top: 0; width: 100%; transform-origin: 0 0; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<script src="video.js"></script>
+<script src="data.js" onerror="window.CAPTURE = {meta: {}, scenes: {}}"></script>
+<script>
+const clamp = (x, a = 0, b = 1) => Math.max(a, Math.min(b, x));
+const prog = (t, a, d) => clamp((t - a) / d);
+const easeOut = x => 1 - Math.pow(1 - x, 3);
+const easeInOut = x => x < .5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
+const lerp = (a, b, p) => a + (b - a) * p;
+const esc = s => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const V = window.VIDEO, FADE = V.fade ?? 0.45;
+const PAD_T = 22, PAD_L = 30, BAR = 44, WIN_H = 790, CAM_X = 180, CAM_Y = 262;
+let CW20 = 12.04;
+const stage = document.getElementById("stage");
+const rise = (el, p, px = 18) => { el.style.opacity = p; el.style.translate = `0 ${(1 - p) * px}px`; };
+const header = s => s.title ? `<div class="head">${s.kicker ? `<div class="kicker">${esc(s.kicker)}</div>` : ""}
+  <div class="title">${esc(s.title)}</div>${s.subtitle ? `<div class="subtitle">${esc(s.subtitle)}</div>` : ""}</div>` : "";
+const dots = '<i style="background:#ED6A5E"></i><i style="background:#F4BF4F"></i><i style="background:#61C554"></i>';
+
+// ---------- title and end cards ----------
+const TITLE = {
+  build(s, el) {
+    el.innerHTML = `<img class="logo" src="${s.logo}" style="top:${s.logoTop ?? 300}px;width:${s.logoWidth ?? 1080}px">
+      <div class="tagline" style="top:${s.taglineTop ?? 640}px">${esc(s.tagline || "")}</div>`;
+    return s.dur;
+  },
+  render(s, el, lt) {
+    const lg = el.querySelector(".logo"), p = easeOut(prog(lt, 0.1, 0.9));
+    lg.style.opacity = p; lg.style.scale = String(lerp(0.94, 1, p));
+    rise(el.querySelector(".tagline"), easeOut(prog(lt, 1.0, 0.6)), 16);
+  },
+};
+const END = {
+  build(s, el) {
+    el.innerHTML = `<img class="logo" src="${s.logo}" style="top:${s.logoTop ?? 250}px;width:${s.logoWidth ?? 820}px">
+      ${s.command ? `<div class="pill" style="top:560px"><b>$</b> ${esc(s.command)}</div>` : ""}
+      ${s.url ? `<div class="url" style="top:720px">${esc(s.url)}</div>` : ""}
+      ${s.fine ? `<div class="fine" style="top:790px">${esc(s.fine)}</div>` : ""}`;
+    return s.dur;
+  },
+  render(s, el, lt) {
+    const lg = el.querySelector(".logo"), p = easeOut(prog(lt, 0.1, 0.8));
+    lg.style.opacity = p; lg.style.scale = String(lerp(0.94, 1, p));
+    [".pill", ".url", ".fine"].forEach((q, i) => { const e = el.querySelector(q); if (e) rise(e, easeOut(prog(lt, 0.9 + i * 0.35, 0.5)), 16); });
+  },
+};
+
+// ---------- figure: reveal an image region by region, with timed captions ----------
+const FIGURE = {
+  build(s, el) {
+    el.classList.add("solid");
+    const w = s.width ?? 1820, left = (1920 - w) / 2, top = s.top ?? 40;
+    el.innerHTML = header(s) + `<div class="fig" style="left:${left}px;top:${top}px;width:${w}px">
+      ${(s.reveal || [{x0: 0, x1: 1, at: 0.3}]).map(r => `<img src="${s.src}" style="clip-path:inset(0 ${(1 - r.x1) * 100}% 0 ${r.x0 * 100}%)">`).join("")}</div>
+      ${(s.captions || []).map(c => `<div class="cap">${c.html}</div>`).join("")}`;
+    return s.dur;
+  },
+  render(s, el, lt) {
+    const regs = s.reveal || [{x0: 0, x1: 1, at: 0.3}];
+    el.querySelectorAll(".fig img").forEach((im, i) => {
+      const r = regs[i], p = easeOut(prog(lt, r.at, r.dur ?? 0.7));
+      im.style.opacity = p; im.style.translate = `${(1 - p) * (r.dx ?? 24)}px 0`;
+    });
+    el.querySelector(".fig").style.scale = String(1 + (s.zoom ?? 0.02) * easeInOut(prog(lt, 0, s.dur)));
+    el.querySelectorAll(".cap").forEach((c, i) => {
+      const k = s.captions[i], p = easeOut(prog(lt, k.at, 0.4));
+      c.style.opacity = Math.min(p, 1 - easeOut(prog(lt, (k.until ?? 1e9) - 0.2, 0.3)));
+      c.style.translate = `0 ${(1 - p) * 14}px`;
+    });
+  },
+};
+
+// ---------- screenshot in a browser or plain frame ----------
+const IMAGE = {
+  build(s, el) {
+    const w = s.width ?? 1110, h = s.height ?? 790, bar = s.frame === "plain" ? 0 : 44;
+    el.innerHTML = header(s) + `<div class="shotwin" style="width:${w}px;height:${h}px;margin-left:${-w / 2}px">
+      ${bar ? `<div class="bbar">${dots}<span class="addr">${esc(s.address || "")}</span></div>` : ""}
+      <div class="shot" style="top:${bar}px"><img src="${s.src}"></div></div>`;
+    return s.dur;
+  },
+  render(s, el, lt) {
+    const h = el.querySelector(".head");
+    if (h) rise(h, easeOut(prog(lt, 0.05, 0.5)));
+    rise(el.querySelector(".shotwin"), easeOut(prog(lt, 0.15, 0.6)), 40);
+    const k = easeInOut(prog(lt, 0.4, s.dur - 0.6));
+    el.querySelector(".shot img").style.transform = `scale(${1 + (s.zoom ?? 0.07) * k}) translate(${-8 * k}px, 0px)`;
+  },
+};
+
+// ---------- terminal: replay captured REPL lines, then ring a block of lines and add callouts ----------
+const plain = line => line.map(x => x[0]).join("");
+const TERMINAL = {
+  build(s, el) {
+    const entries = (CAPTURE.scenes || {})[s.capture || s.name];
+    if (!entries) throw new Error(`no captured scene "${s.capture || s.name}" in data.js`);
+    const fs = s.fs || 20, LH = Math.round(fs * 1.35), CW = CW20 * fs / 20;
+    el.innerHTML = header(s) + `<div class="cam"><div class="win"><div class="bar">${dots}<span>${esc(s.bar || V.terminalTitle || "python3")}</span></div>
+      <div class="screen"><div class="content" style="font-size:${fs}px"></div><div class="dim"><i></i><i></i><i></i><i></i></div><div class="hl"></div></div></div></div>`;
+    let t = 0.9;
+    const sched = entries.map((e, i) => {
+      const len = plain(e.code).length, paste = i < (s.paste || 0);
+      const dur = paste ? 0 : (len ? Math.min(len / (s.cps || 36), 1.15) : 0);
+      const x = {start: t, end: t + dur, len};
+      t = x.end + (paste ? 0.12 : 0.2);
+      x.out = t; t += e.out.length * 0.022 + (e.out.length ? 0.35 : 0.08);
+      return x;
+    });
+    const lines = [];
+    entries.forEach(e => { lines.push(e.prompt + plain(e.code)); e.out.forEach(o => lines.push(plain(o))); });
+    lines.push(">>> ");
+    const winH = s.fit ? BAR + 2 * PAD_T + lines.length * LH + 6 : WIN_H, off = Math.round((WIN_H - winH) / 2);
+    const cam = el.querySelector(".cam");
+    cam.style.height = winH + "px"; cam.style.top = (CAM_Y + off) + "px";
+    const head = el.querySelector(".head"); if (head) head.style.top = (52 + off) + "px";
+    const find = re => { const i = lines.findIndex(l => new RegExp(re).test(l)); if (i < 0) throw new Error(`${s.name}: no line matches ${re}`); return i; };
+    s._ = {entries, sched, ready: t, find, LH, CW, rows: Math.floor((WIN_H - BAR - 2 * PAD_T) / LH), oy: CAM_Y + off, winH};
+    (s.focus ? [s.focus.from, s.focus.to] : []).concat((s.notes || []).map(n => n.at)).forEach(find);   // fail early on a bad pattern
+    return t + (s.hold ?? 4.4);
+  },
+  render(s, el, lt) {
+    const {entries, sched, ready, find, LH, CW} = s._;
+    const cam = el.querySelector(".cam"), content = el.querySelector(".content"), head = el.querySelector(".head");
+    const row = inner => `<div class="ln" style="height:${LH}px;line-height:${LH}px">${inner}</div>`;
+    let html = "", count = 0;
+    entries.forEach((e, i) => {
+      const x = sched[i];
+      if (lt < x.start) return;
+      let left = x.end > x.start ? Math.floor(x.len * clamp((lt - x.start) / (x.end - x.start))) : x.len, body = "";
+      for (const [txt, col] of e.code) { if (left <= 0) break; body += `<span style="color:${col}">${esc(txt.slice(0, left))}</span>`; left -= txt.length; }
+      html += row(`<span class="pr">${esc(e.prompt)}</span>${body}${lt < x.out ? '<span class="cursor"></span>' : ""}`); count++;
+      if (lt >= x.out && e.out.length) {
+        for (const o of e.out.slice(0, Math.min(e.out.length, Math.floor((lt - x.out) / 0.022) + 1))) {
+          html += row(o.map(([txt, st]) => st ? `<span style="${st}">${esc(txt)}</span>` : esc(txt)).join("")); count++;
+        }
+      }
+    });
+    if (lt >= ready - 0.05) { html += row(`<span class="pr">&gt;&gt;&gt; </span>${Math.floor(lt * 2.2) % 2 ? "" : '<span class="cursor"></span>'}`); count++; }
+    const scroll = Math.max(0, count - s._.rows);
+    content.innerHTML = html; content.style.top = (-scroll * LH) + "px";
+    const lineY = (i, dy = 0) => BAR + PAD_T + (i - scroll + dy) * LH;
+    const winIn = easeOut(prog(lt, 0.15, 0.6)), hl = el.querySelector(".hl"), masks = el.querySelectorAll(".dim i");
+    let zp = 0;
+    if (s.focus) {
+      const f = s.focus, i0 = find(f.from), i1 = find(f.to) + (f.extra || 0);
+      const b = {x: PAD_L + (f.col0 ?? 0) * CW - 12, y: lineY(i0) - 5, w: ((f.col1 ?? 120) - (f.col0 ?? 0)) * CW + 24, h: (i1 - i0 + 1) * LH + 10};
+      const on = easeOut(prog(lt, ready + 0.3, 0.5)), top = b.y - BAR, SW = 1560, SH = s._.winH - BAR;
+      Object.assign(hl.style, {left: b.x + "px", top: top + "px", width: b.w + "px", height: b.h + "px", opacity: on});
+      // four masks dim the screen around the ring; a huge box-shadow is dropped inside a scaled layer
+      const m = (e, l, t, w, h) => Object.assign(e.style, {left: l + "px", top: t + "px", width: Math.max(0, w) + "px", height: Math.max(0, h) + "px", opacity: on});
+      m(masks[0], 0, 0, SW, top); m(masks[1], 0, top + b.h, SW, SH - top - b.h); m(masks[2], 0, top, b.x, b.h); m(masks[3], b.x + b.w, top, SW - b.x - b.w, b.h);
+      zp = (f.zoom || 1) > 1 ? easeInOut(prog(lt, ready + 0.2, 0.9)) : 0;
+      const sc = 1 + ((f.zoom || 1) - 1) * zp, px = b.x + b.w / 2, py = b.y + b.h / 2;
+      const tx = lerp(CAM_X + px, 960, zp) - CAM_X - sc * px, ty = lerp(s._.oy + py, 600, zp) - s._.oy - sc * py;
+      cam.style.transform = `translate(${tx}px, ${ty + (1 - winIn) * 40}px) scale(${sc})`;
+    } else {
+      cam.style.transform = `translate(0px, ${(1 - winIn) * 40}px)`;
+    }
+    cam.style.opacity = winIn;
+    if (head) { const p = easeOut(prog(lt, 0.05, 0.5)); head.style.opacity = p * (1 - zp); head.style.translate = `0 ${(1 - p) * 18}px`; }
+    cam.querySelectorAll(".note").forEach(n => n.remove());
+    (s.notes || []).forEach((n, j) => {
+      const a = ready + 0.65 + j * 0.45;
+      if (lt < a) return;
+      const d = document.createElement("div"), p = easeOut(prog(lt, a, 0.35));
+      d.className = "note"; d.textContent = n.text;
+      Object.assign(d.style, {left: (PAD_L + (n.col ?? 2) * CW) + "px", top: (lineY(find(n.at), n.dy || 0) + LH / 2 - 22) + "px",
+                              opacity: p, translate: `${(1 - p) * -16}px 0`});
+      cam.appendChild(d);
+    });
+  },
+};
+
+const TYPES = {title: TITLE, end: END, figure: FIGURE, image: IMAGE, terminal: TERMINAL};
+window.renderFrame = function (t) {
+  for (const s of SCENES) {
+    const lt = t - s.start;
+    if (lt < 0 || lt > s.dur) { s.el.style.visibility = "hidden"; continue; }
+    s.el.style.visibility = "visible";
+    const first = s === SCENES[0], last = s === SCENES[SCENES.length - 1];
+    s.el.style.opacity = Math.min(first ? 1 : clamp(lt / FADE), last ? 1 : clamp((s.dur - lt) / FADE));
+    s.impl.render(s.spec, s.el, lt);
+  }
+  return true;
+};
+
+window.addEventListener("load", async () => {
+  try {
+    for (const [k, v] of Object.entries(V.theme || {})) document.documentElement.style.setProperty("--" + k, v);
+    await document.fonts.ready;
+    const probe = document.createElement("span");
+    probe.style.cssText = "font-family:var(--mono);font-size:20px;position:absolute;visibility:hidden;white-space:pre";
+    probe.textContent = "x".repeat(100); document.body.appendChild(probe); CW20 = probe.getBoundingClientRect().width / 100; probe.remove();
+    let t = 0;
+    window.SCENES = V.scenes.map((spec, i) => {
+      const el = document.createElement("div");
+      el.className = "scene"; stage.appendChild(el);
+      const impl = spec.type === "custom" ? V.custom[spec.name] : TYPES[spec.type];
+      if (!impl) throw new Error(`unknown scene type ${spec.type}`);
+      const dur = impl.build(spec, el);
+      const s = {name: spec.name || spec.type + i, start: t, dur, spec, impl, el};
+      t += dur - (i < V.scenes.length - 1 ? FADE : 0);
+      return s;
+    });
+    window.DURATION = t;
+    await Promise.all(Array.from(document.images).map(im => im.complete ? 0 : new Promise(r => { im.onload = im.onerror = r; })));
+    for (const s of SCENES) if (s.impl.ready) await s.impl.ready(s.spec, s.el);
+    window.renderFrame(0);
+    window.READY = true;
+    if (location.hash === "#play") { const t0 = performance.now(); const loop = () => { renderFrame((performance.now() - t0) / 1000 % DURATION); requestAnimationFrame(loop); }; loop(); }
+  } catch (e) { window.FAILED = String(e && e.stack || e); }
+});
+</script>
+</body>
+</html>

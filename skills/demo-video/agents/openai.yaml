@@ -1,0 +1,4 @@
+interface:
+  display_name: "Demo Video"
+  short_description: "Make a one-minute demo or promo video of a code project from real REPL output, rendered by script"
+  default_prompt: "Use $demo-video to make a short landscape demo video of this project for X or its README: capture real REPL output from the released package, render HTML scenes frame by frame, and add original music or edge-tts narration when asked. Look for the skill at skills/demo-video/SKILL.md first, then .claude/skills/demo-video/SKILL.md, then .agent-config/repo/skills/demo-video/SKILL.md."

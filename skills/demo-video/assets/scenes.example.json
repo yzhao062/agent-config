@@ -1,0 +1,28 @@
+{
+ "load": [
+  "import agentpile as ap",
+  "run = next(ap.load(\"who_and_when\"))",
+  "ap.show(run, max_chars=50)"
+ ],
+ "compare": [
+  "runs = [run for name in (\"who_and_when\", \"trail\", \"mast\") for run in ap.load(name)]",
+  "labels = ap.to_pandas(runs, \"labels\")",
+  "labels.groupby([\"label_source\", \"target_kind\"]).size()"
+ ],
+ "chat": [
+  "runs = [run for run in ap.load(\"tau_bench\", limit=20) if run.outcome[\"success\"]]",
+  "rows = ap.to_chat(runs)",
+  "for message in rows[0][\"messages\"][1:5]:",
+  "    print(message)",
+  ""
+ ],
+ "capture": [
+  "from pydantic_ai import Agent",
+  "from pydantic_ai.models.test import TestModel",
+  "my_agent = Agent(TestModel(), name=\"my_agent\")",
+  "with ap.capture(my_agent) as cap:",
+  "    my_agent.run_sync(\"Book a flight from LAX to SFO.\")",
+  "",
+  "ap.show(cap.run)"
+ ]
+}
