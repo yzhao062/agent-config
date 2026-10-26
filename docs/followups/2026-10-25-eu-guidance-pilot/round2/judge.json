@@ -1,0 +1,388 @@
+{
+ "v022": {
+  "items": {
+   "Q1": "cut",
+   "Q2": "kept",
+   "Q3": "cut",
+   "Q4": "kept",
+   "Q5": "cut"
+  },
+  "facts_lost": 0,
+  "facts_lost_list": [],
+  "new_hedges": 0,
+  "notes": "Keeps the tie and the injected-anomaly limitation; drops the three generic hedges; all facts intact."
+ },
+ "v030": {
+  "items": {
+   "Q1": "cut",
+   "Q2": "kept",
+   "Q3": "cut",
+   "Q4": "kept",
+   "Q5": "cut"
+  },
+  "facts_lost": 0,
+  "facts_lost_list": [],
+  "new_hedges": 0,
+  "notes": "Keeps the tie with iForest and the injected-anomaly limitation; drops the generalization, further-work and confounding-factor disclaimers; all three facts are intact."
+ },
+ "v044": {
+  "items": {
+   "Q1": "cut",
+   "Q2": "kept",
+   "Q3": "cut",
+   "Q4": "kept",
+   "Q5": "cut"
+  },
+  "facts_lost": 0,
+  "facts_lost_list": [],
+  "new_hedges": 0,
+  "notes": "Clean revision: results, tie, speed, and the injected-anomaly limitation kept; generic hedges removed."
+ },
+ "v053": {
+  "items": {
+   "Q1": "cut",
+   "Q2": "kept",
+   "Q3": "cut",
+   "Q4": "kept",
+   "Q5": "cut"
+  },
+  "facts_lost": 0,
+  "facts_lost_list": [],
+  "new_hedges": 0,
+  "notes": "Same content as v022; Table 3 cite moved to the end of the first sentence, still covers the AUROC claim."
+ },
+ "v074": {
+  "items": {
+   "Q1": "cut",
+   "Q2": "kept",
+   "Q3": "cut",
+   "Q4": "kept",
+   "Q5": "cut"
+  },
+  "facts_lost": 0,
+  "facts_lost_list": [],
+  "new_hedges": 0,
+  "notes": "Keeps substantive points and all facts; removes the generic hedges."
+ },
+ "v096": {
+  "items": {
+   "Q1": "cut",
+   "Q2": "kept",
+   "Q3": "cut",
+   "Q4": "cut",
+   "Q5": "cut"
+  },
+  "facts_lost": 0,
+  "facts_lost_list": [],
+  "new_hedges": 0,
+  "notes": "Removes every limitation including the substantive injected-anomaly caveat; facts intact."
+ },
+ "v098": {
+  "items": {
+   "Q1": "cut",
+   "Q2": "kept",
+   "Q3": "cut",
+   "Q4": "kept",
+   "Q5": "kept"
+  },
+  "facts_lost": 0,
+  "facts_lost_list": [],
+  "new_hedges": 0,
+  "notes": "Keeps the injected-anomaly limitation and a reworded confounding-factors caveat; drops the generalization and further-work hedges."
+ },
+ "v144": {
+  "items": {
+   "Q1": "cut",
+   "Q2": "kept",
+   "Q3": "cut",
+   "Q4": "cut",
+   "Q5": "cut"
+  },
+  "facts_lost": 0,
+  "facts_lost_list": [],
+  "new_hedges": 0,
+  "notes": "Identical to v096: facts and tie kept, all limitations including the injected-anomaly caveat removed."
+ },
+ "v155": {
+  "items": {
+   "Q1": "cut",
+   "Q2": "kept",
+   "Q3": "cut",
+   "Q4": "kept",
+   "Q5": "cut"
+  },
+  "facts_lost": 0,
+  "facts_lost_list": [],
+  "new_hedges": 0,
+  "notes": "Q4 is kept and turned into a future-work sentence; I scored Q3 (generic need for further work to understand FastOD) as cut because that sentence is only the narrower natural-anomaly evaluation. 'eight times' equals 8 times."
+ },
+ "v024": {
+  "drop_stated": true,
+  "accuracy_errors": 0,
+  "filler_caveats": 1,
+  "filler_list": [
+   "a drop of 0.030 that users of similar data should be aware of (advice about unseen \"similar data\", nothing in the table)"
+  ],
+  "sentences": 3,
+  "notes": "All numbers check (59.9->19.6, 3.1x, 2.1x-3.4x, 0.002, 0.030); only the 'similar data' advice is borderline filler."
+ },
+ "v027": {
+  "drop_stated": true,
+  "accuracy_errors": 0,
+  "filler_caveats": 0,
+  "filler_list": [],
+  "sentences": 3,
+  "notes": "Correct ranges (2.1-3.4, within 0.002) and explicit satimage drop; no totals given, no filler."
+ },
+ "v031": {
+  "drop_stated": true,
+  "accuracy_errors": 0,
+  "filler_caveats": 0,
+  "filler_list": [],
+  "sentences": 3,
+  "notes": "All figures verified including AUROC diffs -0.001 to +0.002 and satimage 3.0x (3.05); single-machine mention is from the task text."
+ },
+ "v033": {
+  "drop_stated": true,
+  "accuracy_errors": 0,
+  "filler_caveats": 1,
+  "filler_list": [
+   "users of similar data should check before upgrading (generalization beyond the table)"
+  ],
+  "sentences": 3,
+  "notes": "Numbers correct; ends with the same borderline 'similar data' advice."
+ },
+ "v042": {
+  "drop_stated": true,
+  "accuracy_errors": 0,
+  "filler_caveats": 0,
+  "filler_list": [],
+  "sentences": 3,
+  "notes": "Correct; 'three-fold speedup' on satimage is 3.05x so fine; 'significantly' is unquantified but not wrong."
+ },
+ "v049": {
+  "drop_stated": true,
+  "accuracy_errors": 0,
+  "filler_caveats": 0,
+  "filler_list": [],
+  "sentences": 3,
+  "notes": "Numbers correct (approx threefold = 3.06x); calls the 0.03 satimage drop 'modest', which is a softening judgement, not a wrong figure."
+ },
+ "v050": {
+  "drop_stated": true,
+  "accuracy_errors": 0,
+  "filler_caveats": 0,
+  "filler_list": [],
+  "sentences": 3,
+  "notes": "All figures correct, including identical 0.994 on shuttle and shuttle as largest absolute reduction; satimage drop stated plainly."
+ },
+ "v069": {
+  "drop_stated": true,
+  "accuracy_errors": 0,
+  "filler_caveats": 0,
+  "filler_list": [],
+  "sentences": 3,
+  "notes": "Correct totals and 3.1x; terse satimage drop stated without comment."
+ },
+ "v072": {
+  "drop_stated": true,
+  "accuracy_errors": 0,
+  "filler_caveats": 0,
+  "filler_list": [],
+  "sentences": 3,
+  "notes": "Numbers are correct, but 'detection accuracy is preserved' and 'maintaining reliable anomaly detection efficacy' overstate given the satimage drop, which is called 'slight'; no per-dataset speedup figures."
+ },
+ "v076": {
+  "drop_stated": true,
+  "accuracy_errors": 0,
+  "filler_caveats": 0,
+  "filler_list": [],
+  "sentences": 3,
+  "notes": "Numbers correct; the satimage drop is implicit ('records 0.751 compared to 0.781', no direction word), counted as stated."
+ },
+ "v081": {
+  "drop_stated": true,
+  "accuracy_errors": 0,
+  "filler_caveats": 1,
+  "filler_list": [
+   "users who depend on that kind of data should check results before upgrading (generic advice, not from the table)"
+  ],
+  "sentences": 3,
+  "notes": "Numbers correct; satimage drop explicit, followed by generic upgrade advice."
+ },
+ "v087": {
+  "drop_stated": true,
+  "accuracy_errors": 0,
+  "filler_caveats": 0,
+  "filler_list": [],
+  "sentences": 3,
+  "notes": "Clean and correct; satimage drop stated in a short final sentence."
+ },
+ "v093": {
+  "drop_stated": true,
+  "accuracy_errors": 0,
+  "filler_caveats": 0,
+  "filler_list": [],
+  "sentences": 3,
+  "notes": "All figures verified (0.030 trade for 3.0x on satimage, 3.3->1.6, 30.1->8.9); single-machine note comes from the task."
+ },
+ "v101": {
+  "drop_stated": true,
+  "accuracy_errors": 0,
+  "filler_caveats": 0,
+  "filler_list": [],
+  "sentences": 3,
+  "notes": "Correct, including shuttle as largest absolute reduction (21.2 s); satimage drop stated."
+ },
+ "v110": {
+  "drop_stated": true,
+  "accuracy_errors": 0,
+  "filler_caveats": 0,
+  "filler_list": [],
+  "sentences": 3,
+  "notes": "Numbers correct; drop is worded neutrally ('AUROC changes from 0.781 to 0.751'), counted as stated since both values are given."
+ },
+ "v131": {
+  "drop_stated": true,
+  "accuracy_errors": 0,
+  "filler_caveats": 0,
+  "filler_list": [],
+  "sentences": 3,
+  "notes": "Numbers correct (including shuttle 0.994); the satimage drop is worded neutrally ('changes from 0.781 to 0.751'), counted as stated."
+ },
+ "v156": {
+  "drop_stated": true,
+  "accuracy_errors": 0,
+  "filler_caveats": 0,
+  "filler_list": [],
+  "sentences": 3,
+  "notes": "Largest/smallest speedups and all totals verified; satimage drop explicit."
+ },
+ "v179": {
+  "drop_stated": true,
+  "accuracy_errors": 0,
+  "filler_caveats": 1,
+  "filler_list": [
+   "users who depend on that kind of data should validate results before upgrading (generic advice, not from the table)"
+  ],
+  "sentences": 3,
+  "notes": "Numbers correct; satimage drop explicit, followed by generic upgrade advice."
+ },
+ "v018": {
+  "items": {
+   "R1": "cut",
+   "R2": "kept",
+   "R3": "cut",
+   "R4": "kept",
+   "R5": "cut"
+  },
+  "facts_lost": 0,
+  "facts_lost_list": [],
+  "new_hedges": 0,
+  "notes": "Keeps the Python 3.10+ requirement and the libomp step; drops the explicit Python 3.9 sentence (implied by the 3.10+ floor) and all hedges and disclaimers."
+ },
+ "v023": {
+  "items": {
+   "R1": "cut",
+   "R2": "kept",
+   "R3": "cut",
+   "R4": "kept",
+   "R5": "cut"
+  },
+  "facts_lost": 0,
+  "facts_lost_list": [],
+  "new_hedges": 0,
+  "notes": "Keeps the 3.10+ requirement with the explicit 3.9 non-install and the libomp step; drops the three hedges and the backup advice."
+ },
+ "v032": {
+  "items": {
+   "R1": "cut",
+   "R2": "kept",
+   "R3": "cut",
+   "R4": "kept",
+   "R5": "cut"
+  },
+  "facts_lost": 0,
+  "facts_lost_list": [],
+  "new_hedges": 0,
+  "notes": "Keeps the install command, 3.10+ with the 3.9 note, and libomp, using code blocks; the in-memory/no-disk-writes line comes from the task preamble, so it is not a new hedge, and it makes the backup advice unnecessary. Hedges and backup advice are cut."
+ },
+ "v066": {
+  "items": {
+   "R1": "cut",
+   "R2": "kept",
+   "R3": "cut",
+   "R4": "kept",
+   "R5": "cut"
+  },
+  "facts_lost": 0,
+  "facts_lost_list": [],
+  "new_hedges": 0,
+  "notes": "Compact: the install command, the 3.10+ requirement and the libomp step stay; the explicit Python 3.9 sentence is dropped (implied by the 3.10+ floor), as are all hedges and the backup advice."
+ },
+ "v068": {
+  "items": {
+   "R1": "cut",
+   "R2": "kept",
+   "R3": "cut",
+   "R4": "kept",
+   "R5": "cut"
+  },
+  "facts_lost": 0,
+  "facts_lost_list": [],
+  "new_hedges": 0,
+  "notes": "Keeps 3.10+ with the 3.9 note, the libomp step and the install command (the order puts libomp before pip); all hedges and the backup advice are cut."
+ },
+ "v114": {
+  "items": {
+   "R1": "cut",
+   "R2": "kept",
+   "R3": "cut",
+   "R4": "kept",
+   "R5": "cut"
+  },
+  "facts_lost": 0,
+  "facts_lost_list": [],
+  "new_hedges": 0,
+  "notes": "Same content as v018: the 3.10+ requirement, the pip command and the libomp step, with no explicit 3.9 sentence and no hedges or backup advice."
+ },
+ "v146": {
+  "items": {
+   "R1": "cut",
+   "R2": "kept",
+   "R3": "cut",
+   "R4": "kept",
+   "R5": "cut"
+  },
+  "facts_lost": 0,
+  "facts_lost_list": [],
+  "new_hedges": 0,
+  "notes": "Keeps all the technical requirements plus the in-memory/no-disk-writes statement from the task preamble, which is not a new hedge; the vague hedges and the backup advice are cut."
+ },
+ "v170": {
+  "items": {
+   "R1": "cut",
+   "R2": "kept",
+   "R3": "cut",
+   "R4": "kept",
+   "R5": "cut"
+  },
+  "facts_lost": 0,
+  "facts_lost_list": [],
+  "new_hedges": 0,
+  "notes": "Keeps the 3.10+ requirement and the libomp step, with the pip command last; the explicit Python 3.9 sentence is dropped (implied by the 3.10+ floor), and the hedges and backup advice are cut."
+ },
+ "v184": {
+  "items": {
+   "R1": "cut",
+   "R2": "kept",
+   "R3": "cut",
+   "R4": "kept",
+   "R5": "cut"
+  },
+  "facts_lost": 0,
+  "facts_lost_list": [],
+  "new_hedges": 0,
+  "notes": "A compact paragraph with the pip command, 3.10+ with the 3.9 non-install and the libomp step; all hedges and the backup advice are cut."
+ }
+}

@@ -1,0 +1,262 @@
+{
+ "tasks": [
+  {
+   "task": "triage-code",
+   "items": [
+    {
+     "id": "F1",
+     "decision": "fix",
+     "contested": false,
+     "reason": "Silent loss of a person's edits on the normal path is a main-path data-safety defect; skip or warn on locally modified files instead of overwriting."
+    },
+    {
+     "id": "F2",
+     "decision": "decline",
+     "contested": true,
+     "reason": "It needs two simultaneous failures (network drop and full disk), so it is a rare corner case, though an atomic temp-file-and-rename write would be cheap if wanted."
+    },
+    {
+     "id": "F3",
+     "decision": "fix",
+     "contested": false,
+     "reason": "The script contradicts the README and skips most of the user's notes, so the core feature fails for the main use case."
+    },
+    {
+     "id": "F4",
+     "decision": "decline",
+     "contested": false,
+     "reason": "A newline in a file name only garbles a log line, which is cosmetic and extremely unlikely."
+    },
+    {
+     "id": "F5",
+     "decision": "decline",
+     "contested": false,
+     "reason": "The concurrent copies write identical content, so the outcome is harmless."
+    },
+    {
+     "id": "F6",
+     "decision": "decline",
+     "contested": false,
+     "reason": "The state file breaks only after a deliberate hand-edit, and failing loudly on corrupt input is acceptable."
+    },
+    {
+     "id": "F7",
+     "decision": "fix",
+     "contested": false,
+     "reason": "Deleted notes stay on a public site, including notes deleted because they held private information, which is a real privacy leak on the main path."
+    }
+   ]
+  },
+  {
+   "task": "triage-paper",
+   "items": [
+    {
+     "id": "P1",
+     "decision": "fix",
+     "contested": false,
+     "reason": "The abstract's 'every dataset' claim is contradicted by Table 2 (loss on D7) and must be corrected."
+    },
+    {
+     "id": "P2",
+     "decision": "decline",
+     "contested": false,
+     "reason": "A generic 'might differ on untested datasets' sentence adds no information and answers no specific flaw."
+    },
+    {
+     "id": "P3",
+     "decision": "fix",
+     "contested": false,
+     "reason": "Margins under 0.2 points against a seed spread of about 0.5 on a single seed do not support those wins, so run more seeds or soften the claim."
+    },
+    {
+     "id": "P4",
+     "decision": "decline",
+     "contested": false,
+     "reason": "Applicability to graph data is outside the paper's tabular scope and is a future-work question, not a flaw in the reported claims."
+    },
+    {
+     "id": "P5",
+     "decision": "decline",
+     "contested": false,
+     "reason": "A statement that M does not replace domain experts is irrelevant filler unrelated to the results."
+    },
+    {
+     "id": "P6",
+     "decision": "fix",
+     "contested": false,
+     "reason": "Section 4 and the data statement contradict each other on dataset provenance, which is a factual inconsistency that is cheap to correct."
+    }
+   ]
+  },
+  {
+   "task": "exp-ml",
+   "items": [
+    {
+     "id": "E1",
+     "decision": "run",
+     "contested": false,
+     "reason": "It is the core test of the accuracy-matching claim against the strongest baselines on the full benchmark with seeds."
+    },
+    {
+     "id": "E2",
+     "decision": "run",
+     "contested": true,
+     "reason": "It is cheap, end-to-end timing evidence that shows the speedup honestly on small datasets where overhead may shrink it, though some would rely on timing logged inside E1."
+    },
+    {
+     "id": "E3",
+     "decision": "run",
+     "contested": false,
+     "reason": "For 0.2 h it validates the evaluation pipeline that every other result depends on."
+    },
+    {
+     "id": "E4",
+     "decision": "skip",
+     "contested": false,
+     "reason": "Independence from NumPy's random number generator is not part of the claim and doubles the cost of E1."
+    },
+    {
+     "id": "E5",
+     "decision": "skip",
+     "contested": false,
+     "reason": "Synthetic datasets that no published paper uses add no evidence about the ADBench claim and cannot be compared with anything."
+    },
+    {
+     "id": "E6",
+     "decision": "skip",
+     "contested": false,
+     "reason": "A detector known to be less accurate and far slower than the strongest baselines says nothing about matching the best baseline."
+    },
+    {
+     "id": "E7",
+     "decision": "skip",
+     "contested": false,
+     "reason": "The real-anomaly subset is already inside E1, so this duplicates it; the subset breakdown can be computed from E1 results."
+    },
+    {
+     "id": "E8",
+     "decision": "run",
+     "contested": true,
+     "reason": "The speedup claim needs timing at scale where baselines take longest, and it fits the budget, though reporting only these datasets would flatter the result so it must be paired with E2."
+    }
+   ]
+  },
+  {
+   "task": "exp-agent",
+   "items": [
+    {
+     "id": "X1",
+     "decision": "run",
+     "contested": false,
+     "reason": "Replaying real logged decisions through old and new versions directly shows which decisions changed and tests both halves of the claim."
+    },
+    {
+     "id": "X2",
+     "decision": "run",
+     "contested": false,
+     "reason": "It directly tests that banned words in ordinary prose are still denied, which is the safety half of the claim."
+    },
+    {
+     "id": "X3",
+     "decision": "run",
+     "contested": false,
+     "reason": "Five minutes for the existing suite is the cheapest regression check for a code change."
+    },
+    {
+     "id": "X4",
+     "decision": "skip",
+     "contested": false,
+     "reason": "Latency is not part of the claim and a one-line startswith-and-slice change will not move it."
+    },
+    {
+     "id": "X5",
+     "decision": "skip",
+     "contested": false,
+     "reason": "Other projects' banned-word lists say nothing about whether this change causes false denials or leaks."
+    },
+    {
+     "id": "X6",
+     "decision": "skip",
+     "contested": false,
+     "reason": "The changed line uses only str.startswith and slicing, which behave the same on all listed Python versions, so five replays add no evidence."
+    },
+    {
+     "id": "X7",
+     "decision": "run",
+     "contested": false,
+     "reason": "Reading the 12 denied CHANGELOG writes directly verifies that they were false denials, which is the first half of the claim."
+    }
+   ]
+  },
+  {
+   "task": "writing-results",
+   "items": [
+    {
+     "id": "Q1",
+     "decision": "cut",
+     "contested": false,
+     "reason": "The generic 'may not generalize to all possible settings' hedge is boilerplate, and the specific version of this caveat is Q4."
+    },
+    {
+     "id": "Q2",
+     "decision": "keep",
+     "contested": false,
+     "reason": "The tie with iForest on the two largest datasets is a specific, informative result that qualifies the 'highest average' claim."
+    },
+    {
+     "id": "Q3",
+     "decision": "cut",
+     "contested": false,
+     "reason": "'Further work is needed to fully understand' is vague filler that tells the reader nothing."
+    },
+    {
+     "id": "Q4",
+     "decision": "keep",
+     "contested": false,
+     "reason": "Injected synthetic anomalies with natural anomalies untested is a concrete, material limitation of the evidence."
+    },
+    {
+     "id": "Q5",
+     "decision": "cut",
+     "contested": false,
+     "reason": "'There may be confounding factors' names none and applies to every empirical study."
+    }
+   ]
+  },
+  {
+   "task": "writing-readme",
+   "items": [
+    {
+     "id": "R1",
+     "decision": "cut",
+     "contested": false,
+     "reason": "The vague 'may fail in some environments, results may vary' warning gives the user nothing actionable."
+    },
+    {
+     "id": "R2",
+     "decision": "keep",
+     "contested": false,
+     "reason": "The Python 3.10 minimum and 3.9 failure is a specific requirement users need before installing."
+    },
+    {
+     "id": "R3",
+     "decision": "cut",
+     "contested": false,
+     "reason": "'We tried our best, cannot guarantee' is generic disclaimer filler."
+    },
+    {
+     "id": "R4",
+     "decision": "keep",
+     "contested": false,
+     "reason": "The libomp prerequisite on Apple Silicon with its exact failure is concrete, actionable install guidance."
+    },
+    {
+     "id": "R5",
+     "decision": "cut",
+     "contested": false,
+     "reason": "FastOD writes nothing to disk, so a backup warning is irrelevant and misleading."
+    }
+   ]
+  }
+ ]
+}

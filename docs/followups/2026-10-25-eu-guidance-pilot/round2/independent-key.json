@@ -1,0 +1,156 @@
+{
+ "tasks": [
+  {
+   "task": "check-paper",
+   "items": [
+    {
+     "id": "C1",
+     "decision": "run",
+     "contested": false,
+     "reason": "Citations written from memory are a classic source of wrong authors, venues, or nonexistent papers, and 20 minutes is cheap insurance against a visible error in the published version."
+    },
+    {
+     "id": "C2",
+     "decision": "run",
+     "contested": false,
+     "reason": "Restoring author names and edits to related work can push the paper over the page limit, and a 5-minute recompile catches it."
+    },
+    {
+     "id": "C3",
+     "decision": "skip",
+     "contested": false,
+     "reason": "Results were frozen at acceptance and the logs are in the repository, so a 90-minute full re-run adds almost nothing to what the logs already show."
+    },
+    {
+     "id": "C4",
+     "decision": "skip",
+     "contested": false,
+     "reason": "The 300 dpi PNG figures are legible and acceptable, so 40 minutes of redrawing risks introducing errors for no required gain."
+    },
+    {
+     "id": "C5",
+     "decision": "run",
+     "contested": false,
+     "reason": "Camera-ready requires restoring author names and affiliations that were removed for anonymous review, and it takes only 10 minutes."
+    },
+    {
+     "id": "C6",
+     "decision": "skip",
+     "contested": false,
+     "reason": "The abstract was accepted as written and no reviewer asked for changes, so a stylistic rewrite adds risk with no demonstrated benefit."
+    }
+   ]
+  },
+  {
+   "task": "check-commit",
+   "items": [
+    {
+     "id": "K1",
+     "decision": "run",
+     "contested": false,
+     "reason": "A rename can leave stale references that break at runtime, and a 2-minute search is the direct check for that."
+    },
+    {
+     "id": "K2",
+     "decision": "run",
+     "contested": false,
+     "reason": "The existing tests are cheap to run and catch any breakage from the rename."
+    },
+    {
+     "id": "K3",
+     "decision": "run",
+     "contested": false,
+     "reason": "Project policy requires one review round per commit and it takes only 5 minutes, so the change does not qualify for an exemption."
+    },
+    {
+     "id": "K4",
+     "decision": "skip",
+     "contested": false,
+     "reason": "A test pinning docstring text is brittle and low-value for a typo fix."
+    },
+    {
+     "id": "K5",
+     "decision": "skip",
+     "contested": false,
+     "reason": "Renaming a constant and fixing a docstring cannot change performance, so a benchmark answers no real question."
+    },
+    {
+     "id": "K6",
+     "decision": "skip",
+     "contested": false,
+     "reason": "The module is internal and unpublished, so an alias is speculative scope creep, and K1 already finds any in-repo users of the old name."
+    }
+   ]
+  },
+  {
+   "task": "migration",
+   "items": [
+    {
+     "id": "B1",
+     "decision": "run",
+     "contested": false,
+     "reason": "The script rewrites the only copy of 2,000 notes in place, so a 2-minute backup is essential protection against irreversible data loss."
+    },
+    {
+     "id": "B2",
+     "decision": "run",
+     "contested": false,
+     "reason": "Three samples are thin evidence, and a diff on 50 real notes in 5 minutes exposes edge cases in real front matter before the full run."
+    },
+    {
+     "id": "B3",
+     "decision": "skip",
+     "contested": false,
+     "reason": "No notes use UTF-16, so 40 minutes of support for it is unneeded work."
+    },
+    {
+     "id": "B4",
+     "decision": "skip",
+     "contested": false,
+     "reason": "A progress bar is cosmetic and has no bearing on whether the migration is correct or safe."
+    },
+    {
+     "id": "B5",
+     "decision": "skip",
+     "contested": true,
+     "reason": "Notes are on a local SSD where transient errors are rare, and a backup plus a rerun covers failures, though some would add basic error handling for in-place writes."
+    }
+   ]
+  },
+  {
+   "task": "exp-leak",
+   "items": [
+    {
+     "id": "L1",
+     "decision": "run",
+     "contested": false,
+     "reason": "A 0.2-hour hash check directly tests the most damaging explanation for a suspicious gain, which is a train/test overlap bug in a newly written data loader."
+    },
+    {
+     "id": "L2",
+     "decision": "run",
+     "contested": false,
+     "reason": "The baseline and the new loss used different data loaders, so re-running the baseline with the new loader is the only way to separate the loss effect from the loader effect."
+    },
+    {
+     "id": "L3",
+     "decision": "skip",
+     "contested": false,
+     "reason": "Compute cost on four GPU types does not bear on whether the accuracy gain is real and would use half the budget."
+    },
+    {
+     "id": "L4",
+     "decision": "skip",
+     "contested": false,
+     "reason": "The claim is limited to CIFAR-100, so an ImageNet run does not validate it and costs 2.5 hours."
+    },
+    {
+     "id": "L5",
+     "decision": "skip",
+     "contested": true,
+     "reason": "Tuning only the new loss's temperature would bias the comparison toward it and does not validate the existing gain, although some would run it if budget remains after L1 and L2."
+    }
+   ]
+  }
+ ]
+}

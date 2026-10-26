@@ -1,0 +1,135 @@
+{
+ "u20": {
+  "items": {
+   "Q1": "cut",
+   "Q2": "kept",
+   "Q3": "cut",
+   "Q4": "kept",
+   "Q5": "cut"
+  },
+  "facts_lost": 0,
+  "new_hedges": 0
+ },
+ "u31": {
+  "items": {
+   "Q1": "cut",
+   "Q2": "kept",
+   "Q3": "cut",
+   "Q4": "kept",
+   "Q5": "cut"
+  },
+  "facts_lost": 0,
+  "new_hedges": 0
+ },
+ "u40": {
+  "items": {
+   "Q1": "cut",
+   "Q2": "kept",
+   "Q3": "cut",
+   "Q4": "cut",
+   "Q5": "cut"
+  },
+  "facts_lost": 0,
+  "new_hedges": 0
+ },
+ "u42": {
+  "items": {
+   "Q1": "cut",
+   "Q2": "kept",
+   "Q3": "cut",
+   "Q4": "kept",
+   "Q5": "cut"
+  },
+  "facts_lost": 0,
+  "new_hedges": 0
+ },
+ "u47": {
+  "items": {
+   "Q1": "cut",
+   "Q2": "kept",
+   "Q3": "cut",
+   "Q4": "kept",
+   "Q5": "cut"
+  },
+  "facts_lost": 0,
+  "new_hedges": 0
+ },
+ "u48": {
+  "items": {
+   "Q1": "cut",
+   "Q2": "kept",
+   "Q3": "cut",
+   "Q4": "cut",
+   "Q5": "cut"
+  },
+  "facts_lost": 0,
+  "new_hedges": 0
+ },
+ "u07": {
+  "items": {
+   "R1": "cut",
+   "R2": "kept",
+   "R3": "cut",
+   "R4": "kept",
+   "R5": "cut"
+  },
+  "facts_lost": 0,
+  "new_hedges": 0,
+  "notes": "Corrected by hand: the judge saw the text cut at a nested ```sh fence. The full block keeps the one labelled fact, pip install fastod."
+ },
+ "u09": {
+  "items": {
+   "R1": "cut",
+   "R2": "kept",
+   "R3": "cut",
+   "R4": "kept",
+   "R5": "cut"
+  },
+  "facts_lost": 0,
+  "new_hedges": 0
+ },
+ "u11": {
+  "items": {
+   "R1": "cut",
+   "R2": "kept",
+   "R3": "cut",
+   "R4": "kept",
+   "R5": "cut"
+  },
+  "facts_lost": 0,
+  "new_hedges": 0
+ },
+ "u18": {
+  "items": {
+   "R1": "cut",
+   "R2": "kept",
+   "R3": "cut",
+   "R4": "kept",
+   "R5": "cut"
+  },
+  "facts_lost": 0,
+  "new_hedges": 0
+ },
+ "u19": {
+  "items": {
+   "R1": "cut",
+   "R2": "kept",
+   "R3": "cut",
+   "R4": "kept",
+   "R5": "cut"
+  },
+  "facts_lost": 0,
+  "new_hedges": 0
+ },
+ "u24": {
+  "items": {
+   "R1": "cut",
+   "R2": "kept",
+   "R3": "cut",
+   "R4": "kept",
+   "R5": "cut"
+  },
+  "facts_lost": 0,
+  "new_hedges": 0
+ }
+}
