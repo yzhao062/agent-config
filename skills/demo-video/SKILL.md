@@ -80,9 +80,7 @@ The default is edge-tts with `en-US-GuyNeural` at rate `+5%`, the maintainer's c
 
 - Playwright's `recordVideo` gives a soft WebM that drops frames; deterministic frames with one screenshot each do not. `render.py` serves the site over HTTP so an iframe figure shares the page's origin.
 - ffmpeg's `-shortest` dropped the last four frames when muxing, and the container still reported the full length; count frames, not seconds.
-- Chromium drops a very large `box-shadow` spread inside a scaled layer, so a spotlight built that way vanished when the camera zoomed; the template dims with four masks.
-- An SVG path drawn with `stroke-dasharray` and a round cap shows a dot before it starts drawing; keep it hidden until it has progress.
-- rich prints colors to a redirected stream only when `FORCE_COLOR`, `COLORTERM`, `TERM` and `COLUMNS` are set; with an agent shell's `TERM=dumb` it drops colors and wraps at 80 columns. The REPL echoes an expression's value even inside a `with` block. Capture what prints; do not predict it.
+- The REPL echoes an expression's value even inside a `with` block, and rich's colors and width depend on the shell's environment, which `capture_repl.py` overrides. Capture what prints; do not predict it.
 - A contact sheet can hide a real effect: a dim that looked absent in thumbnails measured at half brightness. Measure pixels before changing something that works.
 - The synthesized music was checked by level curve, spectrogram, peak and largest sample step (a click is above 0.3), and then by the user's ear.
 

@@ -8,8 +8,8 @@ becomes colored code tokens and each output becomes colored segments, wrapped at
 terminal would wrap them. Nothing on screen is written by hand: run this with the released package installed.
 
 rich prints colors to a redirected stdout only when told the stream is a color terminal, so this script sets
-FORCE_COLOR, COLORTERM, TERM and COLUMNS before anything imports rich (an agent's shell often has TERM=dumb, which
-makes rich drop colors and wrap at 80 columns).
+FORCE_COLOR, COLORTERM, TERM and COLUMNS and clears NO_COLOR before anything imports rich (an agent's shell often has
+TERM=dumb, which makes rich drop colors and wrap at 80 columns, or NO_COLOR=1, which drops colors).
 """
 import argparse
 import code
@@ -24,6 +24,7 @@ ap.add_argument("scenes")
 ap.add_argument("out")
 ap.add_argument("--width", type=int, default=120)
 args = ap.parse_args()
+os.environ.pop("NO_COLOR", None)
 os.environ.update(FORCE_COLOR="1", COLORTERM="truecolor", TERM="xterm-256color", COLUMNS=str(args.width))
 
 from pygments.lexers import PythonLexer  # noqa: E402
