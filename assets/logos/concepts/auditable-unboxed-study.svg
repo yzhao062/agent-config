@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="auditable unboxed color study">
+<title>auditable: unboxed color study</title>
+<desc>Derived study preserving all five original nodes and edges. Original master remains unchanged.</desc>
+<g fill="none" stroke="#0F172A" stroke-width="24" stroke-linecap="round" stroke-linejoin="round"><path d="M256 138 L148 382"/><path d="M256 138 L364 382"/><path d="M191 284 L321 284"/></g>
+<g fill="#0F172A"><circle cx="256" cy="138" r="28"/><circle cx="191" cy="284" r="28"/><circle cx="321" cy="284" r="28"/><circle cx="148" cy="382" r="28"/><circle cx="364" cy="382" r="28"/></g>
+</svg>
