@@ -1,0 +1,4 @@
+interface:
+  display_name: "Mac Storage Audit"
+  short_description: "Audit personal Mac storage and recovery risks"
+  default_prompt: "Use $mac-storage-audit at reference-skills/mac-storage-audit/SKILL.md to inspect disk usage, compare an earlier baseline, and identify research artifacts with uncertain recovery, without modifying the inspected files."

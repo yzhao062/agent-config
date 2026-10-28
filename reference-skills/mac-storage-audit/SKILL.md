@@ -7,7 +7,7 @@ description: Audit this personal Mac's disk usage, growth since an earlier scan,
 
 Private skill for agent-config only. Do not mirror it into anywhere-agents, deploy it globally, or modify machine settings as part of an audit. The existing baseline is [Mac storage audit](../../docs/mac-storage-audit.md), beside [Mac setup](../../docs/mac-mouse-preferences.md). Treat those numbers as dated evidence, not current state.
 
-Invoke this skill by its path inside agent-config. Do not add a `.claude/commands/` pointer: bootstrap copies those pointers into consumer repositories.
+Invoke this skill at `reference-skills/mac-storage-audit/SKILL.md` inside agent-config. Do not add a `.claude/commands/` pointer: bootstrap copies those pointers into consumer repositories.
 
 ## Permissions and priorities
 

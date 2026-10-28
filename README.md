@@ -123,6 +123,8 @@ Codex is the `/vet` gatekeeper. On the Auto-terminal channel, `implement-review`
 
 After bootstrap, mention the skill name directly in the prompt. In Claude Code, the matching pointer command under `.claude/commands/` provides the same entry point. Each skill's `SKILL.md` contains full usage instructions and examples.
 
+The personal `mac-storage-audit` skill lives at `reference-skills/mac-storage-audit/SKILL.md` and is invoked by path inside agent-config. It is excluded from shared bootstrap deployment.
+
 ## Structure
 
 ```
@@ -180,11 +182,12 @@ skills/                            # Shared skills (bootstrapped to all projects
     agents/openai.yaml             # Codex wrapper
     references/patterns.md         # Copyable snippets for every modern pattern
     references/checklist.md        # Pre-publish audit grid
-reference-skills/                  # Domain skills (copied manually into project repos)
+reference-skills/                  # Domain and personal skills (not bootstrapped)
   condense-cv/                     # CV preparation
   cs-meta-review/                  # Area chair meta-review
   cs-paper-review/                 # Peer review of CS papers
   deck-assembler/                  # Slide deck assembly
+  mac-storage-audit/               # Personal Mac storage audit (agent-config only)
   nsf-bibref-filler/               # NSF-specific citation filling
   nsf-figure-builder/              # NSF-specific figure building
   nsf-proposal-composer/           # NSF proposal section drafting
