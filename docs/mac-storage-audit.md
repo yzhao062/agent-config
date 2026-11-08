@@ -1,10 +1,82 @@
 # Mac 持久存储审计与复查记录
 
-2026-10-12 合并 Codex 的只读扫描与用户提供的 Claude 独立扫描，关注 `~/PycharmProjects/` 外的持久实验产物、agent 工作区、历史记录和缓存。确实存在重启不会清除的项目外数据，其中 Agy 的持久 scratch 最符合长期遗留的担心。当前决定：保留全部内容，之后复查，再决定是否迁移或清理。
+2026-10-12 合并 Codex 的只读扫描与用户提供的 Claude 独立扫描，关注 `~/PycharmProjects/` 外的持久实验产物、agent 工作区、历史记录和缓存。当时决定保留全部内容。2026-11-07 重新扫描并在用户授权后清理四个旅行备份目录；当前结果及恢复风险见下方更新，后面的 10 月记录保留为历史基线。
 
-本记录与 [Mac 设置与重装恢复指南](mac-mouse-preferences.md) 一起维护，只保存在 agent-config。此次仅新增审计文档和入口链接，没有删除或迁移审计对象，没有修改工具配置。
+本记录与 [Mac 设置与重装恢复指南](mac-mouse-preferences.md) 一起维护，只保存在 agent-config。复查使用私人 [mac-storage-audit skill](../reference-skills/mac-storage-audit/SKILL.md)。扫描默认只读，清理需要用户授权。
 
-## 测量基线
+## 2026-11-07 扫描与旅行备份清理
+
+日期和时间均为 America/Los_Angeles，容量统一为十进制 GB。扫描覆盖 home、主要项目、两处系统临时目录、Applications 和可读的 Library；使用 `df -k`、`du -k`、文件哈希、只读 Git 历史和远端引用检查。Photos、部分 Library 和系统目录受权限限制，未读取部分不能当作零占用。扫描和清理并非同时发生，期间其他任务继续运行。
+
+### 容量与主要占用
+
+| 测量时点 | Data 已用 GB | 可用 GB | 说明 |
+| --- | ---: | ---: | --- |
+| 2026-10-25 上轮扫描 | 634.120 | 332.172 | 本聊天中的实测记录，补录作比较基线 |
+| 2026-11-07 约 14:42，扫描开始 | 594.227 | 373.140 | 比上轮可用空间增加约 40.968 GB |
+| 2026-11-07 晚间，清理前 | 602.106 | 365.261 | 与下午扫描相隔数小时，不能把期间变化算作清理效果 |
+| 2026-11-07 约 20:17，清理完成 | 596.686 | 370.681 | 清理前后可用空间净增加约 5.420 GB |
+
+| 路径或范围 | 扫描时大小 GB | 与 10 月 25 日比较及内容 |
+| --- | ---: | --- |
+| `~/PycharmProjects/` | 162.758 | 约 +14.551；包含下述 research-data，不重复累加 |
+| `~/Documents/` | 148.901 | 大致不变；其中 Winref 为 143.447 |
+| `~/Library/` 可读部分 | 55.573 | 约 +5.680；包含 App 数据、缓存和 iCloud 本地文件 |
+| `/Applications/` | 42.077 | 约 +2.886 |
+| `~/.codex/` | 19.851 | 约 +1.334；含历史、数据库、安装资源和 worktrees |
+| `~/.claude/` | 13.880 | 约 -1.559 |
+| `~/.gemini/` | 2.278 | 约 +0.146；不要与旧表的 antigravity-cli 子目录直接比较 |
+| `~/.cache/` | 18.209 | 约 +0.340 |
+| `~/qemscore-r8/`、`r9/`、`r10/` | 27.490 | 大致不变，混有代码、数据和实验产物 |
+| `/private/tmp/` 可读部分 | 0.935 | 上轮约 33.555 |
+| `/private/var/folders/` 可读部分 | 9.845 | 上轮约 41.782；两处临时范围合计减少约 64.6 GB |
+| `~/repo-backups/` | 8.958 | 本轮随后授权清理，完成后为空 |
+| `~/PycharmProjects/research-data/` | 38.582 | 包含在项目总量内；其中 agentpile-cache 为 34.814 |
+
+`internal-writing` 从约 20.508 GB 增至 27.088 GB，其 `.git` 从约 8.32 GB 增至 14.843 GB，是项目增长的明显来源。目录大小不能机械相加还原 `df`：父子目录重叠、APFS 共享块、硬链接、权限缺口及活跃写入都会影响比较。未确认临时目录减少的具体清理机制。
+
+### 已执行的清理
+
+用户已回家、旅行结束，明确授权删除无用旅行备份，并要求用本地 `prun` 一起决策。协调者核对后，两组 Agy worker 均使用 `gemini-3.8-flash-high`，一组复核 NSF，另一组复核其余三个目录。worker 只读，删除由协调者执行。
+
+| 已删除路径，位于 `~/repo-backups/` | 原大小 GB | 删除依据 |
+| --- | ---: | --- |
+| `travel-work-backup-20261027/` | 1.476 | 工作区干净，无未跟踪或忽略内容；本地 HEAD 与 GitHub main 均为 `94fb42da08223c97266848bb715038717e45d798`。33 个归档分片的大小及 SHA-256 已校验，远端仓库保留 |
+| `trading-doc-travel-20261027/` | 0.135 | 2,582 个文件与当前项目相同，11 个旧版本在 Git 历史中；GitHub 比较确认旅行提交 `3c10549f` 已包含在当时远端 `43c2d1a9` 的历史中。使用不带 force 的 `git worktree remove` 移除，保留分支 |
+| `return-sync-20261104/` | 0.177 | MAAD 两组 251 和 247 个文件、trading 两组各 8 个文件均匹配当前项目；NSF 的 13 个原始或历史版本在 Git 历史中。两个不同的 `.merged` 文件仍带冲突标记，是中间产物，其余为同步报告 |
+| `nsf-travel-20261026/` | 7.170 | 主快照 15,652 项原位置一致、270 个文件有迁移后的相同副本、125 个旧版本在 Git 历史中。root bundle 的 52 个引用目标和 microscopy stash 均在当前仓库找到；剩余内容按下段判断为过期过程材料 |
+
+NSF 主快照未匹配的 15 个文件合计约 2.22 MB，主要是约 2.04 MB 的旧 UMaine 编译 PDF、LaTeX 日志、缓存、IDE 和 agent 配置、工具脚本及小型忽略规则。附加工作区中 324 项匹配当前内容、5 项匹配历史，另 35 项主要是合并决策、检查脚本、渲染检查副本及 Git 中间状态。结合旅行已结束和回迁证据，决定不因这些旧版本字节不同而继续保留完整备份。此判断不意味着每个中间文件都有异地副本。
+
+NSF 发布提交 `8d50119fe6fc5e54700b157bb8ce772b8e2ccf34` 已包含在核对时远端 `2a6af178` 的历史中；microscopy stash `5cfcdf610812503fba24e7485838929f6445361a` 在当前 `proposals/nsf-ai-datasets-2026-due-1104/overleaf` 找到。部分克隆缺少 promisor blobs，检查使用 `GIT_NO_LAZY_FETCH=1` 和 `rev-list --missing=print`，没有为审计自动下载缺失对象。
+
+删除使用 `git worktree remove` 和 `rm -r`；NSF 只读备份内的文件及目录先恢复用户写权限。完成后确认 `~/repo-backups/` 为空、trading worktree 列表仅保留主工作区。删除目录原统计合计约 8.958 GB，磁盘可用空间净增加约 5.420 GB；不把目录总量当作实际释放量。GitHub 旅行归档及活跃项目保留，没有清理模型缓存或研究数据。
+
+### 仍需核对的恢复来源
+
+下表是待核对清单，不是删除候选，也不表示已证明不存在其他副本。
+
+| 优先项 | 大小 GB | 已确认情况与下一步 |
+| --- | ---: | --- |
+| 三个旧 Agy brain 任务，UUID 见历史表 | 原合计 6.058 | 10 月 25 日及 11 月 7 日均不在原位置。用户不确定是否另存；本次 Spotlight 和 Documents、research-data、现有 Gemini 目录的精确文件名检查未找到 `full2.json`、`by2.pkl`。后续查归档、远端任务结果或改名副本；不能认定已丢失，也不能认定由自动保留机制删除 |
+| `research-data/agent-observer-effect/` | 2.344 | 原始 run outputs、云端拉取和分析材料仍在；README 要求视作独有。需要确认集群或其他离机副本，重新跑实验不等于恢复原始记录 |
+| `research-data/agent-when-to-ask/` | 0.969 | 日志、工作结果和存档仍在，混有可下载的公开代码；未验证全部原始结果有备用副本 |
+| `research-data/llm-dreaming/` | 0.178 | calibration 数据及结果仍在，备用副本未验证 |
+| `research-data/maad-bench-dgx-backup-2026-10-18/` | 0.129 | DGX 历史备份仍在，需确认 DGX 原始副本或其他归档 |
+| `research-data/maad-bench-release-update-2026-10-18/` | 0.088 | 历史待应用更新仍在；本轮没有逐项证明其内容已纳入当前 release，不能沿用目录名称判断是否仍待应用 |
+| `~/Documents/ab-directions-scratch-2026-10-11/` | 0.739 | A/B 原始材料与 scratch 备份仍在；总结文档不等于原始 traces 的备份 |
+| `research-data/usc-email/` | 0.060 | 新增院校参考与申请材料；原始材料需保留，完整备用副本未验证 |
+| `research-data/agentpile-cache/agent_reward_bench_probe/` | 1.003 | 本地开发 probe，恢复来源未确认；不能因上级名为 cache 就视作可下载 |
+| QEM 三个主目录及 release-assets | 27.490 + 0.836 | 仍混有未版本控制的数据和产物；Git remote 及 SHA 文件分别不能证明所有数据有备份或存在第二份副本 |
+| `~/Documents/Winref/` | 143.447 | Windows 迁移备份仍在；原机器或其他盘是否还保留完整副本未知 |
+
+上述小型研究材料、A/B 材料和 probe 合计约 5.5 GB，是优先确认离机副本的现存范围，但不意味着其中每个文件都独有。agentpile-cache 其余约 33.8 GB 有按 revision 下载的清单依据，恢复仍依赖上游可用性和访问权限，本轮没有完整重下载验证。
+
+旅行归档提供部分论文、图源、分支和 stash 的远端保护，明确不覆盖全部 research-data，也不自动覆盖归档后的新修改。本次在 internal-writing、NSF proposal、usc-email 和 research-compute 看到了活跃的未提交修改或新增文件。三个有内容的 Codex proposal worktree 未发现已跟踪文件修改，其 HEAD 没有相对于本地 remote refs 的独有提交；这不覆盖忽略文件，也不是完整远端恢复证明。
+
+`tmutil destinationinfo` 仍报告未配置目的地，Data 卷未列出 APFS 快照。本轮未检查离线外置盘或集群全部副本，未做完整恢复演练。下次优先处理恢复来源清单，再按需评估缓存增长；未设置自动扫描或自动删除。
+
+## 2026-10-12 历史测量基线
 
 容量基线复测于 **2026-10-12 00:55 PDT，America/Los_Angeles**。目录通过 `du -sk` 测量，统一换算为十进制 GB（1 GB = 1,000,000,000 bytes）。这是文件系统报告的分配量，不能据此预测删除后的精确可回收空间；APFS 克隆、硬链接和稀疏文件会影响解释。
 
