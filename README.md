@@ -31,7 +31,8 @@ Other project repos bootstrap from this repo to get shared agent defaults and sk
 - **`skills/`** — shared skills (e.g., `bibref-filler`, `editable-figure`)
 - **`.claude/commands/`** — Claude Code pointer commands for shared skills
 - **`.claude/settings.json`** — shared Claude project defaults (permissions, attribution, etc.)
-- **`user/settings.json`** — shared user-level Claude defaults (permissions, hook wiring, `CLAUDE_CODE_EFFORT_LEVEL=xhigh` env entry that sets the daily effort default)
+- **`user/settings.json`** — shared user-level Claude defaults (permissions, hook wiring, and the model and effort keys that `scripts/agent_models.py render` keeps equal to the registry)
+- **`user/agent-models.json`** — the registry: the one place that names each agent's model and effort per role (interactive session, reviewer, worker, prun worker). Bootstrap syncs the interactive values into the Claude, Codex, and Agy configs; dispatchers read the review and worker values at run time and record what each CLI reports it ran on
 - **`scripts/guard.py`** — deployed to `~/.claude/hooks/guard.py` as a PreToolUse hook (compound-`cd` guard, destructive Git/GitHub confirmation, writing-style deny on prose files, session-banner gate)
 - **`scripts/session_bootstrap.py`** — deployed to `~/.claude/hooks/session_bootstrap.py` as a SessionStart hook that re-runs bootstrap automatically on every session start, then publishes the session banner
 - **`scripts/render_banner.py`** with **`scripts/pack_identity.py`** — renders the seven-line session banner from files on disk. In a consumer it publishes `.agent-config/banner.txt` behind a metadata line (event timestamp, bootstrap `run_id`, completion) that the agent checks before printing it; in a source repo it prints to stdout. Both bootstrap entry points and the hook run it after every refresh attempt.
@@ -102,22 +103,23 @@ See `AGENTS.md` "Configuration Precedence" for full details.
 
 ## Codex
 
-Codex is the `/vet` gatekeeper. On the Auto-terminal channel, `implement-review` dispatches it headless through `codex exec` with `-c project_doc_max_bytes=262144`, so the whole composed `AGENTS.md` reaches the reviewer rather than Codex's default first 32 KiB, and with `--ignore-user-config` by default (`CODEX_DISPATCH_ISOLATE_MCP=off` opts out); Terminal-relay, where a person carries the prompt, remains the skill's default channel. The recommended `~/.codex/config.toml` values (model, effort, tier, `project_doc_max_bytes`) are in `AGENTS.md` "Environment"; the longer configuration notes live in the `anywhere-agents` docs linked from its "Reference" section. The Codex MCP server route from Claude Code was retired in the 2026-09 rewrite: it had gone unused since the review loop started calling `codex exec` directly.
+Codex is the `/vet` gatekeeper. On the Auto-terminal channel, `implement-review` dispatches it headless through `codex exec` with `-c project_doc_max_bytes=262144`, so the whole composed `AGENTS.md` reaches the reviewer rather than Codex's default first 32 KiB, and with `--ignore-user-config` by default (`CODEX_DISPATCH_ISOLATE_MCP=off` opts out); Terminal-relay, where a person carries the prompt, remains the skill's default channel. The Codex model and effort come from the registry (`user/agent-models.json`), which bootstrap syncs into `~/.codex/config.toml`; the other recommended values (approval policy, service tier, `project_doc_max_bytes`) are in `AGENTS.md` "Environment"; the longer configuration notes live in the `anywhere-agents` docs linked from its "Reference" section. The Codex MCP server route from Claude Code was retired in the 2026-09 rewrite: it had gone unused since the review loop started calling `codex exec` directly.
 
 ## Shared Skills
 
 | Skill | Description |
 |-------|-------------|
+| `agent-models` | Show, check, and change the model and effort each agent role runs on (interactive session, reviewer, worker, prun worker) through the one registry, `user/agent-models.json`. Also checks that a setting took effect by reading back what each CLI reports it ran on. |
 | `bibref-filler` | Add new external verified citations while keeping curated bibliography files stable, placing machine-added entries in a separate `working.bib`, and leaving visible unresolved notes instead of guessing. |
 | `bibref-verify` | Audit existing bibliography entries before submission, keeping `.bib` read-only while checking for fabricated citations, stale venue metadata, and ready-to-paste fix blocks in `REFERENCE-CHECK.md`. |
 | `demo-video` | Make a one-minute demo or promo video of a code project for X, LinkedIn or a README from code alone: real REPL output captured from the released package, HTML scenes rendered frame by frame in headless Chromium, an original synthesized music bed, and optional edge-tts narration. |
 | `editable-figure` | Analyze source material, design a concise paper, proposal, or README figure, and deliver native editable PowerPoint objects with publication or web exports. |
 | `figure-prompt-builder` | Build copy-ready prompts for explanatory figures such as overviews, workflows, mechanisms, timelines, and conceptual illustrations, using a small bundled reference bank when helpful. |
-| `implement-review` | Cross-model review loop for staged changes. Bare `/vet` uses Codex, and `/vet agy` uses the newest Gemini Argon High the Antigravity account lists, or Gemini Flash High when it lists no Argon model. Copilot and headless Claude Code remain available. Every automated backend can run tests, experiments, shell commands, and network verification without interactive permission gates. It applies code, paper, and proposal review lenses, categorizes feedback, revises, and iterates. |
+| `implement-review` | Cross-model review loop for staged changes. Bare `/vet` uses Codex, and `/vet agy` uses the newest model of the registry's Agy reviewer family that the Antigravity account lists, or the registry's fallback family when it lists none. Each reviewer model and effort comes from the registry, and the run records what the CLI reports it used. Copilot and headless Claude Code remain available. Every automated backend can run tests, experiments, shell commands, and network verification without interactive permission gates. It applies code, paper, and proposal review lenses, categorizes feedback, revises, and iterates. |
 | `ci-mockup-figure` | Build interactive HTML mockups of systems, methodological flowcharts, dashboards, and timelines, then capture as space-efficient figures for papers and proposals. |
 | `my-router` | Context-aware dispatcher that detects work type (papers, proposals, code, figures, citations, admin) and routes to the right domain skill. Works as the inner decision loop within superpowers' execution phase. |
 | `readme-polish` | Audit and rewrite a GitHub README using modern 2025-2026 patterns — centered header, badges, hero image, GitHub alert callouts, emoji feature bullets, collapsibles, Mermaid diagrams, tables over dense prose. Produces a README that survives a 10-second skim and a deep dive. |
-| `prun` | Parallel delegation fan-out. The coordinating session decomposes a task into independent units that run in parallel on Agy workers, never on the coordinator or on Claude subagents, then gathers results, reviews each diff, and integrates. Codex is reserved for `/vet`. Unit count follows the dependency graph rather than a small fixed cap. Code-writing units run in a throwaway clone with its remote removed, so workers cannot commit or push to the real repo. |
+| `prun` | Parallel delegation fan-out. The coordinating session decomposes a task into independent units that run in parallel on Agy workers, never on the coordinator or on Claude subagents, then gathers results, reviews each diff, and integrates. A unit runs on a Codex worker only when the user names Codex for it. Unit count follows the dependency graph rather than a small fixed cap. Code-writing units run in a throwaway clone with its remote removed, so workers cannot commit or push to the real repo. |
 
 ## Skill Usage
 
@@ -136,6 +138,9 @@ bootstrap/
   bootstrap.ps1                    # Windows bootstrap logic
   bootstrap.sh                     # Unix bootstrap logic
 skills/                            # Shared skills (bootstrapped to all projects)
+  agent-models/
+    SKILL.md                       # Show, check, and change each agent's model and effort (the registry)
+    agents/openai.yaml             # Codex wrapper
   bibref-filler/
     SKILL.md                       # Skill definition
     agents/openai.yaml             # Codex wrapper
@@ -205,9 +210,11 @@ scripts/
   pack_identity.py                 # Read-only pack gap/update counts for the banner (item 7)
   statusline.py                    # Compact Claude + Codex + primary Agy Gemini quota row
   agent-quota.py                   # Expanded three-agent / four-pool quota readout + Agy refresh
+  agent_models.py                  # Registry resolver: resolve, render, sync, scan, and `actual` (what a CLI really ran on)
   generate_agent_configs.py        # Generator: AGENTS.md -> CLAUDE.md + agents/codex.md
 user/
-  settings.json                    # User-level Claude Code settings (permissions, hooks)
+  settings.json                    # User-level Claude Code settings (permissions, hooks, rendered model and effort keys)
+  agent-models.json                # Registry of each agent's model and effort per role
 tests/                             # Validation tests (run in CI on Ubuntu, Windows, macOS)
   test_repo.py                     # Bootstrap contract, skill layout, smoke tests
   test_bibref_filler.py            # Cite-key validation script tests
@@ -217,6 +224,7 @@ tests/                             # Validation tests (run in CI on Ubuntu, Wind
   test_render_banner.py            # Banner renderer, report contract, pack identity tests
   test_bootstrap_size.py           # Byte ceilings for AGENTS.md and the generated files
   test_generator.py                # AGENTS.md -> per-agent generator tests
+  test_agent_models.py             # Registry resolver tests and the no-literal drift guard
 anywhere-agents.md                 # Two-repo relationship, "what gets copied" table, release workflow
 pack-architecture.md               # Pack composition architecture and release trajectory
 vision.md                          # Ecosystem vision and parked design ideas
@@ -226,6 +234,7 @@ docs/
   claude-code-reference.md         # Keyboard shortcuts, slash commands, vim mode
   claude-code-extras.md            # Buddy/companion, plugins
 .claude/commands/                  # Claude Code pointer commands for shared skills
+  agent-models.md
   bibref-filler.md
   bibref-verify.md
   ci-mockup-figure.md
@@ -237,5 +246,5 @@ docs/
   prun.md
   readme-polish.md
 .claude/settings.json              # Shared Claude project defaults (permissions, attribution, etc.)
-user/settings.json                 # Shared user-level defaults (permissions, hooks, CLAUDE_CODE_EFFORT_LEVEL=xhigh env entry)
+user/settings.json                 # Shared user-level defaults (permissions, hooks, rendered model and effort keys)
 ```

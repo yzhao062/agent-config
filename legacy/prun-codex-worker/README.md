@@ -1,5 +1,7 @@
 # prun's Codex worker, retired 2026-09-18
 
+**Restored 2026-11-10.** The three scripts were copied back into `skills/prun/scripts/` for units the user names Codex for, and wired to the model registry: the worker model and effort come from the `prun-worker` row for Codex, and each run records what Codex reports in `<state-dir>/model-actual`. This directory keeps the September copies. The text below describes them as they were when archived.
+
 These three scripts ran a `prun` unit on a Codex worker. They are kept here, out of the skill tree, because the reason they stopped being used is a price, and a price can change back.
 
 | File | What it did |

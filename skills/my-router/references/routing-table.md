@@ -4,6 +4,7 @@
 
 | Skill | Triggers on | What it does |
 |---|---|---|
+| `agent-models` | which model or effort a role runs on, switching one, a setting that may not be taking effect | Show, check, and change the model and effort of every agent role through the one registry, `user/agent-models.json`; resolves values at run time and checks what each CLI actually ran on |
 | `bibref-filler` | citation/bibliography work | Add verified citations to `working.bib`, keep curated bib files stable |
 | `bibref-verify` | citation audit / verification before submission | Audit an existing `.bib` for hallucinated citations or stale metadata (fabricated authors, future arXiv IDs, already-published preprints); companion to `bibref-filler` |
 | `ci-mockup-figure` | HTML mockups, TikZ/skia-canvas figures, dashboards, Gantt charts | Build space-efficient figures via HTML capture or abstract figure toolchain |
@@ -12,7 +13,7 @@
 | `implement-review` | staged changes + review request | Multi-round review loop with Codex, content-aware lenses |
 | `my-router` | any task (this skill) | Detects context and dispatches to the right skill |
 | `readme-polish` | README audit / rewrite / modernize | Apply modern 2025-2026 GitHub README patterns (centered header, badges, hero image, callouts, emoji feature bullets, collapsibles, Mermaid, tables) |
-| `prun` | explicit parallel delegation / fan-out intent (not auto-routed by file type) | Fan out independent task units to Agy workers while the session coordinates; no Claude subagents, and Codex is reserved for `/vet`; workers never commit or push |
+| `prun` | explicit parallel delegation / fan-out intent (not auto-routed by file type) | Fan out independent task units to Agy workers by default, or to a Codex worker when the user names Codex for a unit, while the session coordinates; no Claude subagents; workers never commit or push |
 
 **Local-first rule:** If a project has a more specific local skill (e.g., `nsf-bibref-filler` alongside shared `bibref-filler`), always prefer the local version. Local skills are more customized for the project context.
 

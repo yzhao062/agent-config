@@ -43,6 +43,7 @@ The user's prompt often contains the clearest signal. Match keywords to skills:
 | "mockup", "HTML figure", "HTML mockup", "interactive figure", "dashboard mockup", "Gantt", "screenshotable figure", "capture mode", "skia-canvas", "TikZ figure", "arrow routing" | `ci-mockup-figure` | `skills/` (shared) |
 | "review staged", "review changes", "review the diff" | `implement-review` | `skills/` (shared) |
 | "polish README", "modernize README", "README audit", "README rewrite", "README badges", "README hero", "GitHub README patterns" | `readme-polish` | `skills/` (shared) |
+| "which model does", "what model runs", "switch the model", "change the model", "change the effort", "effort level", "model registry", "is the setting taking effect", "MODEL-MISMATCH" | `agent-models` | `skills/` (shared) |
 | "proposal", "nsf", "nih", "grant", "solicitation", "aim", "thrust" | Proposal skills (check for local `nsf-*`, `nih-*` skills first) | `reference-skills/` (project-local) |
 | "review paper", "peer review", "reviewer comments" | `cs-paper-review` | `reference-skills/` (project-local) |
 | "meta-review", "area chair", "AC decision" | `cs-meta-review` | `reference-skills/` (project-local) |
@@ -53,6 +54,8 @@ The user's prompt often contains the clearest signal. Match keywords to skills:
 When an explanatory figure request explicitly asks for PowerPoint or native editability, use `editable-figure` before the generic figure, proposal, README-polish, or slide routes. A request to simplify an existing editable figure stays on that route. A full slide deck still uses the presentation route, and an explicit SVG, TikZ, screenshot, or prompt-only request keeps its requested format. Before taking the route, check that the session can perform the desktop PowerPoint validation `editable-figure` requires. If it cannot, explain the limitation and offer `ci-mockup-figure` only when its output fits the request; do not silently substitute HTML for an explicitly requested PPTX.
 
 For a paper or proposal explanatory figure, especially an overview or "Figure 1", read `editable-figure/references/gallery/index.md` through the normal skill lookup. Do this whichever figure skill the route selects, including a project-local variant such as `nsf-figure-builder`. When working for Yue Zhao, enforce its required preference-first design protocol as the top design priority. Inspect selected images and feedback, map confirmed qualities to the new design, and carry that mapping into prompts and implementation. Compare the result against those references. Preserve the requested output format; reading the gallery does not require PowerPoint or change a prompt-only task into a figure build.
+
+A question about which model or effort an agent role runs on, a request to change one, or a doubt that a setting took effect goes to `agent-models`. Run its `show` and `doctor` commands before answering, and never state a model name or effort level from memory.
 
 ### 2. File types in working directory
 
@@ -127,6 +130,9 @@ When review is needed after domain skill execution:
 
 **User says:** "Make an editable PowerPoint overview figure for this proposal"
 Router selects `editable-figure`, applies the proposal context, and uses the available presentation tooling to build and inspect a native PPTX.
+
+**User says:** "Which model does the /vet reviewer run on, and is my effort change taking effect?"
+→ Router detects: keywords "which model" and "taking effect" → `agent-models`, which reads the registry with `show`, compares the live configs with `doctor`, and reads back what each CLI ran on with `verify`
 
 **User says:** "Make an overview figure for the proposal"
 → Router detects: keyword "figure" + "proposal" → checks for local `nsf-figure-builder` → if found, uses it; otherwise falls back to shared `figure-prompt-builder`

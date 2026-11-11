@@ -60,6 +60,8 @@ STRICT_MEMBERSHIP_FLOOR = (
     "tests/test_dispatch_codex.py",
     "tests/test_dispatch_gemini.py",
     "tests/test_dispatch_task_agy.py",
+    "tests/test_dispatch_task.py",
+    "tests/test_agent_models.py",
     "tests/test_dispatch_copilot.py",
     "tests/test_dispatch_claude.py",
     "tests/test_prun_deployed_path.py",
@@ -168,6 +170,8 @@ def _build_fake_tree(base: pathlib.Path):
         "scripts/generate_agent_configs.py": "# generator stub\n",
         "scripts/merge_settings.py": "# settings merge stub\n",
         "scripts/merge_codex_hooks.py": "# codex hooks merge stub\n",
+        "scripts/agent_models.py": "# model registry resolver stub\n",
+        "user/agent-models.json": "{}\n",
         "scripts/render_banner.py": "# banner renderer stub\n",
         "scripts/pack_identity.py": "# pack identity stub\n",
         "scripts/pre-push-smoke.sh": "#!/bin/bash\nexit 0\n",
@@ -208,6 +212,7 @@ def _build_fake_tree(base: pathlib.Path):
         "readme-polish",
         "prun",
         "editable-figure",
+        "agent-models",
     ):
         (ac / f"skills/{skill}").mkdir()
         (aa / f"skills/{skill}").mkdir()
@@ -358,6 +363,26 @@ class CheckParityBehavior(unittest.TestCase):
             rc, out = _run(ac, aa)
             self.assertEqual(rc, 1)
             self.assertIn("validate.yml", out)
+
+    def test_stale_rendered_settings_exit_1(self):
+        """user/settings.json differs by design, but its registry-rendered keys
+        must not go stale on either side: each tree's resolver checks its own."""
+        stub = "import sys\nsys.exit(1 if 'render' in sys.argv else 0)\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            ac, aa = _build_fake_tree(pathlib.Path(tmp))
+            (aa / "scripts/agent_models.py").write_text(stub)
+            (ac / "scripts/agent_models.py").write_text(stub)
+            rc, out = _run(ac, aa)
+            self.assertEqual(rc, 1, out)
+            self.assertIn("rendered keys are stale", out)
+
+    def test_missing_registry_exits_1(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ac, aa = _build_fake_tree(pathlib.Path(tmp))
+            (aa / "user/agent-models.json").unlink()
+            rc, out = _run(ac, aa)
+            self.assertEqual(rc, 1, out)
+            self.assertIn("user/agent-models.json", out)
 
     def test_missing_by_design_file_exits_1(self):
         with tempfile.TemporaryDirectory() as d:

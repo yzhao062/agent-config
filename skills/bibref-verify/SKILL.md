@@ -43,6 +43,8 @@ Per-agent prompt must include:
 
 Dispatch all agents in a single message with multiple Agent tool calls so they run concurrently.
 
+Every Pass A and Pass D agent runs on the registry's worker model (`user/agent-models.json`, see the `agent-models` skill). Each Agent call passes `model=<resolved alias>` explicitly, from `<python> <resolver> resolve --family claude --role worker --field model`. Find `<resolver>` under the project root at `.agent-config/repo/scripts/agent_models.py` (a consumer), else `scripts/agent_models.py` (a source repo). If it cannot answer, stop and name the registry; do not pick a model by hand. After the agents return, read `message.model` in each transcript under `<claude-config-dir>/projects/<project>/<session>/subagents/`; an alias such as `sonnet` matches an id `claude-sonnet-*`. A recorded model that differs is `MODEL-MISMATCH`, and a transcript that records none is `MODEL-UNVERIFIED`. State either in the status line of `REFERENCE-CHECK.md`.
+
 ### Pass B known false positives
 
 S2 has weak indexing for several categories. Treat S2 NOT-FOUND on these as INCONCLUSIVE, not HALLUCINATION:

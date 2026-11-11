@@ -1,9 +1,9 @@
 {
   "captured_date": "2026-10-01",
   "purpose": "Allowlisted reference only; merge intentionally after reinstall. Not a complete config.",
+  "models": "Model and effort are not stored here. user/agent-models.json in agent-config is the single source for every agent; bootstrap writes it into ~/.claude/settings.json, ~/.codex/config.toml, and the Antigravity settings file. Do not merge model or effort keys back from an older snapshot, because the next bootstrap would overwrite them. The values the old Mac held on 2026-10-01 are recorded in docs/mac-mouse-preferences.md.",
+  "revised_date": "2026-11-10",
   "codex": {
-    "model": "gpt-6-astra",
-    "model_reasoning_effort": "high",
     "service_tier": "default",
     "approval_policy": "on-request",
     "project_doc_max_bytes": 262144,
@@ -24,19 +24,13 @@
     }
   },
   "claude": {
-    "effortLevel": "xhigh",
     "theme": "auto",
     "feedbackDrafts": "off",
     "env": {
-      "CLAUDE_CODE_EFFORT_LEVEL": "xhigh",
       "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "65",
-      "CLAUDE_CODE_SUBAGENT_MODEL": "sonnet",
       "CLAUDE_CODE_MAX_WEB_SEARCHES_PER_SESSION": "1000",
       "IMPLEMENT_REVIEW_DEFAULT_CHANNEL": "auto",
       "IMPLEMENT_REVIEW_DEFAULT_REVIEWER": "both"
     }
-  },
-  "agy": {
-    "model": "Gemini 3.8 Flash (High)"
   }
 }
