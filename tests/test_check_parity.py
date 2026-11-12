@@ -64,7 +64,6 @@ STRICT_MEMBERSHIP_FLOOR = (
     "tests/test_dispatch_task_grok.py",
     "tests/test_dispatch_task.py",
     "tests/test_agent_models.py",
-    "tests/test_dispatch_copilot.py",
     "tests/test_dispatch_claude.py",
     "tests/test_prun_deployed_path.py",
     "tests/test_health_check.py",

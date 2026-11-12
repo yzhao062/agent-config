@@ -19,6 +19,10 @@ track what changed between runs.
 - The banned-word gate in `scripts/guard.py` covers prose written through a shell. A `Bash` or `PowerShell` command that writes a prose file through a redirection, `tee`, an in-place `sed` or `perl`, or a PowerShell content cmdlet is denied when its text carries a banned word. Before, a heredoc into a Markdown file passed while the same text through `Write` was denied. Targets come from a small lexer, so a redirection spelled inside quotes, a comment, or a heredoc body is not a write. The target path meets the `Write` scope test, so a scratch `agent-io` path stays exempt. A script that opens the file itself stays unread.
 - The style advisory reports the line numbers of the file that was written. Blanking fenced code, inline code, and LaTeX verbatim used to collapse a multi-line span to one space, which moved every later line up. Each blank now keeps the newlines of the span it replaces.
 
+### Removed
+- The GitHub Copilot reviewer backend of `/vet`: the `copilot` reviewer token, `dispatch-copilot.{sh,ps1}`, their tests, and the backend's place in the failover queue, which is now Codex, Antigravity, Claude Code. Where a rule fell back to Copilot, it now falls back to Agy.
+- The Plugin path of `/vet`, the channel that had the user paste the review prompt into the Codex IDE sidebar, and the `plugin` argument hint. Terminal-relay still takes a review from any tool that honors the `Review-<AgentName>.md` save contract.
+
 ## 2026-04-29
 
 ### Changed

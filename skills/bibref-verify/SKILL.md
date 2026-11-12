@@ -106,7 +106,7 @@ For every non-VERIFIED entry, include a ready-to-paste fix as a fenced BibTeX bl
 
 - `<skill-dir>/scripts/verify-bib-s2.py`, where `<skill-dir>` is the directory containing this `SKILL.md` (`skills/bibref-verify` in a source checkout, `.claude/skills/bibref-verify` after pack deployment); uses Python stdlib only, no third-party deps
 - `S2_API_KEY` in `.env` at the repo root (or as a user-level env var)
-- Codex availability for Pass C (terminal channel or IDE plugin)
+- Codex availability for Pass C (Terminal-relay or Auto-terminal channel)
 - `WebSearch` and `WebFetch` tools available to parallel agents
 
 Graceful degradation:
