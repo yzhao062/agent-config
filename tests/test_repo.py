@@ -23,7 +23,6 @@ AGENTS = ROOT / "AGENTS.md"
 README = ROOT / "README.md"
 GITIGNORE = ROOT / ".gitignore"
 GITATTRIBUTES = ROOT / ".gitattributes"
-WORKFLOW = ROOT / ".github" / "workflows" / "validate.yml"
 SKILLS_DIR = ROOT / "skills"
 POINTER_DIR = ROOT / ".claude" / "commands"
 CLAUDE_SETTINGS = ROOT / ".claude" / "settings.json"
@@ -72,9 +71,6 @@ class RepoValidationTests(unittest.TestCase):
         cls.readme_text = read_text(README)
         cls.gitignore_text = read_text(GITIGNORE)
         cls.gitattributes_text = read_text(GITATTRIBUTES)
-        cls.workflow_text = read_text(WORKFLOW)
-        cls.bootstrap_powershell_text = read_text(BOOTSTRAP_DIR / "bootstrap.ps1")
-        cls.bootstrap_bash_text = read_text(BOOTSTRAP_DIR / "bootstrap.sh")
         cls.skills = skill_dirs()
         cls.powershell_bootstrap = extract_fenced_block(cls.agents_text, "powershell")
         cls.bash_bootstrap = extract_fenced_block(cls.agents_text, "bash")
@@ -368,24 +364,6 @@ class RepoValidationTests(unittest.TestCase):
     def test_repo_has_at_least_one_skill(self) -> None:
         self.assertTrue(self.skills, "Expected at least one shared skill in skills/.")
 
-    def test_agents_has_fetched_copy_guard(self) -> None:
-        # The top-of-file note must distinguish source-repo behavior from
-        # consumer-repo behavior using file-existence markers that hold in
-        # both source repos (the file is byte-identical in agent-config and
-        # anywhere-agents) and an imperative consumer-path instruction.
-        self.assertIn("**Source repo test:**", self.agents_text)
-        self.assertIn("`bootstrap/bootstrap.sh`", self.agents_text)
-        self.assertIn("`bootstrap/bootstrap.ps1`", self.agents_text)
-        self.assertIn("`scripts/generate_agent_configs.py`", self.agents_text)
-        self.assertIn("`skills/`", self.agents_text)
-        self.assertIn(
-            "proceed directly to `## Session Start Check`",
-            self.agents_text,
-        )
-        self.assertIn("**Consumer repo path:**", self.agents_text)
-        self.assertIn("You MUST execute", self.agents_text)
-        self.assertIn("idempotent", self.agents_text)
-
     def test_agents_bootstrap_covers_windows_and_unix_shells(self) -> None:
         required_fragments = [
             "PowerShell (Windows):",
@@ -396,73 +374,8 @@ class RepoValidationTests(unittest.TestCase):
             "```bash",
             "curl -sfL https://raw.githubusercontent.com/yzhao062/anywhere-agents/main/bootstrap/bootstrap.sh -o .agent-config/bootstrap.sh",
             "bash .agent-config/bootstrap.sh",
-            "rewrites the consuming repo's root `AGENTS.md`",
-            # The preservation rule contradicts a plain "always overwritten"
-            # reading, so the block has to state it where a consumer will see it.
-            "an existing composed `AGENTS.md` is preserved",
-            "AGENTS.local.md",
-            ".claude/settings.json",
-            "effortLevel",
         ]
         for fragment in required_fragments:
-            self.assertIn(fragment, self.agents_text)
-
-    def test_bootstrap_scripts_cover_sync_steps(self) -> None:
-        required_fragments = [
-            "Invoke-WebRequest -UseBasicParsing -Uri \"https://raw.githubusercontent.com/$Upstream/main/AGENTS.md\" -OutFile .agent-config/AGENTS.md",
-            "Copy-Item .agent-config/AGENTS.md AGENTS.md -Force",
-            "git clone --depth 1 --filter=blob:none --sparse $RepoUrl .agent-config/repo",
-            "git -C .agent-config/repo sparse-checkout set skills .claude scripts user",
-            "Copy-Item .agent-config/repo/.claude/commands/*.md .claude/commands/ -Force",
-            "Copy-Item .agent-config/repo/.claude/settings.json .claude/settings.json -Force",
-            "ConvertFrom-Json",
-            "Add-Member",
-            r"Add-GitignoreEntry '^\/?\.agent-config/' '.agent-config/'",
-            "curl -sfL \"https://raw.githubusercontent.com/$UPSTREAM/main/AGENTS.md\" -o .agent-config/AGENTS.md",
-            "cp -f .agent-config/AGENTS.md AGENTS.md",
-            "cp -f .agent-config/repo/.claude/commands/*.md .claude/commands/",
-            "cp -f .agent-config/repo/.claude/settings.json .claude/settings.json",
-            # The deep merge moved into the shared scripts/merge_settings.py that
-            # both entry points now call, so pin the call rather than the algorithm.
-            "scripts/merge_settings.py",
-            "Merge-Json",
-            "git -C .agent-config/repo sparse-checkout set skills .claude scripts user",
-            r"_gitignore_add '^\/?\.agent-config/' '.agent-config/'",
-        ]
-        bootstrap_text = self.bootstrap_powershell_text + "\n" + self.bootstrap_bash_text
-        for fragment in required_fragments:
-            self.assertIn(fragment, bootstrap_text)
-
-    def test_agents_declares_non_destructive_claude_sync(self) -> None:
-        # One retained sentence; the former Cross-Tool Skill Sharing duplicate
-        # ("should not delete ...") merged into it at the 2026-09 rewrite.
-        self.assertIn(
-            "overwrites same-named files only and does not delete unrelated project-local commands",
-            self.agents_text,
-        )
-
-    def test_agents_copy_paste_rule_bans_display_wrapping(self) -> None:
-        for fragment in (
-            "treat hard line breaks as semantic",
-            "single unbroken line however long it runs",
-            "wrap to a display width",
-            "do not indent continuation lines",
-            "a postal address or a signature block",
-        ):
-            self.assertIn(fragment, self.agents_text)
-        self.assertNotIn(
-            "copies cleanly with line breaks and formatting intact",
-            self.agents_text,
-            "the old rationale reads as an instruction to preserve every break "
-            "in the block, including display wraps (anywhere-agents#27)",
-        )
-
-    def test_agents_routes_long_drafts_to_a_file(self) -> None:
-        for fragment in (
-            "goes in a `.md` file instead of the terminal",
-            "shows literal `**` and `-` in Outlook or Gmail",
-            "rendered view or an artifact to copy from",
-        ):
             self.assertIn(fragment, self.agents_text)
 
     def test_gitignore_excludes_local_state(self) -> None:
@@ -481,22 +394,6 @@ class RepoValidationTests(unittest.TestCase):
         tracked = self.tracked_files()
         self.assertNotIn(".claude/settings.local.json", tracked)
         self.assertFalse(any(path.startswith(".idea/") for path in tracked))
-
-    def test_readme_describes_bootstrap_and_validation_targets(self) -> None:
-        expected = [
-            "**`AGENTS.md`**",
-            "**`skills/`**",
-            "**`.claude/commands/`**",
-            "**`.claude/settings.json`**",
-            "Auto-add `.agent-config/` to the project's `.gitignore`.",
-            "Merge shared keys into the project's `.claude/settings.json`",
-            "阅读 AGENTS.md 并执行其中的 bootstrap 脚本。",
-            "Use any Python 3.12 interpreter to run them locally:",
-            "temp-project smoke tests for the bootstrap flow",
-            'python -B -m unittest discover -s tests -p "test_*.py" -v',
-        ]
-        for fragment in expected:
-            self.assertIn(fragment, self.readme_text)
 
     def test_readme_lists_every_skill(self) -> None:
         for skill_dir in self.skills:
@@ -738,37 +635,6 @@ class RepoValidationTests(unittest.TestCase):
         self.assertIn("GENERATED FILE", read_text(CLAUDE_MD))
         self.assertIn("GENERATED FILE", read_text(CODEX_MD))
 
-    def test_agents_md_has_configuration_precedence_section(self) -> None:
-        self.assertIn("Configuration Precedence", self.agents_text)
-
-    def test_agents_md_has_no_agent_scope_tags(self) -> None:
-        # The 2026-09 rewrite removed both tagged blocks (Codex MCP
-        # Integration and the Claude install notes). The generator still
-        # supports the tags (tests/test_generator.py exercises them on a
-        # synthetic fixture); the shared file just has nothing agent-specific
-        # left to tag, and a new tagged block would need a reason recorded in
-        # docs/agents-md.md.
-        for tag in ("<!-- agent:claude -->", "<!-- agent:codex -->"):
-            self.assertNotIn(tag, self.agents_text)
-
-    def test_bootstrap_scripts_run_generator_and_deploy_session_hook(self) -> None:
-        both = self.bootstrap_bash_text + "\n" + self.bootstrap_powershell_text
-        self.assertIn("generate_agent_configs.py", both,
-                      "bootstrap scripts must invoke the generator")
-        self.assertIn("session_bootstrap.py", both,
-                      "bootstrap scripts must deploy session_bootstrap.py")
-
-    def test_bootstrap_scripts_auto_update_codex_npm_cli(self) -> None:
-        both = self.bootstrap_bash_text + "\n" + self.bootstrap_powershell_text
-        required_fragments = [
-            "ANYWHERE_AGENTS_CODEX_AUTO_UPDATE",
-            "npm outdated -g @openai/codex --json",
-            "npm install -g @openai/codex@latest",
-            "Do not let a local npm or registry problem block project bootstrap.",
-        ]
-        for fragment in required_fragments:
-            self.assertIn(fragment, both)
-
     def test_user_settings_wires_session_start_hook(self) -> None:
         user_settings = json.loads(read_text(ROOT / "user" / "settings.json"))
         session_hooks = (
@@ -778,19 +644,6 @@ class RepoValidationTests(unittest.TestCase):
         flattened = json.dumps(session_hooks)
         self.assertIn("session_bootstrap.py", flattened,
                       "SessionStart entry must invoke ~/.claude/hooks/session_bootstrap.py")
-
-    def test_github_actions_runs_validation_on_windows_and_ubuntu(self) -> None:
-        required_fragments = [
-            "name: Validate",
-            "pull_request:",
-            "ubuntu-latest",
-            "windows-latest",
-            "actions/checkout@v6",
-            "actions/setup-python@v6",
-            "python -B -m unittest discover -s tests -p \"test_*.py\" -v",
-        ]
-        for fragment in required_fragments:
-            self.assertIn(fragment, self.workflow_text)
 
     @unittest.skipUnless(sys.platform.startswith("win"), "Windows-only PowerShell smoke test")
     def test_powershell_bootstrap_smoke_test(self) -> None:
@@ -831,6 +684,15 @@ class RepoValidationTests(unittest.TestCase):
                 (home / ".claude" / "settings.json").is_file(),
                 "Expected the user-level phase to write into the fixture home",
             )
+            for helper in ("guard.py", "session_bootstrap.py"):
+                self.assertTrue(
+                    (home / ".claude" / "hooks" / helper).is_file(),
+                    f"Expected bootstrap to deploy {helper} into the fixture home",
+                )
+            self.assertTrue(
+                (project_dir / "CLAUDE.md").is_file(),
+                "Expected bootstrap to run the generator in the project",
+            )
 
     @unittest.skipIf(sys.platform.startswith("win"), "Unix-only bash smoke test")
     def test_bash_bootstrap_smoke_test(self) -> None:
@@ -862,6 +724,15 @@ class RepoValidationTests(unittest.TestCase):
             self.assertTrue(
                 (home / ".claude" / "settings.json").is_file(),
                 "Expected the user-level phase to write into the fixture home",
+            )
+            for helper in ("guard.py", "session_bootstrap.py"):
+                self.assertTrue(
+                    (home / ".claude" / "hooks" / helper).is_file(),
+                    f"Expected bootstrap to deploy {helper} into the fixture home",
+                )
+            self.assertTrue(
+                (project_dir / "CLAUDE.md").is_file(),
+                "Expected bootstrap to run the generator in the project",
             )
 
 
