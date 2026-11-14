@@ -93,6 +93,7 @@ STRICT_MEMBERSHIP_FLOOR = (
     "tests/test_monitor.py",
     "tests/test_shell_nounset_arrays.py",
     "tests/test_skill_size.py",
+    "tests/test_codex_skill_link.py",
 )
 
 
