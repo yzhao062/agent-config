@@ -143,6 +143,22 @@ VibeSignal 的 widget 由下文 LaunchAgent 启动，状态目录为 `~/.vibesig
 
 这里仅记录定时任务的存放位置和状态数量，没有创建、变更或启用任何自动任务。私有备份应保留任务定义及所需本地历史；恢复后通过应用检查，而不是手写旧 thread ID 重新注册。
 
+### Codex 切换账号后恢复 Projects 和置顶项目
+
+2026-11-08 在同一台 Mac 切换账号后，Recents 里的旧对话可以继续，Projects 却显示 `No projects`。当时 `list_projects` 仍能列出 21 个本地项目。通过侧栏接口将一个已有项目放回 Projects，再用 `reorder_sidebar_projects` 保存这 21 个项目的现有顺序后，窗口重新显示项目和其中的旧对话。两步之间没有检查窗口，无法确定哪一步触发了刷新。
+
+项目置顶单独保存。本次只读检查 `~/.codex/.codex-global-state.json` 时，旧账号快照的 `globals.pinned-project-ids` 有 5 项，当前账号没有这个字段。恢复项目列表后，`list_threads` 返回的 Pinned 里仍只有 4 条聊天。用旧快照的 `local-projects` 把置顶 ID 对应到本地目录，再从当前 `list_projects` 取对应 ID，对每个项目调用 `move_project_to_sidebar_section`，目标为 `pinned`。回读 Pinned，确认原有 4 条聊天和这 5 个项目均在其中：`NSF-Proposal-Template-Yue`、`teaching-materials`、`internal-writing`、`usc-email`、`research-impact`。
+
+复查时分别核对项目列表、旧对话归属和 Pinned 成员。应用运行时可能覆盖手写的侧栏配置，恢复操作使用应用接口。此次确认了两个账号保存的置顶状态有差异；Projects 最初显示为空的具体原因，以及再次切换账号后的保持情况，仍待验证。
+
+### 项目可见，但项目下的旧对话消失
+
+2026-11-13，侧栏有两个指向同一目录的 `agent-config`。用 `list_threads` 的 history 模式按目录找到 10 条未归档对话，以当前对话的项目 ID 确定要恢复到哪个同名项目。侧栏接口能关联其中 1 条，对其余 8 条返回 `The task is not available in the sidebar`。8 条的历史文件都在，检查 `rollout_path` 时还要查同路径的 `.jsonl.zst` 压缩文件。
+
+本机有两处记录需要一致。先从 `app-server-project-id-by-legacy-project-id-by-host` 找到当前侧栏项目对应的服务端项目 ID，用 `thread/metadata/update` 为这 8 条设置 `projectId`。重开后服务端归属仍正确，但 `~/.codex/.codex-global-state.json` 的 `projectless-thread-ids` 仍列着它们，窗口也没有显示。
+
+本次有效的做法是用独立于桌面应用的进程等待应用完全退出，然后重新读取最新的 JSON。仅对已核实的 8 条，在 `thread-project-assignments` 设置 `projectKind: local` 和当前侧栏项目 ID，在 `thread-project-membership-host-ids` 设置 `local`，并从 `projectless-thread-ids` 移除。原子替换文件后逐条回读，确认修复进程已运行，再打开应用。用户在窗口确认 8 条旧对话已回到目标项目。用 `launchctl submit` 等待退出时，验收后用 `launchctl remove` 移除临时任务，以免重复运行。
+
 ## 无人值守 CLI 更新和 VibeSignal 启动
 
 2026-10-01 已保存当前本机脚本和两个自建 LaunchAgent 的原样副本，供恢复时使用：
