@@ -72,11 +72,11 @@ U6 also lists missing tests: wrong-round output through publication and intake, 
 
 | ID | Finding | Severity | Found by | Status | Main location |
 |---|---|---|---|---|---|
-| PR-1 | Codex `dispatch-task` lacks the Agy interface it is said to match | High | U2, U5 | verified (code, this run) | `dispatch-task.sh:123-135`; `SKILL.md:331-332` |
+| PR-1 | Codex `dispatch-task` lacks the Agy interface it is said to match | High | U2, U5 | verified (code, this run); fixed in a follow-up | `dispatch-task.sh:123-135`; `SKILL.md:331-332` |
 | PR-2 | Grok fallback overwrites a result the worker wrote | High | U2, U5 | verified (code) | `dispatch-task-grok.py:1060-1072` |
 | PR-3 | Grok fails every unit launched with `--add-dir` | High | Workflow | verified (6 units on disk, one batch) | `dispatch-task-grok.py:916-917`; `grok-executor.md:22` |
 | PR-4 | Agy has no idle reaper; a stall runs to the 2,700 s print timeout | High | U5 | code reading | `dispatch-task-agy.py` |
-| PR-5 | Agy and Codex worker preambles omit the skip-bootstrap line | Medium | U2, U5 | verified (code) | `dispatch-task-grok.py:637` has it |
+| PR-5 | Agy and Codex worker preambles omit the skip-bootstrap line | Medium | U2, U5 | verified (code); Codex half fixed in a follow-up | `dispatch-task-grok.py:637` has it |
 | PR-6 | "Usable result" is undefined; `gather` reports DONE on a FALLBACK | Medium | U2, U5 | code reading | `SKILL.md` flow step 6 |
 | PR-7 | Transient failures get no automatic retry | Medium | Workflow | measured | Agy and Grok dispatchers |
 | PR-8 | Batches run through hand-written loops the flow does not describe | Medium | Workflow | measured | `SKILL.md` flow |
@@ -88,7 +88,7 @@ U6 also lists missing tests: wrong-round output through publication and intake, 
 | PR-14 | Default stall threshold overridden in 40% of monitor launches | Low | Workflow | measured | `monitor.sh` default 600 s |
 | PR-15 | Registry exit codes, preflight order, a redundant `agy --version` | Low | U2 | code reading | `dispatch-task-agy.py` |
 
-**PR-1.** The Codex dispatcher accepts only `--prompt-file`, `--result-file`, and `--unit-id`, and exits on anything else (`dispatch-task.sh:123-135`). It therefore takes no `--mode`, `--add-dir`, or `--continue-from`, so a Codex unit gets no follow-up turn. Nor does it add a worker preamble, tell the worker the result path, or refuse an existing result file, and its FALLBACK carries the whole stream tail. `SKILL.md:331-332` says the arguments "match the Agy dispatcher". This run reproduced the cost: U1 and U6 wrote their results inside their clones, the dispatcher saw no result, and it published FALLBACK files of 976 KB and 388 KB. V1 succeeded only because its prompt named the absolute result path. Outside this audit the dispatcher ran zero times since 2026-09-13, while 261 hand-typed `codex exec` calls appear in 30 sessions that also invoked `/prun`; the data cannot say whether any were meant as units. Fix: correct `SKILL.md:331-332` and require the absolute result path in every Codex unit prompt.
+**PR-1.** The Codex dispatcher accepts only `--prompt-file`, `--result-file`, and `--unit-id`, and exits on anything else (`dispatch-task.sh:123-135`). It therefore takes no `--mode`, `--add-dir`, or `--continue-from`, so a Codex unit gets no follow-up turn. Nor does it add a worker preamble, tell the worker the result path, or refuse an existing result file, and its FALLBACK carries the whole stream tail. `SKILL.md:331-332` says the arguments "match the Agy dispatcher". This run reproduced the cost: U1 and U6 wrote their results inside their clones, the dispatcher saw no result, and it published FALLBACK files of 976 KB and 388 KB. V1 succeeded only because its prompt named the absolute result path. Outside this audit the dispatcher ran zero times since 2026-09-13, while 261 hand-typed `codex exec` calls appear in 30 sessions that also invoked `/prun`; the data cannot say whether any were meant as units. Fix: correct `SKILL.md:331-332` and require the absolute result path in every Codex unit prompt. A follow-up change the same day took a different route: the dispatcher now tells the worker how its result is collected and publishes the worker's final message, so a prompt needs no path (see the decisions at the end).
 
 **PR-2.** On a nonzero exit, `dispatch-task-grok.py` saves the worker's final response beside the result, then calls `publish_fallback`, which replaces the result file the worker wrote. The Agy twin returns early when a non-empty result exists (`dispatch-task-agy.py:867-868`). Its test covers the success path only. Fix: return early as Agy does, and add the nonzero-exit test.
 
@@ -96,7 +96,7 @@ U6 also lists missing tests: wrong-round output through publication and intake, 
 
 **PR-4.** Codex and Grok units are reaped at `PRUN_STALL_THRESHOLD`, but an Agy unit that stops producing output runs until `--print-timeout` (2,700 s). Re-dispatching a stalled Agy unit then doubles its spend. Either add the idle reaper or say in `SKILL.md` that an Agy stall must be stopped before it is re-dispatched.
 
-**PR-5.** Grok's preamble tells the worker to skip bootstrap, banner, session-start, and router steps (`dispatch-task-grok.py:637-641`); Agy and Codex preambles do not. In a clone of a consumer repository, a worker that follows `AGENTS.md` would run bootstrap, rewrite the generated rule files in the clone, and refresh files under `~/.claude`. Fix: add the same line to both preambles.
+**PR-5.** Grok's preamble tells the worker to skip bootstrap, banner, session-start, and router steps (`dispatch-task-grok.py:637-641`); Agy and Codex preambles did not; the follow-up gave the Codex executor Grok's preamble, so only Agy lacks it. In a clone of a consumer repository, a worker that follows `AGENTS.md` would run bootstrap, rewrite the generated rule files in the clone, and refresh files under `~/.claude`. Fix: add the same line to both preambles.
 
 **PR-6.** Flow step 6 asks for a "usable result" without defining it or checking the dispatcher's exit code, and `gather` reports DONE for a FALLBACK file. Exit 75 writes `STATE-DIR` and a FALLBACK but no `model` file. Fix: define a usable result as exit 0 plus a result whose first line is not a FALLBACK header, and make `gather` report FALLBACK as its own state.
 
@@ -195,8 +195,8 @@ Two configuration changes go with the fixes. The maintainer's reviewer default (
 
 Everything else stays recorded here and unchanged. IR-5 (Check 8 noise) is the first candidate if the warning rate becomes a problem; it touches a pattern list tuned over several rounds, so it needs its own labeled sample before a change. Milestone B (IR-6) remains a separate decision.
 
-Three decisions belong to the maintainer:
+Three decisions belonged to the maintainer. Two were settled the same day:
 
-- whether PR-1 ports the Agy interface to Codex, documents Codex as a single-turn executor, or deletes it (Milestone C);
-- whether the 261 hand-typed `codex exec` calls in `/prun` sessions were meant as units;
-- whether Milestone B accepts the 103 KB core or also trims coordinator steps to reach the 75 to 80 KB target.
+- **PR-1, decided 2026-11-14: keep Codex as a single-turn executor and fix what failed.** The maintainer uses Codex in `prun` occasionally, so deletion was rejected, and no evidence asks for a Codex follow-up turn, so the full Agy interface was not ported. A follow-up change gives `dispatch-task.{sh,ps1}` the worker preamble, publishes the worker's final message (`codex exec --output-last-message`) as the result the way Agy does, refuses an existing result path, and bounds the `FALLBACK` to the final message and the last 200 lines of the tail; `SKILL.md` now says the executor takes only three arguments.
+- **The 261 hand-typed `codex exec` calls, closed by the data.** The Codex executor was archived on 2026-09-18 and restored on 2026-11-10. Of the 261 calls, 245 (in 30 sessions) fall in the 53 days it did not exist, and 16 (in 4 of those same 30 sessions) come after it returned; 95 of the 245 commands also mention a review, so many were second opinions rather than units. The split reruns the Workflow's count of hand-typed `codex exec` commands (dispatchers excluded) in `/prun` sessions since 2026-09-20, divided at 2026-11-10. They record the gap, not an ongoing bypass, and the fix above is what keeps the dispatcher the easier path.
+- **Milestone B stays open.** The recommendation is the 103 KB core with every step a coordinator runs each round in the first 60 KB, done as its own change with a plan review first.
