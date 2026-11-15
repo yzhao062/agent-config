@@ -6,6 +6,9 @@ __pycache__/
 # Per-session planning / review scratch. These accumulate over time; the
 # wildcards keep the committed tree clean without needing per-file edits.
 PLAN-*.md
+# git ignores case-insensitively on macOS and Windows, so `PLAN-*.md` would
+# also hide the shipped skills/implement-review/references/plan-review.md.
+!skills/*/references/plan-review.md
 Review-*.md
 CodexReview.md
 # Reviewers write to a dotted temp file and rename it over the target, so a
