@@ -19,7 +19,7 @@
     "shell_environment_policy": {
       "set": {
         "IMPLEMENT_REVIEW_DEFAULT_CHANNEL": "auto",
-        "IMPLEMENT_REVIEW_DEFAULT_REVIEWER": "all"
+        "IMPLEMENT_REVIEW_DEFAULT_REVIEWER": "both"
       }
     }
   },
@@ -30,7 +30,7 @@
       "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "65",
       "CLAUDE_CODE_MAX_WEB_SEARCHES_PER_SESSION": "1000",
       "IMPLEMENT_REVIEW_DEFAULT_CHANNEL": "auto",
-      "IMPLEMENT_REVIEW_DEFAULT_REVIEWER": "all"
+      "IMPLEMENT_REVIEW_DEFAULT_REVIEWER": "both"
     }
   }
 }
