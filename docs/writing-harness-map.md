@@ -35,7 +35,7 @@ Before adding or changing anything that shapes how an agent writes, find its hom
 | | The same gate on `apply_patch` and shell writes | `scripts/guard.py` (`main_codex`) | every prose write | Codex, once the user trusts the hook |
 | | `agent-style` advisory, release-gated: RULE-03 from 0.6.0, RULE-A from 0.7.0, the RULE-12 and RULE-08 document profiles from 0.8.0 | `scripts/guard.py` with the installed `agent_style` package | every `Write`, `Edit`, or `MultiEdit` to prose | Claude Code only |
 | Review | `/vet` with its pre-review style audit and lenses | `skills/implement-review/` (`scripts/style-audit.py`, `references/review-lenses.md`) | on command, before a commit | any coordinator, cross-vendor reviewers |
-| | Venue-calibrated three-agent panel | `agent-pack/skills/venue-review-panel/` | on command | Claude Code, Codex, Agy |
+| | Venue-calibrated review panel | `agent-pack/skills/venue-review-panel/` | on command | Claude Code, Codex, Agy, Grok |
 | | Citation audit | `agent-pack/skills/bibref-verify/` | on command | Claude Code, Codex |
 | | `agent-style review` CLI: deterministic checks on any file; `--polish` needs a skill host | `agent-style/packages/pypi/agent_style/cli.py`, installed with the package | on command, in any repository | any agent with a shell |
 | | `style-review` skill: semantic review and a revised copy beside the file | `agent-style/skills/style-review/` | on command, inside the `agent-style` repository only | Claude Code |
