@@ -37,7 +37,7 @@ Before adding or changing anything that shapes how an agent writes, find its hom
 | | Citation audit | `agent-pack/skills/bibref-verify/` | on command | Claude Code, Codex |
 | | `agent-style review` CLI: deterministic checks on any file; `--polish` needs a skill host | `agent-style/packages/pypi/agent_style/cli.py`, installed with the package | on command, in any repository | any agent with a shell |
 | | `style-review` skill: semantic review and a revised copy beside the file | `agent-style/skills/style-review/` | on command, inside the `agent-style` repository only | Claude Code |
-| Polish | `/polish`: review, edit in place, recheck, report | `agent-pack/skills/polish/` | on command | Claude Code edits; under Codex it reviews and reports, and the edits go to Claude or the user, as the profile pack says |
+| Polish | `/polish`: review, edit in place, recheck, report | `agent-pack/skills/polish/` | on command | whichever agent runs it as coordinator edits, Claude Code or Codex; the request overrides the profile pack's Claude-drafts default |
 | | `readme-polish`: README layout and structure | `skills/readme-polish/` | on command | any |
 | Evidence and decisions | Habit bench, House Style bench, human baseline | `agent-style/docs/bench-habit-v0.5.0.md`, `docs/bench-house-style.md`, `scripts/human-baseline/` | manual | |
 | | Defensive-writing trial, expected-utility pilot, slimming audit | `agent-config/docs/followups/2026-10-06-defensive-writing-trial.md`, `2026-10-25-eu-guidance-pilot.md`, `2026-10-18-harness-slimming-audit.md` | manual | |
