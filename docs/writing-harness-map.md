@@ -11,7 +11,7 @@ Before adding or changing anything that shapes how an agent writes, find its hom
 | A general writing rule, for any author | `agent-style/RULES.md`, then `agent-style/scripts/build-compact.py` regenerates `docs/rule-pack-compact.md` | an `agent-style` release, then the default ref in `anywhere-agents/bootstrap/packs.yaml` |
 | A rule against defensive writing (a caveat tail, underclaiming, stacked figures, a defense nobody asked for, growth without new content) | RULE-08 and RULE-03 in `agent-style/RULES.md` | every other home of the concern that the change touches: the one-line bullets in the Writing Defaults of `AGENTS.md`, the Paper preamble, Paper items 4 and 8, and General item 8 in `review-lenses.md`, Revision Discipline in `agent-pack/docs/paper-workflow.md`, step 3 of `/polish`, and `venue-review-panel/references/review-protocol.md`; evidence goes to `docs/followups/2026-10-06-defensive-writing-trial.md` |
 | A habit of the maintainer's own voice | the House Style section of `agent-style/RULES.md`, which every consumer loads | `agent-pack/skills/author-voice` when the habit is section-level: `references/templates.md`, `references/exemplars.md`, and the ranges in `scripts/voice_check.py` |
-| A word to ban | the Writing Defaults list in `agent-config/AGENTS.md` | the banned list in `scripts/guard.py`; both files mirror to `anywhere-agents`, and no test checks that the two lists agree |
+| A word to ban | the Writing Defaults list in `agent-config/AGENTS.md` | the banned list in `scripts/guard.py`, which `style-audit.py` also reads; both files mirror to `anywhere-agents`, and `tests/test_style_audit.py` fails when the two lists disagree |
 | A mechanical check | a detector in `agent-style/packages/pypi/agent_style/review/detectors_mech.py` and its twin in `packages/npm/lib/review/detectors_mech.js` | the release gate in `scripts/guard.py` that turns the detector on for the advisory; `style-audit.py` inherits that gate |
 | A review criterion | `skills/implement-review/references/review-lenses.md` (Paper, Proposal, or General) | `venue-review-panel/references/` in `agent-pack` when the venue panel should apply it too |
 | A paper or proposal process rule (revision discipline, venue conventions) | `agent-pack/docs/paper-workflow.md` | `agent-pack/docs/paper-workflow-compact.md`, which consumers load |
@@ -52,7 +52,7 @@ Before adding or changing anything that shapes how an agent writes, find its hom
 | Concern | Rule text the agent reads | Check the skill runs |
 |---|---|---|
 | Author voice | the House Style in the composed `AGENTS.md`; `author-voice` templates and exemplars for an abstract, introduction, or conclusion | `author-voice/scripts/voice_check.py`, papers and proposals only |
-| Banned words | the Writing Defaults list in `AGENTS.md` | `style-audit.py`; the guard hook also blocks them at write time |
+| Banned words | the Writing Defaults list in `AGENTS.md` | `style-audit.py`, which takes the list and its close variants from `guard.py`; the guard hook also blocks them at write time |
 | `agent-style` rules | the composed rule pack | `implement-review/scripts/style-audit.py`, which takes the release-gated detector set from `guard.py` and runs it from the installed `agent_style` package |
 | Defensive writing | RULE-08 and RULE-03, Revision Discipline, the review lenses named in the first table | the RULE-08 repeated-caveat detector inside `style-audit.py`, and the word count against the last commit |
 | The edit itself | step 3 of the skill, which holds the limits on an edit | none; the coordinating agent edits, Claude Code or Codex |
@@ -83,11 +83,8 @@ Consumers add genre-specific pieces of their own. Each belongs in its repository
 This list is the backlog of the writing harness. Add an item when a gap or conflict turns up, with the file it concerns and the date it was checked; a change that fixes one deletes it here and names the fix in the CHANGELOG. Items without a date were checked on 2026-11-15.
 
 - The profile pack still says Codex does not draft prose a person will read. `/polish` states its override in the skill only, because the compact profile counts against the composed consumer ceiling; mention the exception in `agent-pack/docs/rule-pack-compact.md` when that ceiling has room.
-- The `/polish` step that reads a repository's local rules, and its RULE-08 line between a qualifier that changes the claim and a habitual caveat tail, have not yet run on a real draft with a genre override or a caveat tail.
-
 - The guard table row in `AGENTS.md` for the `agent-style` advisory does not say that the advisory runs under Claude Code only.
 - `~/.codex/AGENTS.md` carries 13 of the 45 banned words and a narrower dash rule than `AGENTS.md`.
-- No test checks that the banned list in `AGENTS.md` and the one in `scripts/guard.py` agree.
 - `voice_check.py` accepts up to two figures in an abstract, while the House Style and `author-voice` say one rounded figure.
 - `skills/readme-polish/references/patterns.md` prescribes an em dash in each feature bullet, against the Formatting Defaults dash rule.
 - `skills/implement-review/SKILL.md` still names "the four checks" of General lens item 7, which now lists more.

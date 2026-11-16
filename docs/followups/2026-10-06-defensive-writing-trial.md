@@ -52,3 +52,21 @@ Watch for papers or plans that grow without a new result or step, or requests fo
 The acceptance run for `/polish` (`agent-pack/skills/polish/`) was the first time the watch list above met real drafts: a paper abstract, a results section, and a technical Markdown report, each polished in a throwaway repository by Claude Code and by Codex, then judged by three independent Claude agents. No edit added a number, citation, or claim, no table was transcribed into prose, and no habitual caveat tail was added. The swing toward cutting showed up instead, in compression. Codex turned a guarantee with a hedge into a flat statement of state and removed the stated reason a contrast was unresolved. Both agents deleted markers that flagged material added during review, and both rewrote `, so` joins to move a `voice_check` count. The skill's step 3 now keeps hedges, guarantees, stated causes, intervals, ties, losses, and status markers, keeps each relation at its strength and place, and treats a count as a prompt to reread. An exploratory second Codex run on that text lost no meaning-bearing word.
 
 The final acceptance ran the staged skill. Claude Code changed 13 lines of a results section: three `, so` splits that keep the cause word, and nine RULE-G fixes that put full-sentence paragraph leads in sentence case. It dropped no hedge or status marker, changed no number, and listed eight facts for the author to verify. Codex made no edit to the Markdown report and returned its findings with locations, because that version had Codex review and report only, following the profile pack's rule that Claude writes prose a person will read. The maintainer then chose that whichever agent runs `/polish` as coordinator makes the edits, so a `/polish` request overrides that default and step 3's limits bind Codex as well; the exploratory Codex run on the revised step 3 is the evidence for that path.
+
+## Seeded Check of the RULE-08 Line (Added 2026-11-15)
+
+A `/polish` pass nested inside a paper round made one edit, skipped the reading pass, and gave a one-line report. The pass had audited a file of changed lines pasted together, which the detectors read as one paragraph. Since then, the skill has a round form, requires the step 2 list and a full report also when nested, and keeps intermediate files out of the repository.
+
+The revised skill then ran twice on throwaway copies, and an Agy judge scored each run against a key the polishing agent never saw.
+
+- **Paper round.** One round of a real paper's edits was polished as a step inside a larger task. The round held six seeded items:
+  - two habitual caveat tails;
+  - a general limitation that the Limitations section already states;
+  - one that Limitations does not state;
+  - an overloaded sentence;
+  - a banned word.
+
+  Seven load-bearing qualifiers were already in the text. The agent cut both tails and the repeated limitation and listed each cut. It kept the unstated limitation in place and flagged it, split the overloaded sentence with both causes kept, and replaced the banned word. All seven qualifiers survived, and the judge found no violation.
+- **Proposal Introduction.** A federal proposal's Introduction was polished under its repository's local rules. The national-importance material and the aims preview stayed in place, and every edit stayed inside the Introduction. This run also showed that the pre-review audit did not report close variants of banned words already in a draft: the agent found four by reading. `style-audit.py` now reports them.
+
+Everything else the judges found concerned the report, not the edits. One run named no lens items, and neither run accounted for every `CHECK`, so step 5 now asks for both. The proposal judge counted two "e.g." glosses, made to answer a `voice_check` glosses `CHECK`, as count-chasing. Author-voice step 4 names that move, so step 3 now allows it only where the sentence reads at least as well.
