@@ -30,6 +30,7 @@ Before adding or changing anything that shapes how an agent writes, find its hom
 | | Revision discipline and venue conventions | `agent-pack/docs/paper-workflow-compact.md` | always | every agent |
 | Drafting | `author-voice`: templates, exemplars, `voice_check.py` | `agent-pack/skills/author-voice/` | on command, and by the profile rule on every paper or proposal section | Claude Code, Codex |
 | | `bibref-filler` | `agent-pack/skills/bibref-filler/` (a copy also sits in `agent-config/skills/`) | on command | Claude Code, Codex |
+| Figures | Quantitative paper figures and their data-derived annotations | `skills/programmatic-figure/` in both shared repositories | on command | any |
 | Write-time checks | Banned-word gate on `Write`, `Edit`, `MultiEdit`, and shell writes | `scripts/guard.py` | every prose write | Claude Code |
 | | The same gate on `apply_patch` and shell writes | `scripts/guard.py` (`main_codex`) | every prose write | Codex, once the user trusts the hook |
 | | `agent-style` advisory, release-gated: RULE-03 from 0.6.0, RULE-A from 0.7.0, the RULE-12 and RULE-08 document profiles from 0.8.0 | `scripts/guard.py` with the installed `agent_style` package | every `Write`, `Edit`, or `MultiEdit` to prose | Claude Code only |

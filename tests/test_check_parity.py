@@ -57,6 +57,7 @@ def _strict_test_files() -> tuple[str, ...]:
 # membership is asserted here instead of inferred.
 STRICT_MEMBERSHIP_FLOOR = (
     "tests/_quiet_spawn.py",
+    "tests/test_programmatic_figure.py",
     "tests/test_dispatch_codex.py",
     "tests/test_dispatch_gemini.py",
     "tests/test_dispatch_grok.py",
@@ -214,6 +215,7 @@ def _build_fake_tree(base: pathlib.Path):
         "readme-polish",
         "prun",
         "editable-figure",
+        "programmatic-figure",
         "agent-models",
     ):
         (ac / f"skills/{skill}").mkdir()
