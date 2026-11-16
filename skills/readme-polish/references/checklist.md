@@ -13,6 +13,7 @@ Run this grid against a candidate README before editing. Mark each row `✓` (pr
 | Hero image, diagram, or screenshot | At least one visual above the elevator pitch. |
 | Maintainer credibility as `> [!NOTE]` callout, not paragraph | Keep to 2-3 sentences, verifiable claims only. |
 | Elevator pitch paragraph (1-3 sentences) | What the project is, who it is for. |
+| Organizing concept visible (category table or a one-line map of the parts) | A feature list without structure reads as unfocused. Library READMEs use a category table. |
 
 ## Install section
 
@@ -87,6 +88,7 @@ Run this grid against a candidate README before editing. Mark each row `✓` (pr
 | Hero image loads (not a broken-image icon) | Relative path must be correct from repo root. |
 | Badges show live data (not "image not found") | Shield.io URL must be well-formed. |
 | Collapsibles expand cleanly | No content leaks outside the `<details>` tag. |
+| PyPI long description renders (when the README is one) | Absolute image URLs, `twine check --strict`, a `readme_renderer` preview, no relative links in the built `METADATA`. |
 
 ## Hygiene
 
@@ -134,6 +136,8 @@ Run this grid against a candidate README before editing. Mark each row `✓` (pr
 |------|-------|
 | Every version number mentioned matches the current release | Package version, minimum versions, release-date claims. |
 | Every feature claim matches what the code actually does | A README promising X must correspond to shipped X. |
+| Counts and tables come from the code, checked by a test | Method counts, result tables, and numbers in hero alt text or the figure. Hand-typed numbers drift. |
+| Citations match their records | BibTeX author lists checked against arXiv or DOI; README BibTeX and `CITATION.cff` agree. |
 | Every install command has been tested on a clean machine | Fresh-machine test before shipping. |
 | No personal identifiers leaked in public README | Usernames, paths, institutional affiliations that should not be public. |
 

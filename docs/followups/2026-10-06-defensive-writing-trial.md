@@ -31,7 +31,7 @@ Signs that the old habits persist:
 
 ## How to Revise
 
-1. Edit the wording where it lives: agent-style `RULES.md` (RULE-03, RULE-08) followed by `scripts/build-compact.py`; the `AGENTS.md` Writing Defaults bullet in ac and aa; `skills/implement-review/references/review-lenses.md`; agent-pack `venue-review-panel` item 7.
+1. Edit the wording where it lives: agent-style `RULES.md` (RULE-03, RULE-08) followed by `scripts/build-compact.py`; the `AGENTS.md` Writing Defaults bullet in ac and aa; `skills/implement-review/references/review-lenses.md`; agent-pack `venue-review-panel` item 7; the edit limits in step 3 of agent-pack `skills/polish/SKILL.md`. `docs/writing-harness-map.md` keeps the current list of these homes.
 2. Rerun the habit bench (`scripts/bench/habit/README.md` in agent-style) with the v0.5.0 compact pack as condition A, against the same criteria.
 3. Release agent-style, move the aa bundled ref, and append the new ref to the aa ledger `_AUTO_RECONCILED_DEFAULT_REF_REWRITES`.
 

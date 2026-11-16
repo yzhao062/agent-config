@@ -1,6 +1,6 @@
 ---
 name: readme-polish
-description: Audit a GitHub README and rewrite it using modern 2025-2026 patterns — centered header, badges, hero image, GitHub alert callouts, emoji-prefixed features, expandable details, Mermaid diagrams, tables over dense prose. Produces a scannable README that works for a 10-second skim and a deep dive.
+description: Audit a GitHub README and rewrite it using modern 2025-2026 patterns — centered header, badges, hero image, GitHub alert callouts, emoji-prefixed features, expandable details, Mermaid diagrams, tables over dense prose, catalogue tables for algorithm libraries, and PyPI long-description checks. Produces a scannable README that works for a 10-second skim and a deep dive.
 ---
 
 # Readme Polish
@@ -44,6 +44,8 @@ Key audit questions:
 9. **Heading case**: is Title Case applied consistently across all H2 and H3? Sentence-case headings mixed with Title Case headings read as AI-generated or unedited (agent-style RULE-G).
 10. **Version-boundary honesty**: if a release ships primitives that are not yet wired, does the README name the boundary explicitly (what works today, what is queued), or does it present roadmap claims as shipped behavior?
 11. **Anchor hygiene**: do dot-nav links resolve to real sections (GitHub's auto-generated anchor rules: lowercase, hyphens for spaces, strip punctuation)?
+12. **Organizing concept**: can a reader say how the project is organized (the categories its methods, commands, or modules fall into) from the first screen? A feature list without that structure reads as unfocused. When it is missing, take a well-regarded project of the same kind as the structural model (for an algorithm library, PyOD: a category table, one algorithm table per category, an API cheatsheet) and map its section order onto this project before editing.
+13. **Numbers that can drift**: are the counts, tables, and scores in the README (method counts, benchmark rows, numbers in hero alt text or inside the hero figure) produced from the code, or typed by hand? Hand-typed numbers go stale at the next release.
 
 ## Phase 2: Apply modern patterns
 
@@ -53,8 +55,9 @@ See [`references/patterns.md`](references/patterns.md) for the full catalog with
 - **Centered header** via `<div align="center">`. Title, one-line tagline, badge row, dot-separated nav, one-liner elevator pitch.
 - **Shield.io badges** for package version (PyPI, npm), license, CI status, GitHub stars. Keep to 4-5; more than that becomes noise.
 - **Dot-separated nav links** (`[Install](#install) · [Workflow](#workflow) · [Features](#features)`) below badges. Helps skimmers jump.
-- **Hero image** — a PNG or SVG that makes a skimmer stop scrolling. Two paths:
+- **Hero image** — a PNG or SVG that makes a skimmer stop scrolling. Three paths:
   - HTML mockup rendered via headless Chrome → PNG (good for feature grids, dashboards). See `ci-mockup-figure` skill for capture workflow.
+  - Native editable figure (`editable-figure` skill): a generated concept rebuilt as a PowerPoint source with real objects, for a hero that will be revised. Show the objects the project works on (a configuration, a trace, a chart); a plotting-library figure of labeled text boxes reads as a slide. Commit the builder, and say in the source folder's README when the figure is a working version.
   - `<picture>` tag with light/dark variants for logos. Required only when the project has a logo/wordmark.
 - **Maintainer credibility** in a `> [!NOTE]` callout, not a prose paragraph. Ideal length: 2–3 sentences with verifiable signals (package stars, citations, institutional affiliation).
 
@@ -65,6 +68,7 @@ See [`references/patterns.md`](references/patterns.md) for the full catalog with
 - **"What This Looks Like" examples block** between How It Works and Install — 3 to 5 examples, each in a different visual format (screenshot / file tree / themed Mermaid / HTML 2-col before-after / terminal mock). The format-variety rule is the whole point; three monospace blocks in a row defeat it. See `patterns.md`.
 - **HTML 2-col `<table>` for rich before/after comparisons** — markdown tables cannot carry blockquotes, italic, or `<mark>` tags inside cells; HTML tables can. One per README is enough.
 - **Tables over dense bullets** for reference material (comparison, decision matrices, scenario → command). Tables read faster than bullets when the content is inherently tabular.
+- **Generated blocks with a drift test** for anything the code can produce: method tables, result tables, counts. Wrap each block in `<!-- begin:name -->` and `<!-- end:name -->` markers, rebuild it from the library in a test, and fail when the README differs; the same test file checks the counts in hero alt text and in figure builders. See `patterns.md`.
 - **Themed Mermaid** for architecture, flowcharts, and sequence diagrams — use the `%%{init: ...}%%` config block at the top to match brand palette. The default red / orange / blue clashes with most modern brand colors and reads as cookie-cutter. Do not use Mermaid as the hero image; it lacks the visual weight a polished mockup carries.
 - **Version-boundary honesty** as a content principle: when v0.4.0 ships primitives but the wiring is in v0.4.x, name the split explicitly. Roadmap claims belong in a "What's Next" section pointing at the changelog, not in the install / How It Works flow.
 - **Collapsible `<details>` blocks** for platform-specific variants, limitations, related projects, repo layout, FAQ, anything reference-shaped.
@@ -75,6 +79,17 @@ See [`references/patterns.md`](references/patterns.md) for the full catalog with
 - **Middle**: quickstart + install, "what you get" bullets, optional "why / philosophy" narrative.
 - **Below**: day-to-day usage, contribution notes, limitations, related projects, license.
 - **Collapsed into `<details>`**: platform-specific install variants, repo layout, opinionated-and-why, limitations, related projects, maintenance policy.
+
+### Library and Catalogue READMEs
+
+For an algorithm library, model zoo, or benchmark suite, the catalogue is what readers come for, so the README is organized around it (PyOD is the model; snippet in `patterns.md`):
+
+- **Category table** right after the why-bullets: one row per category with the question it answers, its interface, a method count, and a link to its table.
+- **Install in one or two visible lines.** Heavy optional extras (GPU builds, wheels matched to a torch version) go in a collapsible, with the full matrix on a docs page.
+- **A runnable example of about five lines** before the catalogue, so the reader sees the shared interface first.
+- **One algorithm table per category**, with Type, ID, Algorithm, Year, and a linked Reference, generated from the registry; utility functions go in a collapsible.
+- **Results or leaderboards**: one chart visible and the full tables collapsed. Each row names its kind (method type, baseline, control), and a row that reads the labels is shown as a reference and left unranked.
+- **API cheatsheet** as one-liners after Quick Start.
 
 ## Phase 3: Verify
 
@@ -87,6 +102,8 @@ Before publishing, verify the rewrite actually renders on GitHub (not just in Py
 - [ ] If the project has multiple surfaces (README + RTD landing + `README.zh-CN.md`), run a cross-surface drift pass. Tagline, How It Works structure, Pack-CLI claims, and What's Next paragraph should agree across surfaces. The `implement-review` skill handles this via "Cross-variant drift check."
 - [ ] If any colored elements were customized (badge color, Mermaid theme, MkDocs CSS), verify WCAG AA contrast (≥ 4.5:1 for normal text against background) for both light and dark themes. Codex / Copilot reviews compute the ratios on request.
 - [ ] If the README references a rendered asset (PNG / GIF), verify the source file (HTML / tape) and the render helper (`_render_*.py` / `_render_*.sh`) are committed alongside it. Reproducibility matters for future rerenders; pinned Docker digests beat `:latest` tags.
+- [ ] If the README is also the package's long description (PyPI), use absolute URLs for images and links (`https://raw.githubusercontent.com/<owner>/<repo>/<ref>/...`): PyPI keeps relative paths, and they show as broken images. Check the built wheel's `METADATA` for relative links, run `twine check --strict`, and preview with `readme_renderer`. Version 46.0 renders alerts and `<details>`, shows Mermaid as a code block, and keeps only the `<img>` fallback of a `<picture>`. Images on `main` let older release pages show the current figure; images on the tag freeze them but need the asset in the tagged commit.
+- [ ] If any README block is generated from the code, run its drift test after the last edit.
 - [ ] Run `git diff --cached --check` before committing to catch trailing whitespace.
 
 ## Common Pitfalls
@@ -105,11 +122,15 @@ Before publishing, verify the rewrite actually renders on GitHub (not just in Py
 - **Default Mermaid in a branded README.** Red error / orange warning / blue info clash with most modern brand colors. Add `%%{init: {'theme': 'base', 'themeVariables': {...}}}%%` at the top of every Mermaid block.
 - **Sentence-case headings mixed with Title Case.** Pick one and hold it across all H2 and H3. Sentence-case sub-headings inside a Title Case context (or vice versa) read as machine-generated. agent-style RULE-G says Title Case.
 - **Asset rendered once, source not committed.** Hero PNG without the HTML source, GIF without the vhs tape, banner PNG without the render helper — every rendered asset becomes brittle. Commit the source AND a `_render_*.py` / `_render_*.sh` helper alongside.
+- **Generated table layout changed without notice.** When README tables come from a public function (`to_markdown()`, `method_table()`), a new or reordered column breaks code that parses them by position. Treat it as an interface change: a minor version and a migration sentence in the changelog.
+- **Release pointer left behind.** A `New in X.Y` line under the header ages with every release; check it in each release commit.
+- **Citation drift.** Check every BibTeX author list against the arXiv or DOI record, and keep the README BibTeX and `CITATION.cff` identical. Truncated author lists are common in hand-copied entries.
 - **PyCharm preview false confidence.** PyCharm's built-in markdown renderer does not render `> [!NOTE]`, Mermaid, `<picture>` media queries, or HTML `<table>` with markdown blockquotes inside cells. Only GitHub's renderer is authoritative.
 
 ## Integration with Other Skills
 
 - **`ci-mockup-figure`** — use it to design and render the hero image when the README needs a custom feature-grid, architecture diagram, or pack-architecture pipeline. That skill handles the HTML-to-PNG capture workflow via Playwright.
+- **`editable-figure`**: use it for a hero with concrete objects that will be revised. It builds an editable PowerPoint source from a generated concept and exports the PNG.
 - **`implement-review`** — run a Codex review on the staged README rewrite before pushing. Lens: `general` / `docs`. Focus: first-read flow, anchor validity, content accuracy, version-boundary honesty, agent-style compliance, cross-surface drift if multi-surface. Plan on 2-4 review rounds for a substantial overhaul; expect findings to drop from High / Medium in early rounds to Low polish in late rounds.
 - **`agent-style`** — the writing rule pack governs the README prose: 21 rules total, 12 classic + 9 LLM-observed. RULE-G specifically governs Title Case across H2 / H3; RULE-B forbids casual em-dash; RULE-E forbids paragraph-closing summaries; RULE-F enforces consistent terms. Use the public [agent-style rule pack](https://github.com/yzhao062/agent-style/blob/main/docs/rule-pack.md) for the full reference and run a self-audit before requesting external review.
 

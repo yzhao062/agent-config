@@ -489,6 +489,66 @@ VHS_IMAGE="ghcr.io/charmbracelet/vhs@sha256:9d5fc3dc0c160b0fb1d2212baff07e6bdf3f
 
 Future maintainers can re-render from the same tool image instead of depending on whatever `:latest` happens to be when they pull. Without the digest pin, a hero PNG or GIF can drift from its source and no one notices until the next render rerun.
 
+## Catalogue Layout for Algorithm Libraries
+
+When the project is a library of methods, put a category table near the top and give each category its own generated table (PyOD's README is the model). Section order: header and hero, why-bullets, category table, install, a five-line example, the per-category tables, results, Quick Start, API cheatsheet.
+
+```markdown
+| Stage | Question | Family | Interface | Methods |
+|---|---|---|---|---|
+| Before a run | Is this configuration over-privileged? | [`config`](#i-pre-configuration-audits) | `audit(config)` | 8 |
+| During a run | Should an alarm fire at this step? | [`online`](#ii-live-streaming-monitors) | `step_alarm_scores(trace)` | 5 |
+
+### (i) PRE: Configuration Audits
+
+<!-- begin:methods-config -->
+| Type | Method | Algorithm | Year | Reference |
+|---|---|---|---|---|
+| Rule | `config.excess_tools` | Flags tools the task never uses | 2025 | OWASP Top 10 for LLM Applications |
+<!-- end:methods-config -->
+```
+
+Link each family to its heading slug: `### (i) PRE: Configuration Audits` becomes `#i-pre-configuration-audits`. Keep the Type column to a short fixed vocabulary (Rule, Supervised, Detector, LLM judge, Baseline), and mark control and oracle rows on result tables so a reader does not mistake them for methods.
+
+## README Blocks Generated From Code
+
+Tables and counts that the library can produce should not be typed by hand. Wrap each block in markers (HTML comments, invisible on GitHub and PyPI) and let one test file both check and rewrite them:
+
+```python
+# tests/test_readme.py
+import re
+from pathlib import Path
+
+import pytest
+
+from mypkg import method_table
+
+README = Path(__file__).resolve().parents[1] / "README.md"
+BLOCK = re.compile(r"(<!-- begin:(\S+) -->\n)(.*?)(<!-- end:\2 -->)", re.S)
+
+
+def generated():
+    return {"methods": method_table()}
+
+
+def render(text):
+    blocks = generated()
+    return BLOCK.sub(lambda m: m.group(1) + blocks[m.group(2)].rstrip("\n") + "\n" + m.group(4), text)
+
+
+def test_readme_blocks_match_the_code():
+    if not README.exists():
+        pytest.skip("README.md is not in this checkout (installed package or sdist)")
+    text = README.read_text(encoding="utf-8")
+    assert render(text) == text, "README is stale; run: python tests/test_readme.py"
+
+
+if __name__ == "__main__":
+    README.write_text(render(README.read_text(encoding="utf-8")), encoding="utf-8")
+```
+
+`python tests/test_readme.py` rewrites the blocks; the test fails until the README matches the code, and it skips where the README is absent, as in a CI job that tests an installed package. Numbers outside the marker blocks (hero alt text, constants in a figure builder) get plain assertions in the same file, so a registry change cannot leave the hero behind.
+
 ## Cross-surface parity (README + RTD landing + bilingual)
 
 Projects that publish to multiple surfaces (README on GitHub, MkDocs landing on Read the Docs, optional zh-CN README) should share the same value-prop sections at the same depth:
