@@ -1,8 +1,76 @@
 # Mac 持久存储审计与复查记录
 
-2026-10-12 合并 Codex 的只读扫描与用户提供的 Claude 独立扫描，关注 `~/PycharmProjects/` 外的持久实验产物、agent 工作区、历史记录和缓存。当时决定保留全部内容。2026-11-07 重新扫描并在用户授权后清理四个旅行备份目录；当前结果及恢复风险见下方更新，后面的 10 月记录保留为历史基线。
+2026-10-12 合并 Codex 的只读扫描与用户提供的 Claude 独立扫描，关注 `~/PycharmProjects/` 外的持久实验产物、agent 工作区、历史记录和缓存。2026-11-07 清理四个旅行备份目录。2026-11-16 再次扫描，并在用户授权后归档试验合并与旧 IDE 历史、清理四个历史遗留路径；2026-11-17 补录结果。以下按日期保留测量和处置记录。
 
 本记录与 [Mac 设置与重装恢复指南](mac-mouse-preferences.md) 一起维护，只保存在 agent-config。复查使用私人 [mac-storage-audit skill](../reference-skills/mac-storage-audit/SKILL.md)。扫描默认只读，清理需要用户授权。
+
+## 2026-11-16 扫描与历史遗留处置（2026-11-17 补录）
+
+本轮重点是任务结束后无人维护的永久性历史遗留，以及可能无法恢复的成果。协调者完成扫描，用户授权的 `prun` Agy 复核增长和旧环境，Grok 复核恢复风险；两个 dispatcher 均成功退出，实际模型核验均为 `status=ok`。随后用户明确授权清除无用内容、归档独有内容。检查与删除由协调者执行，未修改活跃项目或同步其 Git 历史。
+
+### 扫描容量与增长
+
+时间均为 America/Los_Angeles，大小为十进制 GB。11 月 16 日约 16:43 开始扫描，Data 卷已用 **610.861 GB**、可用 **357.486 GB**，比 11 月 7 日清理后的可用空间减少约 **13.195 GB**。扫描期间应用仍在写入，以下目录值不是冻结快照，也不是清理后的新基线。
+
+| 路径或范围 | 扫描时 GB | 较 11 月 7 日 GB | 说明 |
+| --- | ---: | ---: | --- |
+| `~/PycharmProjects/` | 159.664 | -3.094 | research-data 包含在内 |
+| `~/Documents/` | 148.901 | 约 0 | Winref、QEM 发布资料等仍在 |
+| `~/Library/` 可读部分 | 64.156 | +8.583 | 权限覆盖可能不同，只作可读范围对照 |
+| `/Applications/` | 41.886 | -0.191 | 应用安装资源 |
+| `~/qemscore-r8/`、`r9/`、`r10/` | 27.490 | 约 0 | 本轮未清理 |
+| `~/.codex/` | 21.094 | +1.243 | 会话、数据库、运行资源与工作树 |
+| `~/.cache/` | 20.277 | +2.068 | 包含下述 Codex 旧安装残留 |
+| `~/.claude/` | 15.067 | +1.187 | 主要为项目会话记录 |
+| `~/.gemini/` | 9.048 | +6.770 | brain 6.801、conversations 1.904；活跃复核期间继续增长 |
+| `/private/var/folders/` 可读部分 | 3.557 | -6.288 | 不推断具体自动清理机制 |
+| `/private/tmp/` 可读部分 | 0.004 | -0.931 | 不保证重启清除所有临时文件 |
+| `~/repo-backups/` | 0 | 0（与上次清理后比较） | 旅行备份没有重新累积 |
+| `~/PycharmProjects/research-data/` | 40.505 | +1.923 | 嵌套在项目总量内，不另行相加 |
+
+`internal-writing/.git` 从 14.843 GB 降到约 4.267 GB，未确认缩小机制。Library 的 Caches 约 20.870 GB、Mobile Documents 约 19.199 GB；Agy 新增的大目录包含近期依赖环境，不能统称为僵尸路径。约 1.003 GB 的 agentpile probe 数据路径和大小与完整缓存对应，差异集中在 15 个小型元数据文件；未做内容哈希验证，恢复风险较此前降低，但不能称为已验证的逐字节副本。
+
+扫描覆盖 home、两处系统临时目录、Applications、Library 和 `/opt`。home 扫描有 489 条错误，主要是 Library、Photos 权限限制；不可读区域未计作零。`du` 是分配量，父子目录、APFS 共享块、硬链接、权限缺口和活跃写入使其不能机械相加还原 `df`。本机未配置 Time Machine 目的地，Data 卷未列出 APFS 快照；未核验离线外置盘、集群和所有云端副本。
+
+### 已完成处置的四个路径
+
+| 原路径 | 删除前 GB | 结论与执行结果 |
+| --- | ---: | --- |
+| `~/.gemini/antigravity-cli/brain/a64521a1-09c5-41ae-b5e0-35747817e7ea/scratch/trial-merge-1/` | 0.970 | 确认是 research-impact 的试验合并；完整归档工作区和 `.git`，校验后删除原目录 |
+| `~/Library/Caches/JetBrains/PyCharm2026.2/` | 5.011 | 归档 LocalHistory、fileHistory、editor、restart 后删除旧版本目录；活跃 2026.3 保留 |
+| `~/.cache/codex-runtimes/codex-runtime-install-DLrBSx/` | 2.041 | 旧 bundle `26.1105.12137` 的安装包与解压残留，已删除 |
+| `~/.cache/codex-runtimes/codex-runtime-install-LS86pC/` | 0.338 | 旧安装包与空 payload，已删除 |
+
+trial HEAD 为 `995770192add74af070cbc3a8363f5a197ff22d4`。两个父提交 `74ea4f379f157c28219d7b5c1a6ed88dd429dd86`、`f0fd478381f437b09cb1c16dfac47f6b1bbcb01c` 均在 `~/PycharmProjects/research-impact` 中；15,363 个受跟踪条目只有 `.gitattributes`、`.gitignore` 的 blob 版本不在该仓库可达历史对象清单里。此前只检查 internal-writing 得出的“来源未明”已解决。trial 没有修改、未跟踪或忽略文件，没有符号链接和外部 Git object alternates；保留完整归档以保存试验提交和原始状态，不把本地对象存在误写为远端备份证明。
+
+归档位于 `~/PycharmProjects/research-data/storage-retirement-2026-11-16/`，包含 README、两个压缩包、逐文件 SHA-256 manifest 和 `closeout.json`。trial 的 15,573 个文件、PyCharm 历史的 457 个文件均从压缩包读回，与源文件 SHA-256 比对通过；删除前再次核对文件清单、大小和修改时间。恢复时在新目录执行 `tar -xzf ARCHIVE -C NEW_DIRECTORY`，不要直接覆盖活跃 IDE 的历史。
+
+| 归档 | 压缩包 bytes | SHA-256 |
+| --- | ---: | --- |
+| `trial-merge-1.tar.gz` | 535078175 | `b14d659b7adae0a888728539a9c1c0e89488f9fbe4f5d9ca4d111f33d19edd33` |
+| `pycharm-2026.2-history.tar.gz` | 1154494 | `313f907d442e2d1d434935065e9cafb08959bd49ec6eb76283c2278570957fa7` |
+
+归档和记录共约 **0.542 GB**，四个源目录原分配量共 **8.360 GB**，扣除归档后目录分配量净减少约 **7.817 GB**。删除前（归档已写入）Data 已用 **613.594 GB**、可用 **354.754 GB**；约 23:29 完成后已用 **605.432 GB**、可用 **362.915 GB**。删除阶段可用空间增加约 **8.162 GB**，与目录净减少不是同一口径，期间还有其他应用写入。最终使用非 force 的 `rm -r`，四个原路径均确认不存在，当前 Codex runtime 和 PyCharm 2026.3 均保留。归档是本机集中存放，尚未验证离机副本。
+
+### 未结案：三个旧 Agy 目录去向不明
+
+以下路径均相对于 `~/.gemini/antigravity-cli/brain/`。大小是 **2026-10-12 历史测量值**，不是现存占用；合计约 6.058 GB。本轮没有删除它们，它们在清理前就已不在原位置。
+
+| 原目录 UUID | 历史 GB | 历史内容与当前状态 |
+| --- | ---: | --- |
+| `bd014e8b-7bad-49ee-ba46-47c27d6dac9c` | 4.027 | `scratch/r1/dsclone`、虚拟环境及代码副本；未确认回迁或归档位置 |
+| `4d70e583-d847-42a9-afa8-4ae6ce84611b` | 1.141 | `scratch/full2.json`、`scratch/by2.pkl`；未找到可确认的替代副本 |
+| `1afdd8c4-8056-457c-a810-0777cbd760e0` | 0.890 | `scratch/tau2-bench` 及数据、结果；未确认回迁或归档位置 |
+
+本轮核对原路径、Spotlight 特征文件名和 research-data 文件名，未找到这三个目录名或 `full2.json`、`by2.pkl`。用户此前表示不确定是否归档，需要之后查。有限范围的搜索不证明数据丢失，也不证明 Agy 自动轮换；不能把这三项记为清理完成或可恢复。结案需要定位与原任务对应的归档、远端或集群结果，并验证内容。保留这些具体标识供追查，不再把已消失目录当作可释放空间。
+
+### 其他恢复来源待核对
+
+新增 `research-data/llm-recruitment-assessment/runs-2026-11-14` 约 **0.750 GB**，README 声明为不进 Git 的原始付费实验结果；重跑不能恢复同一次观测。其 datasets 约 0.474 GB 来源混合，并非全为固定 revision 的 Hugging Face 下载。`research-data/usc-email` 增至约 **0.705 GB**，尚未与邮箱或其他导出逐文件比对。
+
+CatchBench 人工回传 `catchbench-human-slice-2026-11-12/2-put-returned-file-here/second-file/tool-check.xlsx` 为 16,654 bytes，另有 internal-writing 中未跟踪的 `human_labels.json`；未核实离机副本，未读取 workbook 或个人申请材料。扫描时 internal-writing 本地 HEAD `8b30a492537049855210dc8d868cba741a02b8f8` 与实时远端 main `7e6216d6e147632c962dc8f437d335e273209650` 分叉，本地独有 19 个提交、远端独有 36 个，默认 status 有 146 条记录。此为当时状态，不代表后续仍未同步；本轮没有合并、提交或推送该项目。
+
+后续按具体遗留项结案：仍在使用、已归档、已删除，或有明确待查证据的恢复来源未明。活跃环境和用途清楚的大目录不因体积大而列为垃圾。此次四个路径已结案，三个旧 Agy 目录与上述恢复来源继续单列；未设置自动删除。
 
 ## 2026-11-07 扫描与旅行备份清理
 
