@@ -9,7 +9,7 @@ Before adding or changing anything that shapes how an agent writes, find its hom
 | To add or change | Home | Same change also updates |
 |---|---|---|
 | A general writing rule, for any author | `agent-style/RULES.md`, then `agent-style/scripts/build-compact.py` regenerates `docs/rule-pack-compact.md` | an `agent-style` release, then the default ref in `anywhere-agents/bootstrap/packs.yaml` |
-| A rule against defensive writing (a caveat tail, underclaiming, stacked figures, a defense nobody asked for, growth without new content) | RULE-08 and RULE-03 in `agent-style/RULES.md` | every other home of the concern that the change touches: the one-line bullets in the Writing Defaults of `AGENTS.md`, the Paper preamble, Paper items 4 and 8, and General item 8 in `review-lenses.md`, Revision Discipline in `agent-pack/docs/paper-workflow.md`, step 3 of `/polish`, and `venue-review-panel/references/review-protocol.md`; evidence goes to `docs/followups/2026-10-06-defensive-writing-trial.md` |
+| A rule against defensive writing (a caveat tail, underclaiming, stacked figures, a defense nobody asked for, growth without new content) | RULE-08 and RULE-03 in `agent-style/RULES.md` | every other home of the concern that the change touches: the one-line bullets in the Writing Defaults of `AGENTS.md`, the Paper preamble, Paper items 4 and 8, and General item 8 in `review-lenses.md`, Revision Discipline in `agent-pack/docs/paper-workflow.md`, the Content and Expression section of `/polish` and the word-count rule in its step 3, and `venue-review-panel/references/review-protocol.md`; evidence goes to `docs/followups/2026-10-06-defensive-writing-trial.md` |
 | A habit of the maintainer's own voice | the House Style section of `agent-style/RULES.md`, which every consumer loads | `agent-pack/skills/author-voice` when the habit is section-level: `references/templates.md`, `references/exemplars.md`, and the ranges in `scripts/voice_check.py` |
 | A word to ban | the Writing Defaults list in `agent-config/AGENTS.md` | the banned list in `scripts/guard.py`, which `style-audit.py` also reads; both files mirror to `anywhere-agents`, and `tests/test_style_audit.py` fails when the two lists disagree |
 | A mechanical check | a detector in `agent-style/packages/pypi/agent_style/review/detectors_mech.py` and its twin in `packages/npm/lib/review/detectors_mech.js` | the release gate in `scripts/guard.py` that turns the detector on for the advisory; `style-audit.py` inherits that gate |
@@ -17,7 +17,7 @@ Before adding or changing anything that shapes how an agent writes, find its hom
 | An explanatory figure creation process | `skills/editable-figure/SKILL.md` and its linked references | the same skill tree in `anywhere-agents` and its wheel composer mirror |
 | A paper or proposal process rule (revision discipline, venue conventions) | `agent-pack/docs/paper-workflow.md` | `agent-pack/docs/paper-workflow-compact.md`, which consumers load |
 | A default about who writes what, or which skill applies when | `agent-pack/docs/rule-pack.md` | `agent-pack/docs/rule-pack-compact.md`; measure the composed consumer size first, since `anywhere-agents/tests/test_composed_consumer_size.py` had a few bytes of headroom in October 2026 |
-| A step in reviewing and polishing a draft, or a limit on what an edit may change | `agent-pack/skills/polish/SKILL.md`, which holds the procedure and the limits on an edit | nothing else; a style rule that the step applies goes to its own row above |
+| A step in reviewing and polishing a draft, or a limit on what an edit may change | `agent-pack/skills/polish/SKILL.md`, which holds the procedure and the line between content and expression, with its `scripts/content_check.py` | nothing else; a style rule that the step applies goes to its own row above |
 | An exception for one project or genre (federal proposals, peer reviews, email templates, social posts) | that repository's `AGENTS.local.md` | nothing shared; a rule that lives only in an agent's private memory is invisible to the other agents |
 | Evidence for a change (bench, pilot, trial) | `agent-style/docs/bench-*.md` or `agent-config/docs/followups/` | a link from the CHANGELOG entry of the change it supports |
 
@@ -41,7 +41,7 @@ Before adding or changing anything that shapes how an agent writes, find its hom
 | | Citation audit | `agent-pack/skills/bibref-verify/` | on command | Claude Code, Codex |
 | | `agent-style review` CLI: deterministic checks on any file; `--polish` needs a skill host | `agent-style/packages/pypi/agent_style/cli.py`, installed with the package | on command, in any repository | any agent with a shell |
 | | `style-review` skill: semantic review and a revised copy beside the file | `agent-style/skills/style-review/` | on command, inside the `agent-style` repository only | Claude Code |
-| Polish | `/polish`: review, edit in place, recheck, report | `agent-pack/skills/polish/` | on command | whichever agent runs it as coordinator edits, Claude Code or Codex; the request overrides the profile pack's Claude-drafts default |
+| Polish | `/polish`: review, redraft or edit in place, recheck, report | `agent-pack/skills/polish/` | on command | whichever agent runs it as coordinator edits, Claude Code or Codex; the request overrides the profile pack's Claude-drafts default |
 | | `readme-polish`: README layout and structure | `skills/readme-polish/` | on command | any |
 | Evidence and decisions | Habit bench, House Style bench, human baseline | `agent-style/docs/bench-habit-v0.5.0.md`, `docs/bench-house-style.md`, `scripts/human-baseline/` | manual | |
 | | Defensive-writing trial, expected-utility pilot, slimming audit | `agent-config/docs/followups/2026-10-06-defensive-writing-trial.md`, `2026-10-25-eu-guidance-pilot.md`, `2026-10-18-harness-slimming-audit.md` | manual | |
@@ -49,7 +49,7 @@ Before adding or changing anything that shapes how an agent writes, find its hom
 
 ## What `/polish` draws on
 
-`/polish` adds no style rule of its own. It runs the checks below and has the coordinating agent read the rule text, so a change in any of these homes reaches it without an edit to the skill. A new check reaches it only through `style-audit.py` or a new line in the skill's step 2.
+`/polish` adds no style rule of its own. It runs the checks below and has the coordinating agent read the rule text, so a change in any of these homes reaches it without an edit to the skill. A new check reaches it through `implement-review/scripts/style-audit.py`, through `author-voice/scripts/voice_check.py` on a paper or proposal (step 2 already records each `CHECK`), through a new line in the skill's step 2, or through `agent-pack/skills/polish/scripts/content_check.py`, which steps 3 and 4 run.
 
 | Concern | Rule text the agent reads | Check the skill runs |
 |---|---|---|
@@ -57,7 +57,7 @@ Before adding or changing anything that shapes how an agent writes, find its hom
 | Banned words | the Writing Defaults list in `AGENTS.md` | `style-audit.py`, which takes the list and its close variants from `guard.py`; the guard hook also blocks them at write time |
 | `agent-style` rules | the composed rule pack | `implement-review/scripts/style-audit.py`, which takes the release-gated detector set from `guard.py` and runs it from the installed `agent_style` package |
 | Defensive writing | RULE-08 and RULE-03, Revision Discipline, the review lenses named in the first table | the RULE-08 repeated-caveat detector inside `style-audit.py`, and the word count against the last commit |
-| The edit itself | step 3 of the skill, which holds the limits on an edit | none; the coordinating agent edits, Claude Code or Codex |
+| The edit itself | the skill's Content and Expression section and steps 3 and 4 | `agent-pack/skills/polish/scripts/content_check.py`, which reports per-file count changes for the numbers, citations, links, labels, cross-references, and math expressions it recognizes; the coordinating agent checks backing, claim strength and scope, qualifiers, and relations against the baseline by reading |
 
 ## Coverage by agent
 
