@@ -14,6 +14,7 @@ Before adding or changing anything that shapes how an agent writes, find its hom
 | A word to ban | the Writing Defaults list in `agent-config/AGENTS.md` | the banned list in `scripts/guard.py`, which `style-audit.py` also reads; both files mirror to `anywhere-agents`, and `tests/test_style_audit.py` fails when the two lists disagree |
 | A mechanical check | a detector in `agent-style/packages/pypi/agent_style/review/detectors_mech.py` and its twin in `packages/npm/lib/review/detectors_mech.js` | the release gate in `scripts/guard.py` that turns the detector on for the advisory; `style-audit.py` inherits that gate |
 | A review criterion | `skills/implement-review/references/review-lenses.md` (Paper, Proposal, or General) | `venue-review-panel/references/` in `agent-pack` when the venue panel should apply it too |
+| An explanatory figure creation process | `skills/editable-figure/SKILL.md` and its linked references | the same skill tree in `anywhere-agents` and its wheel composer mirror |
 | A paper or proposal process rule (revision discipline, venue conventions) | `agent-pack/docs/paper-workflow.md` | `agent-pack/docs/paper-workflow-compact.md`, which consumers load |
 | A default about who writes what, or which skill applies when | `agent-pack/docs/rule-pack.md` | `agent-pack/docs/rule-pack-compact.md`; measure the composed consumer size first, since `anywhere-agents/tests/test_composed_consumer_size.py` had a few bytes of headroom in October 2026 |
 | A step in reviewing and polishing a draft, or a limit on what an edit may change | `agent-pack/skills/polish/SKILL.md`, which holds the procedure and the limits on an edit | nothing else; a style rule that the step applies goes to its own row above |
@@ -31,6 +32,7 @@ Before adding or changing anything that shapes how an agent writes, find its hom
 | Drafting | `author-voice`: templates, exemplars, `voice_check.py` | `agent-pack/skills/author-voice/` | on command, and by the profile rule on every paper or proposal section | Claude Code, Codex |
 | | `bibref-filler` | `agent-pack/skills/bibref-filler/` (a copy also sits in `agent-config/skills/`) | on command | Claude Code, Codex |
 | Figures | Quantitative paper figures and their data-derived annotations | `skills/programmatic-figure/` in both shared repositories | on command | any |
+| | Editable explanatory figures (overview, mechanism, README) | `skills/editable-figure/` in both shared repositories | on command | any |
 | Write-time checks | Banned-word gate on `Write`, `Edit`, `MultiEdit`, and shell writes | `scripts/guard.py` | every prose write | Claude Code |
 | | The same gate on `apply_patch` and shell writes | `scripts/guard.py` (`main_codex`) | every prose write | Codex, once the user trusts the hook |
 | | `agent-style` advisory, release-gated: RULE-03 from 0.6.0, RULE-A from 0.7.0, the RULE-12 and RULE-08 document profiles from 0.8.0 | `scripts/guard.py` with the installed `agent_style` package | every `Write`, `Edit`, or `MultiEdit` to prose | Claude Code only |
