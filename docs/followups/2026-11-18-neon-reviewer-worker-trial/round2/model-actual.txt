@@ -1,0 +1,13 @@
+# Round 2: each dispatcher's review-model record (requested model and effort, then what Agy reported it ran on).
+c1-carbon | model=gemini-4-carbon-medium source=env effort=medium effort_source=registry actual=gemini-4-carbon-medium medium status=ok
+c1-neon | model=gemini-4-neon-high source=env effort=high effort_source=slug actual=gemini-4-neon-high high status=ok
+c2-carbon | model=gemini-4-carbon-medium source=env effort=medium effort_source=registry actual=gemini-4-carbon-medium medium status=ok
+c2-neon | model=gemini-4-neon-high source=env effort=high effort_source=slug actual=gemini-4-neon-high high status=ok
+d1-carbon | model=gemini-4-carbon-medium source=env effort=medium effort_source=registry actual=gemini-4-carbon-medium medium status=ok
+d1-neon | model=gemini-4-neon-high source=env effort=high effort_source=slug actual=gemini-4-neon-high high status=ok
+d2-carbon | model=gemini-4-carbon-medium source=env effort=medium effort_source=registry actual=gemini-4-carbon-medium medium status=ok
+d2-neon | model=gemini-4-neon-high source=env effort=high effort_source=slug actual=gemini-4-neon-high high status=ok
+d3-carbon | model=gemini-4-carbon-medium source=env effort=medium effort_source=registry actual=gemini-4-carbon-medium medium status=ok
+d3-neon | model=gemini-4-neon-high source=env effort=high effort_source=slug actual=gemini-4-neon-high high status=ok
+d4-carbon | model=gemini-4-carbon-medium source=env effort=medium effort_source=registry actual=gemini-4-carbon-medium medium status=ok
+d4-neon | model=gemini-4-neon-high source=env effort=high effort_source=slug actual=gemini-4-neon-high high status=ok

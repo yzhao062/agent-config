@@ -1,0 +1,16 @@
+# Round 2 raw measurements, 2026-11-18, all twelve reviews launched together at 21:44 local.
+# name wall_s input+output_tokens cache_read_tokens model_calls
+c1-carbon 466 207494 1658269 15
+c1-neon 281 166362 1702843 18
+c2-carbon 582 167578 1045173 14
+c2-neon 287 129840 869724 14
+d1-carbon 493 163253 1322971 16
+d1-neon 282 131530 1215578 18
+d2-carbon 486 249036 2603824 20
+d2-neon 379 183104 2159264 23
+d3-carbon 437 155510 1078914 14
+d3-neon 268 133084 583641 10
+d4-carbon 570 164216 1623177 20
+d4-neon 271 126180 1063867 16
+# total carbon: wall_s=3034 io=1107087 cache=9332328 calls=99
+# total neon: wall_s=1768 io=870100 cache=7594917 calls=99

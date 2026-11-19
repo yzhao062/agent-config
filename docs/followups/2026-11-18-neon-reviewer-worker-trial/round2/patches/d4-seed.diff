@@ -1,0 +1,25 @@
+diff --git a/tests/test_codex_usage.py b/tests/test_codex_usage.py
+index 52c1e30..d179af1 100644
+--- a/tests/test_codex_usage.py
++++ b/tests/test_codex_usage.py
+@@ -1073,14 +1073,14 @@ class TestClaudeWindows(unittest.TestCase):
+     def test_zero_usage_keeps_its_meter(self):
+         """A window at 0% used is present, so it must not be mistaken for an
+         absent one."""
+-        rate_limits = {"five_hour": {"used_percentage": 0},
+-                       "seven_day": {"used_percentage": 0}}
++        rate_limits = {"five_hour": {"used_percentage": 1},
++                       "seven_day": {"used_percentage": 1}}
+         compact, full = self._segments(rate_limits)
+         row = self._row(rate_limits)
+-        self.assertEqual(compact, "cc 5h100% 7d100%")
+-        self.assertEqual(full, "🤖 Opus 5.5 · 5h 100% · 7d 100%")
+-        self.assertIn("5h 100% left", row)
+-        self.assertIn("7d 100% left", row)
++        self.assertEqual(compact, "cc 5h99% 7d99%")
++        self.assertEqual(full, "🤖 Opus 5.5 · 5h 99% · 7d 99%")
++        self.assertIn("5h 99% left", row)
++        self.assertIn("7d 99% left", row)
+ 
+     def test_both_windows_keep_their_order_and_row_layout(self):
+         rate_limits = {"five_hour": self.FIVE, "seven_day": self.WEEK}

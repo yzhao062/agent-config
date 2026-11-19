@@ -1,0 +1,165 @@
+diff --git a/skills/prun/scripts/dispatch-task-agy.py b/skills/prun/scripts/dispatch-task-agy.py
+index 0d8135e..b8f09f4 100644
+--- a/skills/prun/scripts/dispatch-task-agy.py
++++ b/skills/prun/scripts/dispatch-task-agy.py
+@@ -1007,12 +1007,30 @@ def atomic_publish(path: Path, text: str, nonce: str) -> None:
+ 
+ 
+ def response_path_for(result_path: Path) -> Path:
+-    """Sibling path for the final response when the worker wrote the result itself."""
++    """Sibling path for the full final response beside the published result."""
+     return result_path.with_name(
+         f"{result_path.stem}.response{result_path.suffix}"
+     )
+ 
+ 
++def trim_leading_narration(text: str, unit_id: str) -> str | None:
++    """Return ``text`` from the first ``# <unit-id> result`` line onward, or ``None``.
++
++    Returns ``None`` when the header line is absent or is already the first
++    non-empty line, so callers publish the response unchanged and write no
++    sibling file.
++    """
++    header = f"# {unit_id} result"
++    lines = text.strip().splitlines()
++    try:
++        index = lines.index(header)
++    except ValueError:
++        return None
++    if index == 0:
++        return None
++    return "\n".join(lines[index:])
++
++
+ def publish_fallback(
+     result_path: Path,
+     unit_id: str,
+@@ -1520,11 +1538,31 @@ def main(argv: list[str] | None = None) -> int:
+             exit_code = 70
+             reason = "Agy returned an implausibly short final response"
+         else:
++            full = response.strip()
++            trimmed = trim_leading_narration(full, args.unit_id)
+             try:
+-                atomic_publish(result_path, response.strip() + "\n", nonce)
++                atomic_publish(
++                    result_path,
++                    (trimmed if trimmed is not None else full) + "\n",
++                    nonce,
++                )
+             except OSError as exc:
+                 exit_code = 70
+                 reason = f"could not publish result atomically: {exc}"
++            else:
++                if trimmed is not None:
++                    try:
++                        atomic_publish(
++                            response_path_for(result_path),
++                            full + "\n",
++                            nonce,
++                        )
++                    except OSError as exc:
++                        print(
++                            f"dispatch-task-agy: published trimmed result; could not "
++                            f"store full response beside it: {exc}",
++                            file=sys.stderr,
++                        )
+ 
+     if exit_code != 0:
+         publish_fallback(
+diff --git a/tests/test_dispatch_task_agy.py b/tests/test_dispatch_task_agy.py
+index f434861..c0b4180 100644
+--- a/tests/test_dispatch_task_agy.py
++++ b/tests/test_dispatch_task_agy.py
+@@ -1368,6 +1368,91 @@ class DispatchTaskAgyIntegrationTests(unittest.TestCase):
+         self.assertEqual(beside.read_text(encoding="utf-8"), "done\n")
+         self.assertNotIn("FALLBACK", body)
+ 
++    def test_narration_before_header_is_trimmed_and_full_response_stored_beside(
++        self,
++    ) -> None:
++        # Agy workers often open with progress narration before the required
++        # `# <unit-id> result` line. Publish from the header onward and keep
++        # the full response beside it.
++        body = (
++            "# unit_a result\n"
++            "Conclusion: complete\n"
++            "Files: none\n"
++            "Open items: none\n"
++            "Verification: mock\n"
++        )
++        full = (
++            "I'll start by reading the files and checking section 3.\n"
++            "I will format the summary under # unit_a result once verified.\n\n"
++            + body
++        )
++        target = self.root / "unit-result.md"
++        result, target = self._run(
++            result_path=target,
++            extra_env={"MOCK_AGY_RESPONSE": full},
++        )
++        self.assertEqual(result.returncode, 0, result.stderr)
++        self.assertEqual(target.read_text(encoding="utf-8"), body)
++        beside = self.root / "unit-result.response.md"
++        self.assertEqual(beside.read_text(encoding="utf-8"), full)
++
++    def test_header_first_response_publishes_unchanged_with_no_sibling_file(
++        self,
++    ) -> None:
++        body = (
++            "# unit_a result\n"
++            "Conclusion: complete\n"
++            "Files: none\n"
++            "Open items: none\n"
++            "Verification: mock\n"
++        )
++        for label, response in (
++            ("line-0", body),
++            ("leading-blank-lines", "\n\n" + body),
++        ):
++            with self.subTest(label=label):
++                target = self.root / f"unit-result-{label}.md"
++                result, target = self._run(
++                    result_path=target,
++                    extra_env={"MOCK_AGY_RESPONSE": response},
++                )
++                self.assertEqual(result.returncode, 0, result.stderr)
++                self.assertEqual(target.read_text(encoding="utf-8"), body)
++                beside = self.root / f"unit-result-{label}.response.md"
++                self.assertFalse(beside.exists())
++
++    def test_response_without_exact_header_publishes_unchanged_with_no_sibling_file(
++        self,
++    ) -> None:
++        for label, response in (
++            (
++                "no-header",
++                "Summary of section 3 audit.\n"
++                "Conclusion: complete\n"
++                "Files: none\n"
++                "Open items: none\n"
++                "Verification: mock\n",
++            ),
++            (
++                "other-unit-header",
++                "I'll start by reading.\n\n# unit_b result\nConclusion: complete\n",
++            ),
++            (
++                "non-exact-header",
++                "I'll start by reading.\n\n# unit_a result (extra)\nConclusion: complete\n",
++            ),
++        ):
++            with self.subTest(label=label):
++                target = self.root / f"unit-result-{label}.md"
++                result, target = self._run(
++                    result_path=target,
++                    extra_env={"MOCK_AGY_RESPONSE": response},
++                )
++                self.assertEqual(result.returncode, 0, result.stderr)
++                self.assertEqual(target.read_text(encoding="utf-8"), response)
++                beside = self.root / f"unit-result-{label}.response.md"
++                self.assertFalse(beside.exists())
++
+     def test_error_status_publishes_fallback_with_the_backend_error(self) -> None:
+         # Agy exits 0 after a quota stop and still fills the ERROR event's
+         # response with the model's opening narration. Four units of one

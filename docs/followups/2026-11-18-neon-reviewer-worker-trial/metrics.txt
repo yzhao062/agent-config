@@ -1,0 +1,46 @@
+# Raw measurements, 2026-11-18. All 11 arms launched together at 16:06 local.
+# Wall time: dispatcher start to exit, seconds.
+swarm-neon exit=0 wall_s=836
+u1-hydrogen exit=0 wall_s=288
+u1-neon exit=0 wall_s=523
+u2-hydrogen exit=0 wall_s=316
+u2-neon exit=0 wall_s=364
+u3-hydrogen exit=0 wall_s=165
+u3-neon exit=0 wall_s=275
+vclean-carbon exit=0 wall_s=384
+vclean-neon exit=0 wall_s=190
+vseed-carbon exit=0 wall_s=748
+vseed-neon exit=0 wall_s=345
+
+# Token usage: the result event of each stream-json tail (scripts/usage.py); result_total = input + output.
+u1-hydrogen status=SUCCESS 'result_input_tokens': 231660, 'result_output_tokens': 28447, 'result_thinking_tokens': 14697, 'result_cache_read_tokens': 5047056, 'result_total_tokens': 260107
+u1-neon status=SUCCESS 'result_input_tokens': 244681, 'result_output_tokens': 35943, 'result_thinking_tokens': 16309, 'result_cache_read_tokens': 6333591, 'result_total_tokens': 280624
+u2-hydrogen status=SUCCESS 'result_input_tokens': 121646, 'result_output_tokens': 35259, 'result_thinking_tokens': 14814, 'result_cache_read_tokens': 1209499, 'result_total_tokens': 156905
+u2-neon status=SUCCESS 'result_input_tokens': 97761, 'result_output_tokens': 33624, 'result_thinking_tokens': 10375, 'result_cache_read_tokens': 595125, 'result_total_tokens': 131385
+u3-hydrogen status=SUCCESS 'result_input_tokens': 204047, 'result_output_tokens': 18522, 'result_thinking_tokens': 14103, 'result_cache_read_tokens': 982248, 'result_total_tokens': 222569
+u3-neon status=SUCCESS 'result_input_tokens': 122882, 'result_output_tokens': 21032, 'result_thinking_tokens': 15989, 'result_cache_read_tokens': 1146520, 'result_total_tokens': 143914
+vclean-carbon status=SUCCESS 'result_input_tokens': 102586, 'result_output_tokens': 21887, 'result_thinking_tokens': 16710, 'result_cache_read_tokens': 860200, 'result_total_tokens': 124473
+vclean-neon status=SUCCESS 'result_input_tokens': 90642, 'result_output_tokens': 17309, 'result_thinking_tokens': 12096, 'result_cache_read_tokens': 628166, 'result_total_tokens': 107951
+vseed-carbon status=SUCCESS 'result_input_tokens': 175672, 'result_output_tokens': 45106, 'result_thinking_tokens': 29479, 'result_cache_read_tokens': 3292442, 'result_total_tokens': 220778
+vseed-neon status=SUCCESS 'result_input_tokens': 115581, 'result_output_tokens': 30041, 'result_thinking_tokens': 19271, 'result_cache_read_tokens': 1186390, 'result_total_tokens': 145622
+# swarm-neon counts the coordinator only: the members' usage does not reach the stream.
+swarm-neon status=SUCCESS 'result_input_tokens': 131987, 'result_output_tokens': 44826, 'result_thinking_tokens': 7488, 'result_cache_read_tokens': 558639, 'result_total_tokens': 176813
+
+# Model calls: rows of gen_metadata in each Agy conversation database (steps = rows of steps).
+u1-hydrogen steps=106 model_calls=37
+u1-neon steps=116 model_calls=44
+u2-hydrogen steps=76 model_calls=20
+u2-neon steps=53 model_calls=14
+u3-hydrogen steps=33 model_calls=14
+u3-neon steps=35 model_calls=14
+vclean-carbon steps=37 model_calls=13
+vclean-neon steps=29 model_calls=11
+vseed-carbon steps=83 model_calls=32
+vseed-neon steps=42 model_calls=17
+swarm-coordinator steps=45 model_calls=14
+swarm-member steps=36 model_calls=11
+swarm-member steps=89 model_calls=25
+swarm-member steps=102 model_calls=19
+swarm-member steps=29 model_calls=9
+swarm-member steps=35 model_calls=11
+# Swarm members were matched by their workspace path (scratchpad/neon/swarm-neon) among conversations created 16:06-16:08.

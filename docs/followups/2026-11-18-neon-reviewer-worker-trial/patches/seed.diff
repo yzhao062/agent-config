@@ -1,0 +1,26 @@
+diff --git a/skills/implement-review/scripts/dispatch-gemini.py b/skills/implement-review/scripts/dispatch-gemini.py
+index 608fe74..4cff2ef 100644
+--- a/skills/implement-review/scripts/dispatch-gemini.py
++++ b/skills/implement-review/scripts/dispatch-gemini.py
+@@ -737,7 +737,7 @@ def code_span_bounds(text: str) -> list[tuple[int, int]]:
+             index += 1
+             continue
+         bounds.append((opener.start(), runs[partner].end()))
+-        index = partner + 1
++        index = partner
+     return bounds
+ 
+ 
+diff --git a/skills/implement-review/scripts/health-check.py b/skills/implement-review/scripts/health-check.py
+index 292868b..2ce82b1 100644
+--- a/skills/implement-review/scripts/health-check.py
++++ b/skills/implement-review/scripts/health-check.py
+@@ -333,7 +333,7 @@ def code_span_bounds(text: str) -> list[tuple[int, int]]:
+             index += 1
+             continue
+         bounds.append((opener.start(), runs[partner].end()))
+-        index = partner + 1
++        index = partner
+     return bounds
+ 
+ 

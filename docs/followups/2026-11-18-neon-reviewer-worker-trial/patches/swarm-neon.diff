@@ -1,0 +1,198 @@
+diff --git a/skills/prun/scripts/dispatch-task-agy.py b/skills/prun/scripts/dispatch-task-agy.py
+index 0d8135e..4dabe69 100644
+--- a/skills/prun/scripts/dispatch-task-agy.py
++++ b/skills/prun/scripts/dispatch-task-agy.py
+@@ -1007,12 +1007,31 @@ def atomic_publish(path: Path, text: str, nonce: str) -> None:
+ 
+ 
+ def response_path_for(result_path: Path) -> Path:
+-    """Sibling path for the final response when the worker wrote the result itself."""
++    """Sibling path for the full final response beside the published result."""
+     return result_path.with_name(
+         f"{result_path.stem}.response{result_path.suffix}"
+     )
+ 
+ 
++def trim_response_preamble(response: str, unit_id: str) -> tuple[str, bool]:
++    """Strip leading narration before an exact ``# <unit_id> result`` line.
++
++    Returns ``(text, trimmed)`` after stripping surrounding whitespace. When
++    the exact header line appears after other text, returns the response from
++    the first matching line onward and ``True``. When the header is absent or
++    already on the first line, returns the cleaned response and ``False``.
++    """
++    cleaned = response.strip()
++    header = f"# {unit_id} result"
++    lines = cleaned.splitlines(keepends=True)
++    for index, line in enumerate(lines):
++        if line.rstrip("\r\n") == header:
++            if index == 0:
++                return cleaned, False
++            return "".join(lines[index:]), True
++    return cleaned, False
++
++
+ def publish_fallback(
+     result_path: Path,
+     unit_id: str,
+@@ -1520,11 +1539,27 @@ def main(argv: list[str] | None = None) -> int:
+             exit_code = 70
+             reason = "Agy returned an implausibly short final response"
+         else:
++            full_response = response.strip()
++            body, trimmed = trim_response_preamble(full_response, args.unit_id)
+             try:
+-                atomic_publish(result_path, response.strip() + "\n", nonce)
++                atomic_publish(result_path, body + "\n", nonce)
+             except OSError as exc:
+                 exit_code = 70
+                 reason = f"could not publish result atomically: {exc}"
++            else:
++                if trimmed:
++                    try:
++                        atomic_publish(
++                            response_path_for(result_path),
++                            full_response + "\n",
++                            nonce,
++                        )
++                    except OSError as exc:
++                        print(
++                            f"dispatch-task-agy: published trimmed result; could not store "
++                            f"full response beside it: {exc}",
++                            file=sys.stderr,
++                        )
+ 
+     if exit_code != 0:
+         publish_fallback(
+diff --git a/tests/test_dispatch_task_agy.py b/tests/test_dispatch_task_agy.py
+index f434861..96193ac 100644
+--- a/tests/test_dispatch_task_agy.py
++++ b/tests/test_dispatch_task_agy.py
+@@ -780,6 +780,45 @@ class DispatchTaskAgyUnitTests(unittest.TestCase):
+         self.assertEqual(observed, line, "tail did not grow while the pipe stayed open")
+         self.assertFalse(pump.is_alive(), "the pump did not return at EOF")
+ 
++    def test_trim_response_preamble_strips_narration_before_exact_header(self) -> None:
++        trim = self.module.trim_response_preamble
++        body = "# unit_a result\nConclusion: complete\nFiles: none"
++        self.assertEqual(
++            trim(f"I checked the files first.\n\n{body}\n", "unit_a"),
++            (body, True),
++        )
++        # CRLF line endings match the exact header line and keep the body intact.
++        crlf_body = "# unit_a result\r\nConclusion: complete\r\nFiles: none"
++        self.assertEqual(
++            trim(f"Opening narration.\r\n{crlf_body}\r\n", "unit_a"),
++            (crlf_body, True),
++        )
++        # Multiple matching headers cut at the first match.
++        repeated = f"{body}\n\n# unit_a result\nSecond copy"
++        self.assertEqual(
++            trim(f"Opening narration.\n{repeated}\n", "unit_a"),
++            (repeated, True),
++        )
++
++    def test_trim_response_preamble_leaves_header_first_and_no_header_alone(self) -> None:
++        trim = self.module.trim_response_preamble
++        body = "# unit_a result\nConclusion: complete\nFiles: none"
++        # Header first, with body, with no trailing content, with leading
++        # whitespace only, or with a repeated header later.
++        for label, text, expected in (
++            ("header-first", f"{body}\n", body),
++            ("header-only", "# unit_a result", "# unit_a result"),
++            ("whitespace-prefix", f"\n\n   \n{body}\n", body),
++            ("header-first-repeated", f"{body}\n# unit_a result\nMore\n", f"{body}\n# unit_a result\nMore"),
++            ("no-header", "Conclusion: complete\nFiles: none\n", "Conclusion: complete\nFiles: none"),
++            ("prefix-only-header", "Narration.\n# unit_a result extra\nDone\n", "Narration.\n# unit_a result extra\nDone"),
++            ("trailing-space-header", "Narration.\n# unit_a result \nDone\n", "Narration.\n# unit_a result \nDone"),
++            ("indented-header", "Narration.\n  # unit_a result\nDone\n", "Narration.\n  # unit_a result\nDone"),
++            ("wrong-unit-header", "Narration.\n# unit_b result\nDone\n", "Narration.\n# unit_b result\nDone"),
++        ):
++            with self.subTest(label):
++                self.assertEqual(trim(text, "unit_a"), (expected, False))
++
+ 
+ class DispatchTaskAgyIntegrationTests(unittest.TestCase):
+     @classmethod
+@@ -1368,6 +1407,81 @@ class DispatchTaskAgyIntegrationTests(unittest.TestCase):
+         self.assertEqual(beside.read_text(encoding="utf-8"), "done\n")
+         self.assertNotIn("FALLBACK", body)
+ 
++    def test_narration_before_header_publishes_from_header_and_keeps_full_response(self) -> None:
++        header_onward = (
++            "# unit_a result\nConclusion: complete\nFiles: none\n"
++            "Open items: none\nVerification: mock\n"
++        )
++        full_response = (
++            "I will inspect section 3 and verify the claims.\n\n"
++            "Everything checked out.\n\n" + header_onward
++        )
++        for name, expected_response_name in (
++            ("unit-result.md", "unit-result.response.md"),
++            ("unit-result.txt", "unit-result.response.txt"),
++        ):
++            with self.subTest(name=name):
++                target = self.root / name
++                result, target = self._run(
++                    result_path=target,
++                    extra_env={"MOCK_AGY_RESPONSE": full_response},
++                )
++                self.assertEqual(result.returncode, 0, result.stderr)
++                self.assertEqual(target.read_text(encoding="utf-8"), header_onward)
++                beside = self.root / expected_response_name
++                self.assertEqual(beside.read_text(encoding="utf-8"), full_response)
++
++    def test_header_first_response_publishes_unchanged_without_extra_file(self) -> None:
++        expected = (
++            "# unit_a result\nConclusion: complete\nFiles: none\n"
++            "Open items: none\nVerification: mock\n"
++        )
++        for index, response in enumerate((expected, "\n\n" + expected)):
++            with self.subTest(index=index):
++                target = self.root / f"header-first-{index}.md"
++                result, target = self._run(
++                    result_path=target,
++                    extra_env={"MOCK_AGY_RESPONSE": response},
++                )
++                self.assertEqual(result.returncode, 0, result.stderr)
++                self.assertEqual(target.read_text(encoding="utf-8"), expected)
++                self.assertFalse((self.root / f"header-first-{index}.response.md").exists())
++
++    def test_response_without_header_publishes_unchanged_without_extra_file(self) -> None:
++        for index, response in enumerate(
++            (
++                "Conclusion: complete\nFiles: none\nOpen items: none\nVerification: mock\n",
++                "Narration before near miss.\n# unit_a result extra\nConclusion: complete\n",
++            )
++        ):
++            with self.subTest(index=index):
++                target = self.root / f"no-header-{index}.md"
++                result, target = self._run(
++                    result_path=target,
++                    extra_env={"MOCK_AGY_RESPONSE": response},
++                )
++                self.assertEqual(result.returncode, 0, result.stderr)
++                self.assertEqual(target.read_text(encoding="utf-8"), response)
++                self.assertFalse((self.root / f"no-header-{index}.response.md").exists())
++
++    def test_error_status_with_narration_and_header_still_publishes_fallback(self) -> None:
++        response = (
++            "Opening narration before stop.\n\n"
++            "# unit_a result\nConclusion: partial\nFiles: none\n"
++        )
++        target = self.root / "error-narration.md"
++        result, target = self._run(
++            result_path=target,
++            extra_env={
++                "MOCK_AGY_STATUS": "ERROR",
++                "MOCK_AGY_ERROR": "The stream was interrupted.",
++                "MOCK_AGY_RESPONSE": response,
++            },
++        )
++        self.assertEqual(result.returncode, 70, result.stderr)
++        self.assertIn("FALLBACK", target.read_text(encoding="utf-8").splitlines()[0])
++        self.assertFalse((self.root / "error-narration.response.md").exists())
++
+     def test_error_status_publishes_fallback_with_the_backend_error(self) -> None:
+         # Agy exits 0 after a quota stop and still fills the ERROR event's
+         # response with the model's opening narration. Four units of one

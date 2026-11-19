@@ -1,0 +1,13 @@
+diff --git a/scripts/agent_models.py b/scripts/agent_models.py
+index 8f3b67b..aea5439 100644
+--- a/scripts/agent_models.py
++++ b/scripts/agent_models.py
+@@ -1035,7 +1035,7 @@ def map_repo(
+         direct_reviewer = {
+             family
+             for family, role, how in file_readers
+-            if role == "reviewer" and family != "*" and how not in SLASH_COMMANDS
++            if role in ("reviewer", "worker", "prun-worker") and family != "*" and how not in SLASH_COMMANDS
+         }
+         if len(direct_reviewer) >= 2:
+             # A file resolving two or more reviewer rows dispatches its own panel,
