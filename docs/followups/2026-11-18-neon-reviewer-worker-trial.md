@@ -4,7 +4,7 @@ Google released Gemini 4 Neon on 2026-11-18. This trial asked three questions ab
 
 Models are written as the registry's `<stem>/<effort>`, the form `agent_models.py map` prints. The Agy CLI slug is `<stem>-<effort>`, which is what `ANTIGRAVITY_DISPATCH_MODEL` took in this trial.
 
-**Status**: decided for the Agy rows on 2026-11-18. Argon leaves the registry, the reviewer moves to `gemini-4-neon/high` after a second round on six past commits, and the `prun` worker stays. Still open: the `code_span_bounds` regression, dispatcher tests that inherit a dispatch override, and a possible `/swarm` trial on a task whose pieces depend on each other (Decisions). The archive of both rounds (prompts, scoring keys, submitted reviews and results, patches, scripts, measurements, and the dispatchers' model records) is in [2026-11-18-neon-reviewer-worker-trial/](2026-11-18-neon-reviewer-worker-trial/), with round 2 under `round2/`.
+**Status**: decided for the Agy rows on 2026-11-18. Argon leaves the registry, the reviewer moves to `gemini-4-neon/high` after a second round on six past commits, and the `prun` worker stays. The side findings are settled: the weak tests are replaced, the dispatcher tests no longer inherit a dispatch override, and the LaTeX-quote pairing in Check 8 stays as a known low risk. Still open: a possible `/swarm` trial on a task whose pieces depend on each other (Decisions). The archive of both rounds (prompts, scoring keys, submitted reviews and results, patches, scripts, measurements, and the dispatchers' model records) is in [2026-11-18-neon-reviewer-worker-trial/](2026-11-18-neon-reviewer-worker-trial/), with round 2 under `round2/`.
 
 ## Agy rows of the registry before this change
 
@@ -122,7 +122,7 @@ The launcher started five individual `gemini-4-neon/high` jobs, three `gemini-4-
 ## Side findings
 
 1. **A regression in shipped `health-check.py` (Low).** Since 0878a02, and still at HEAD, `code_span_bounds` pairs two double-backtick runs on one physical line as a code span. A stream-json tail holds a whole event on one line, so two LaTeX opening quotes (written as two backticks each) in one event hide any failure marker between them from Check 8. The old two-regex code exposed that marker. Only the `gemini-4-neon/high` reviewer reported it, and `scripts/check_side_findings.py` reproduces it. A `/vet` of a LaTeX paper is where it would show up.
-2. **Two tests that do not tell old from new.** Both reviewers reported that two assertions added in 0878a02 pass on the old code: the "double-backtick span holding a backtick" case in `tests/test_health_check.py`, and the nested-fence assertion in `tests/test_dispatch_gemini.py`. Each claim holds. The script runs each against both versions, beside an input that does tell them apart. No test places checked text between two spans of the same width either, which is how the planted bug passed both test files.
+2. **Two tests that do not tell old from new.** Both reviewers reported that two assertions added in 0878a02 pass on the old code: the "double-backtick span holding a backtick" case in `tests/test_health_check.py`, and the nested-fence assertion in `tests/test_dispatch_gemini.py`. Each claim holds. The script runs each against both versions, beside an input that does tell them apart. At 0878a02, neither test file placed checked text between two spans of the same width, so both missed the planted bug.
 3. **An inherited override breaks the dispatcher tests.** Both reviewers of the seeded diff first saw 26 failures in `tests/test_dispatch_gemini.py`, because the `ANTIGRAVITY_DISPATCH_MODEL` the trial set to choose the model reached the reviewer's shell. Each reran with `env -u`. Round 2 met the same failures in `tests/test_dispatch_gemini.py` and `tests/test_dispatch_task_agy.py` when reviews ran the affected tests with the override set.
 
 ## Limits
@@ -144,8 +144,10 @@ Agy rows, changed through the `agent-models` skill in ac and aa together:
 | worker | `gemini-4-hydrogen/high` | unchanged | |
 | prun-worker | `gemini-4-hydrogen/high` | unchanged | `prun` section |
 
-Still open:
+Side findings, settled on 2026-11-18 in the commit after the registry change:
 
-1. `code_span_bounds`, both copies: decide how two double-backtick runs on one long line should pair, then replace the two weak assertions with the discriminating inputs in `scripts/check_side_findings.py` and add a case with checked text between two spans of the same width.
-2. `/swarm`: `prun` stays the outer layer. A further trial is worth running only on a broad task whose pieces depend on each other, where the shared board could matter; a dispatcher path that lets a unit start with `/swarm` waits for that result.
-3. Dispatcher tests that inherit a dispatch override (Side findings, item 3): clear inherited Agy model and effort overrides in the fixtures of `tests/test_dispatch_gemini.py` and `tests/test_dispatch_task_agy.py`, and keep explicit overrides in the tests that exercise them.
+1. `code_span_bounds` tests: the two weak assertions now use the discriminating inputs from `scripts/check_side_findings.py`, and new cases put checked text between two spans of the same width in Check 8, Check 10, and the recovery check. The planted `index = partner` bug fails all three cases, and the old code fails the replaced assertions.
+2. `code_span_bounds` behavior: kept as is. Two LaTeX opening quotes on one tail line can hide a marker between them. Check 8 can still warn on a marker in a separate event or in stderr, or on a recovery record the dispatcher writes, and a failed exit or a missing review also exposes the failure. A change would first have to decide how such runs pair without splitting backticked Windows paths at an escaped `\n`.
+3. Dispatcher tests: `_run` in `tests/test_dispatch_gemini.py` and `tests/test_dispatch_task_agy.py` now clears `ANTIGRAVITY_DISPATCH_MODEL`, `ANTIGRAVITY_DISPATCH_EFFORT`, and `ANTIGRAVITY_PREFLIGHT` when the caller's shell sets them, as `_print_model` in `tests/test_dispatch_gemini.py` already did. Tests that exercise an override still pass it through `extra_env`. Before the change, the two files had 80 failures with `ANTIGRAVITY_DISPATCH_MODEL` set in the shell and 22 with `ANTIGRAVITY_PREFLIGHT=off`; they now pass with either set.
+
+Still open: `/swarm`. `prun` stays the outer layer. A further trial is worth running only on a broad task whose pieces depend on each other, where the shared board could matter; a dispatcher path that lets a unit start with `/swarm` waits for that result.
