@@ -92,6 +92,7 @@ This list is the backlog of the writing harness. Add an item when a gap or confl
 - `skills/implement-review/SKILL.md` still names "the four checks" of General lens item 7, which now lists more.
 - `skills/my-router/references/routing-table.md` lists `bibref-filler` and `bibref-verify` among the shared skills, though consumers get them from `agent-pack`. `agent-config/skills/` also keeps a second copy of both, and the two copies of `bibref-verify/SKILL.md` already differ.
 - The `style-review` skill in `agent-style` reviews Markdown only, is not deployed to consumers, and its revision prompt does not mention the House Style.
+- At the next `agent-style` release, after measuring the composed consumer size, add to the House Style and RULE-04 four section habits that `agent-pack/skills/author-voice/references/templates.md` has carried since 2026-11-19. Abstracts and conclusions state the answer the body supports (for proposed work, the question the work will test), point at no section, appendix, figure, or table (RULE-04 already names tables and figures), and cite papers rarely. Contribution lists in the introduction use short heads in the MetaOD form. `voice_check.py` measures the pointers, citations, and heads, and a reader judges the answer. Checked 2026-11-19.
 - Consumer-local exceptions and writing rules kept only in Claude Code memory are listed in the maintainer's local follow-up plan, since several repositories are private.
 
 ## Refreshing this map
