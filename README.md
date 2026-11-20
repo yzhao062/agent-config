@@ -234,6 +234,8 @@ docs/
   claude-code-tips.md              # Workflows and best practices
   claude-code-reference.md         # Keyboard shortcuts, slash commands, vim mode
   claude-code-extras.md            # Buddy/companion, plugins
+  writing-harness-map.md           # Component locations, placement of new rules and checks, open follow-ups
+  writing-harness-handoff.md       # Handoff for drafting papers and proposals in the maintainer's voice with agent-style
 .claude/commands/                  # Claude Code pointer commands for shared skills
   agent-models.md
   bibref-filler.md
