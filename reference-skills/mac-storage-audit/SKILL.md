@@ -48,6 +48,8 @@ Inspect independently sized areas without counting parent and child totals twice
 
 ## Trace scattered artifacts
 
+Start each weekly scan with finished experiments whose scratch directories may hold the only copy of an original result. Check system temporary directories as well as persistent agent scratch. For each finding, report the exact file path, owning experiment, evidence of completion, and where that same result can be recovered (archive member, repository revision and path, or cluster copy). State how the copy was verified. If completion or recovery is uncertain, identify what was checked and what remains unknown.
+
 First revisit every high-risk artifact named in the previous audit. Record present, confirmed relocated, or missing from the original location. Put missing high-risk artifacts first in the report. Search documented archives and selected distinctive filenames before asking where they went. An unsuccessful Spotlight search is not exhaustive. Do not equate a missing original path with data loss, or infer automatic retention from a size reduction. Agent-managed scratch, including Agy brain, is not dependable archival storage.
 
 For large project-external paths, inspect names and metadata, source-code output defaults, and references from current project scripts. Watch for `Path.home()`, `expanduser`, model download defaults, `HF_HOME`, `cache_dir`, persistent agent scratch, and relative paths resolved from an unexpected working directory. Distinguish reads from writes, local execution from remote/CI code, and cleaned-up temporary contexts from retained workspaces.
