@@ -37,14 +37,15 @@ The user's prompt often contains the clearest signal. Match keywords to skills:
 
 | Keywords in prompt | Skill | Source |
 |---|---|---|
+| "polish README", "modernize README", "README audit", "README rewrite", "README badges", "README hero", "GitHub README patterns" | Use `polish` when installed to draft or revise README prose. Use `readme-polish` for layout, structure, badges, and the hero. Apply both when the request covers both. | `.claude/skills/polish/` (`acad-skills` pack), `skills/readme-polish/` (shared) |
+| "draft the abstract", "write the section", "rewrite this paragraph", "revise the text", "polish", "write an email reply", "写摘要", "写这一节", "改写", "润色" (drafting or revising prose a person will read, never code) | `polish` when installed, the one entry for writing; without it, `author-voice` for a paper or proposal section | `.claude/skills/polish/` (`acad-skills` pack) |
 | "cite", "citation", "bibliography", "bib", "references" | `bibref-filler` (or local variant like `nsf-bibref-filler` if available) | `skills/` (shared), check local first |
 | "editable figure", "editable diagram", "PowerPoint figure", "PPTX figure", "可编辑图", "用PPT画图" | `editable-figure` | `skills/` (shared) |
 | "figure", "diagram", "illustration", "schematic", "overview figure", "Figure 1", "总览图", "图 1" | `figure-prompt-builder`, with the `editable-figure` gallery for paper/proposal explanatory figures | `skills/` (shared) |
 | "mockup", "HTML figure", "HTML mockup", "interactive figure", "dashboard mockup", "Gantt", "screenshotable figure", "capture mode", "skia-canvas", "TikZ figure", "arrow routing" | `ci-mockup-figure` | `skills/` (shared) |
 | "review staged", "review changes", "review the diff" | `implement-review` | `skills/` (shared) |
-| "polish README", "modernize README", "README audit", "README rewrite", "README badges", "README hero", "GitHub README patterns" | `readme-polish` | `skills/` (shared) |
 | "which model does", "what model runs", "switch the model", "change the model", "change the effort", "effort level", "model registry", "is the setting taking effect", "MODEL-MISMATCH" | `agent-models` | `skills/` (shared) |
-| "proposal", "nsf", "nih", "grant", "solicitation", "aim", "thrust" | Proposal skills (check for local `nsf-*`, `nih-*` skills first) | `reference-skills/` (project-local) |
+| "proposal", "nsf", "nih", "grant", "solicitation", "aim", "thrust" | `polish` to draft or revise the prose when installed (`author-voice` for a section without it), then proposal skills (check for local `nsf-*`, `nih-*` skills first) | `.claude/skills/polish/` (`acad-skills` pack), `reference-skills/` (project-local) |
 | "review paper", "peer review", "reviewer comments" | `cs-paper-review` | `reference-skills/` (project-local) |
 | "meta-review", "area chair", "AC decision" | `cs-meta-review` | `reference-skills/` (project-local) |
 | "slides", "presentation", "beamer" | `paper-to-beamer` or `deck-assembler` | `reference-skills/` (project-local) |
@@ -59,17 +60,17 @@ A question about which model or effort an agent role runs on, a request to chang
 
 ### 2. File types in working directory
 
-If prompt keywords are ambiguous, inspect the files being worked on:
+If prompt keywords are ambiguous, inspect the files being worked on. Where a row names `polish` and the `acad-skills` pack is not installed, use the writing row's fallback (`author-voice` for a paper or proposal section):
 
 | Files present | Likely context | Default skill |
 |---|---|---|
-| `.tex` + `.bib` in a `paper/` or manuscript directory | Paper writing | `bibref-filler` for citations, `implement-review` (paper lens) for review |
-| `.tex` + `.bib` in a `proposal/` or `nsf/` or `grant/` directory | Proposal writing | Proposal skills (check for local `nsf-*` or `nih-*` skills first), `implement-review` (ask user which agency lens) for review |
+| `.tex` + `.bib` in a `paper/` or manuscript directory | Paper writing | `polish` to draft or revise prose, `bibref-filler` for citations, `implement-review` (paper lens) for review |
+| `.tex` + `.bib` in a `proposal/` or `nsf/` or `grant/` directory | Proposal writing | `polish` to draft or revise prose, proposal skills for the rest (check for local `nsf-*` or `nih-*` skills first), `implement-review` (ask user which agency lens) for review |
 | `.py`, `.js`, `.ts`, or other code files | Code | Superpowers handles directly (brainstorm → plan → execute → verify) |
 | `.md` slides or presentation files | Presentations | `paper-to-beamer` or `deck-assembler` |
 | HTML mockups for system/dashboard figures | System figures | `ci-mockup-figure` |
 | HTML mockups for general frontend/demos | Frontend | `frontend-design` plugin |
-| `.md` in a proposal or grant directory | Proposal (Markdown-based) | Proposal skills (check for local skills first) |
+| `.md` in a proposal or grant directory | Proposal (Markdown-based) | `polish` to draft or revise prose, proposal skills for the rest (check for local skills first) |
 | Staged git changes | Review needed | `implement-review` |
 
 ### 3. Project structure hints
@@ -138,7 +139,7 @@ Router selects `editable-figure`, applies the proposal context, and uses the ava
 → Router detects: keyword "figure" + "proposal" → checks for local `nsf-figure-builder` → if found, uses it; otherwise falls back to shared `figure-prompt-builder`
 
 **User says:** "Help me improve this section"
-→ Router detects: `.tex` in proposal directory, no specific keyword → asks user: "This looks like proposal work. Should I use local proposal skills, or is this general editing?"
+→ Router detects: `.tex` in a proposal directory, no prose keyword → `polish` to revise the prose (when installed), and the local proposal skills for the solicitation rules.
 
 **User says:** "Build the feature and review it"
 → Router detects: code context → superpowers handles the build, then router dispatches to `implement-review` with code lens

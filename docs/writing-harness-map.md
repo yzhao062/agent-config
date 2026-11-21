@@ -27,9 +27,9 @@ Before adding or changing anything that shapes how an agent writes, find its hom
 |---|---|---|---|---|
 | Rules read while writing | `agent-style` rules with the Escape Hatch and the House Style | `agent-style/RULES.md`; consumers load `docs/rule-pack-compact.md` | always, through the composed `AGENTS.md` | every agent that reads `AGENTS.md` |
 | | Communication, Writing Defaults, Formatting Defaults | `agent-config/AGENTS.md` (byte-identical in `anywhere-agents`) | always | every agent |
-| | Profile defaults: `agent-style` binding, `author-voice` on each paper or proposal section, the decision-support stance kept out of manuscripts | `agent-pack/docs/rule-pack-compact.md` | always | every agent |
+| | Profile defaults: `agent-style` binding, `/polish` as the one entry for drafting or revising prose (`author-voice` on each paper or proposal section where `/polish` is absent), the decision-support stance kept out of manuscripts | `agent-pack/docs/rule-pack-compact.md` | always | every agent |
 | | Revision discipline and venue conventions | `agent-pack/docs/paper-workflow-compact.md` | always | every agent |
-| Drafting | `author-voice`: templates, exemplars, `voice_check.py` | `agent-pack/skills/author-voice/` | on command, and by the profile rule on every paper or proposal section | Claude Code, Codex |
+| Drafting | `author-voice`: templates, exemplars, `voice_check.py` | `agent-pack/skills/author-voice/` | through `/polish` on every paper or proposal section; by the profile rule directly only where `/polish` is absent; alone on command to read a model or measure a draft | Claude Code, Codex |
 | | `bibref-filler` | `agent-pack/skills/bibref-filler/` (a copy also sits in `agent-config/skills/`) | on command | Claude Code, Codex |
 | Figures | Quantitative paper figures and their data-derived annotations | `skills/programmatic-figure/` in both shared repositories | on command | any |
 | | Editable explanatory figures (overview, mechanism, README) | `skills/editable-figure/` in both shared repositories | on command | any |
@@ -41,7 +41,7 @@ Before adding or changing anything that shapes how an agent writes, find its hom
 | | Citation audit | `agent-pack/skills/bibref-verify/` | on command | Claude Code, Codex |
 | | `agent-style review` CLI: deterministic checks on any file; `--polish` needs a skill host | `agent-style/packages/pypi/agent_style/cli.py`, installed with the package | on command, in any repository | any agent with a shell |
 | | `style-review` skill: semantic review and a revised copy beside the file | `agent-style/skills/style-review/` | on command, inside the `agent-style` repository only | Claude Code |
-| Polish | `/polish`: review, redraft or edit in place, recheck, report | `agent-pack/skills/polish/` | on command | whichever agent runs it as coordinator edits, Claude Code or Codex; the request overrides the profile pack's Claude-drafts default |
+| Polish | `/polish`, the one entry for writing: read the rules and the author's models, plan, draft from sources or rewrite each paragraph that does not read well, check content, report | `agent-pack/skills/polish/`; `skills/my-router/SKILL.md` in `agent-config` routes writing requests to it | on command, and by the profile rule on every piece of prose a person will read | on request, the Claude Code or Codex coordinator edits; on an automatic pass, Claude drafts and a Codex or Agy coordinator hands off |
 | | `readme-polish`: README layout and structure | `skills/readme-polish/` | on command | any |
 | Evidence and decisions | Habit bench, House Style bench, human baseline | `agent-style/docs/bench-habit-v0.5.0.md`, `docs/bench-house-style.md`, `scripts/human-baseline/` | manual | |
 | | Defensive-writing trial, expected-utility pilot, slimming audit | `agent-config/docs/followups/2026-10-06-defensive-writing-trial.md`, `2026-10-25-eu-guidance-pilot.md`, `2026-10-18-harness-slimming-audit.md` | manual | |
@@ -49,7 +49,7 @@ Before adding or changing anything that shapes how an agent writes, find its hom
 
 ## What `/polish` draws on
 
-`/polish` adds no style rule of its own. It runs the checks below and has the coordinating agent read the rule text, so a change in any of these homes reaches it without an edit to the skill. A new check reaches it through `implement-review/scripts/style-audit.py`, through `author-voice/scripts/voice_check.py` on a paper or proposal (step 2 already records each `CHECK`), through a new line in the skill's step 2, or through `agent-pack/skills/polish/scripts/content_check.py`, which steps 3 and 4 run.
+`/polish` is the one entry for writing. This table records where it reads each rule and runs each check, and a change that adds a piece to this map adds its row here too. `/polish` adds no style rule of its own. It runs the checks below and has the coordinating agent read the rule text, so a change to an existing rule or detector in these homes reaches the next pass without an edit to the skill. A new check reaches it through `implement-review/scripts/style-audit.py`, through `author-voice/scripts/voice_check.py` on a paper or proposal, through a new line among the diagnostics of the skill's step 4, or through `agent-pack/skills/polish/scripts/content_check.py`, which snapshots in step 3 and compares in step 4.
 
 | Concern | Rule text the agent reads | Check the skill runs |
 |---|---|---|
@@ -57,6 +57,9 @@ Before adding or changing anything that shapes how an agent writes, find its hom
 | Banned words | the Writing Defaults list in `AGENTS.md` | `style-audit.py`, which takes the list and its close variants from `guard.py`; the guard hook also blocks them at write time |
 | `agent-style` rules | the composed rule pack | `implement-review/scripts/style-audit.py`, which takes the release-gated detector set from `guard.py` and runs it from the installed `agent_style` package |
 | Defensive writing | RULE-08 and RULE-03, Revision Discipline, the review lenses named in the first table | the RULE-08 repeated-caveat detector inside `style-audit.py`, and the word count against the last commit |
+| Revision discipline and venue conventions | Revision Discipline and the venue conventions of `paper-workflow` in the composed `AGENTS.md` | none; the step 1 reading and the step 2 plan |
+| Project and genre conventions | the repository's `AGENTS.local.md` and every style source it names | none; step 1 reads them |
+| Numbers and summary sections | the House Style and Writing Defaults on figures; Paper lens item 4; the `author-voice` templates | `voice_check.py` figure, pointer, and citation ranges for an abstract or conclusion; `content_check.py` for a removed, retokenized, or added value, and the step 4 reading for a move that keeps the count |
 | The edit itself | the skill's Content and Expression section and steps 3 and 4 | `agent-pack/skills/polish/scripts/content_check.py`, which reports per-file count changes for the numbers, citations, links, labels, cross-references, and math expressions it recognizes; the coordinating agent checks backing, claim strength and scope, qualifiers, and relations against the baseline by reading |
 
 ## Coverage by agent
