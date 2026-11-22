@@ -175,7 +175,7 @@ Replace `owner/private-test` with one of your own private repos; the test is sha
 ### `agent-pack` (public, third-party reference + personal extension layer)
 
 - `pack.yaml` — self-describing v2 manifest declaring 3 packs (`profile`, `paper-workflow`, `acad-skills`); mirrors the schema used by `aa-core-skills` so v0.5.0 remote-fetch tooling reads it without special handling
-- `docs/rule-pack.md` — `profile` pack body (maintainer identity, public projects, communication preferences, tools, conventions); CC-BY-4.0
+- `docs/rule-pack.md` — `profile` pack, full reference (identity, links to current research and projects, communication preferences, tools, conventions); consumers load `docs/rule-pack-compact.md`; CC-BY-4.0
 - `docs/paper-workflow.md` — `paper-workflow` pack body (Overleaf submodule etiquette, merge-conflict resolution, NSF/NIH framework defaults); CC-BY-4.0
 - `skills/{bibref-filler,bibref-verify,figure-candidate-gallery,figure-prompt-builder,venue-review-panel}/` — active skill content for the `acad-skills` pack; remote installation via `anywhere-agents` v0.5.0+ direct-URL pack consumption
 - `scripts/validate.py` — v2 schema validator (allowed `update_policy`, allowed `kind`, file mapping path existence); CI runs on every push
