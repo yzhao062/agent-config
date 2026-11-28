@@ -50,3 +50,7 @@
 脚本、manifest、执行日志和三轮复核在会话 scratchpad `/private/tmp/claude-501/-Users-yzhao062-PycharmProjects-agent-config/b2fe6cf1-851d-493f-99bf-1d804d5f5440/scratchpad/deadwood-batch1/`，临时目录可能随系统清理而消失；本节是保留下来的记录。
 
 第二批尚未执行。先把开头表中三组评测的唯一原始文件保存到持久目录，再处理 Agy brain。其他待处理项需要先核验恢复路径并保存唯一副本，再决定是否删除：Codex worktree（用 `git worktree remove`）、figure1 JSON、github.io scratch 中的证据、agent-insurance 的 PDF、旧 Claude workflow 记录，以及 Grok 审查会话（用 `grok sessions delete`）。让存储保持稳态、不再依赖这类清理的机制见[存储稳态计划](followups/2026-11-27-storage-steady-state.md)。
+
+## 有意保留的备份
+
+`~/Documents/Winref` 是用户从上一台 Windows 电脑迁移时留下的备份，保留至今是为了日后可能需要的文件。目录创建于 2026 年 9 月 21 日。11 月 27 日按分配块计，备份约占 143.4 GB，与 11 月 7 日长期记录中的数值相同，整个 `~/Documents` 约占 144.8 GB。用户预计几个月后可能会删除这份备份。在用户作出决定前，各批清理均跳过该目录，审计只报告其大小。旧电脑或其他磁盘上是否还有完整副本尚未核实，删除前按唯一副本对待。若用户决定删除，先按 [Mac 设置与重装恢复指南](mac-mouse-preferences.md) 中的清单和目录内的 `START-HERE.md`，确认独有文件和未迁移的仓库都已迁出。不要在该目录内运行 Git；各仓库的 Git 状态记录在目录内的 `migration-handoff/git-handoff-current.json`。
