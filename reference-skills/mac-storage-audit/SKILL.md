@@ -11,7 +11,7 @@ Invoke this skill at `reference-skills/mac-storage-audit/SKILL.md` inside agent-
 
 ## Permissions and priorities
 
-Inspect existing files without modifying, moving, deleting, installing, or changing settings. Read-only analysis is permitted when the user says not to modify files. Create only small new analysis artifacts in a fresh system temporary directory when needed. Saving a report in the repo, updating a baseline, cleaning caches, or creating a scheduled scan each needs user authorization. Do not bootstrap inspected projects. Never print credentials, session message contents, or complete environment variables.
+Inspect existing files without modifying, moving, deleting, installing, or changing settings. Read-only analysis is permitted when the user says not to modify files. Create only small new analysis artifacts in a fresh system temporary directory when needed. Saving a report in the repo, updating a baseline, cleaning caches, or creating a scheduled scan each needs user authorization. One write can be standing: when the weekly automation prompt allows it, `scripts/growth_watch.py --save` publishes a dated capture to `~/.local/state/mac-storage-audit/` and keeps the newest eight ([storage steady-state plan](../../docs/followups/2026-11-27-storage-steady-state.md)). Do not bootstrap inspected projects. Never print credentials, session message contents, or complete environment variables.
 
 The highest-risk finding is a potentially unique artifact with no verified recovery source. Size and age alone do not establish that a path is disposable. Keep these classes separate:
 
@@ -46,9 +46,22 @@ Inspect independently sized areas without counting parent and child totals twice
 
 `du` reports allocated blocks, not guaranteed reclaimable bytes. APFS clones, hardlinks, sparse files, shared container space, and scans of a live system prevent a naive reconciliation with `df`. Hardlink blocks may be credited to a different child between scans, producing a child delta with no new disk allocation. Preserve permission errors and partial results. Do not describe a protected directory as empty. `tmutil listlocalsnapshots /` covers Time Machine local snapshots; use the relevant `diskutil apfs listSnapshots` volume query before making a broader APFS claim. Investigate deleted-open files or snapshots only when the remaining discrepancy justifies it. Do not request elevated privileges or restart applications automatically.
 
+## Weekly growth watch
+
+Start each weekly run with the watcher, which compares this week with the previous capture. Resolve it relative to this skill and run it with the Miniforge py312 interpreter and `-B`, adding `--save` only when the weekly automation prompt authorizes capture and rotation:
+
+```bash
+python -B scripts/growth_watch.py           # read-only check
+python -B scripts/growth_watch.py --save    # weekly run, only when the prompt authorizes it
+```
+
+Without `--save` it writes nothing, which suits an ad-hoc check and keeps the baseline weekly. It measures each home entry, each named agent store (the shared and dispatch Agy stores, Grok and Codex sessions, Claude projects, the Hugging Face hub, the pip cache), and each consumer pack cache under `~/PycharmProjects` and its `.retired-repositories` as separate `du` roots. When a root scans partially, the script measures each child on its own and repeats this once for a partial child, so readable siblings keep their own totals. The split skips the capture directory, whose size is subtracted from the totals of the folders that contain it. A path that cannot be inspected is recorded as failed, and the run continues. System temporary roots stay with `scan_storage.py`.
+
+The script compares only complete measurements of the same path. Flags cover a store over its budget (Agy dispatch stores over 30 GB, one pack cache over 0.25 GB, all pack caches over 2 GB), growth over 5 GB shown once at the most specific path, and a new home entry over 5 GB when the previous listing was complete. The first capture is a baseline, with budgets applied at once. Report each flag with its writer when you can attribute it and propose a change to the writer's default behavior. A flag is a finding and never permission to delete.
+
 ## Trace scattered artifacts
 
-Start each weekly scan with finished experiments whose scratch directories may hold the only copy of an original result. Check system temporary directories as well as persistent agent scratch. For each finding, report the exact file path, owning experiment, evidence of completion, and where that same result can be recovered (archive member, repository revision and path, or cluster copy). State how the copy was verified. If completion or recovery is uncertain, identify what was checked and what remains unknown.
+After the watcher, inspect finished experiments whose scratch directories may hold the only copy of an original result. Check system temporary directories as well as persistent agent scratch. For each finding, report the exact file path, owning experiment, evidence of completion, and where that same result can be recovered (archive member, repository revision and path, or cluster copy). State how the copy was verified. If completion or recovery is uncertain, identify what was checked and what remains unknown.
 
 First revisit every high-risk artifact named in the previous audit. Record present, confirmed relocated, or missing from the original location. Put missing high-risk artifacts first in the report. Search documented archives and selected distinctive filenames before asking where they went. An unsuccessful Spotlight search is not exhaustive. Do not equate a missing original path with data loss, or infer automatic retention from a size reduction. Agent-managed scratch, including Agy brain, is not dependable archival storage.
 

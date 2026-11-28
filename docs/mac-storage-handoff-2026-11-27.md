@@ -25,3 +25,28 @@
 历史记录列出的三个旧 Agy UUID（`bd014e8b…`、`4d70e583…`、`1afdd8c4…`）去向仍未确认。用户明确说明 `~/Documents/ab-directions-scratch-2026-10-11/` 是本人删除，这一项已结案。此前归档的 trial-merge-1 和旧 PyCharm 历史在 `~/PycharmProjects/research-data/storage-retirement-2026-11-16/`，含 README、校验清单和 closeout.json。
 
 11 月 26 日的临时证据目录为 `$TMPDIR/storage-1126.LuPrad/`，其中 `measure` 为容量采样，`agent-io/tmp.md` 和 `agent-io/risk.md` 为两路 prun 调查，`panel/Review-*.md` 为 Claude、Agy、Grok 对首轮容量及恢复判断的复核。临时证据可能被系统清理。复测时沿用私人 skill 的十进制 GB 口径，并标明不可读目录。
+
+## 11 月 27 日复核结论与第一批清理
+
+上面几项待查已有结论。三组 Agy 评测的任务均已交付；原始文件在各自 brain scratch 之外没有相同副本，结果文本还保存在对应 brain 的 `.system_generated/logs/transcript_full.jsonl` 中。NSF 的 `vet-wt` 是审查用的副本，目录已不在；对应提交 `46a8ba6a` 已在本地记录的远端 main 中，已消失的工作副本无法再逐字节比较。系统于 11 月 23 日 21:41 重启。核查时仍存在的临时条目都创建于重启之后。18 个审查目录可能在重启时被清理，未找到逐项删除记录。三个旧 Agy UUID 目前无法在 Agy 中恢复；Agy 1.5.14 及以前启动时只保留最近 500 个对话，可能解释了它们的缺失。
+
+第一批删除的是可以重新生成的持久缓存，共 8 项、998 个条目，manifest SHA-256 为 `4dd632134e98ab5e1605616cec5eec45e546070b7480b4cfc8f7e247c40f03c1`：
+
+| 项目 | GB | 恢复方式 |
+| --- | ---: | --- |
+| 27 个 repo 中未被 `pack-lock.json` 引用的 974 个 pack cache 槽 | 19.67 | 所有锁定槽均保留；核查时涉及的 41 个 commit 在 GitHub 上仍可访问 |
+| `~/qemscore-r9/upstream/ml-qem` | 11.34 | `git clone https://github.com/qiskit-community/ml-qem.git`，再 `checkout --detach b1eccf8cf5ef4e9e498f3fe66e03951bc6b4a4d3`；`run_r9_local.sh` 和 `shift/run_shift.sh` 重跑前需要 |
+| Hugging Face 的 Qwen3-4B-Instruct-2507 及其 3 个独占 blob | 8.05 | Hub 修订版 `cdbee75f` 仍公开 |
+| `~/.cache/agentpile-dev` 中的 venv（保留 `recipes/train/venv/hf-home`） | 6.00 | 重建 venv |
+| Claude 桌面版中断下载的两个 rootfs 文件 | 5.93 | 应用下次启动 Cowork 时重下 |
+| pip 的 `http-v2` 和 `http` 缓存 | 4.32 | pip 按需重建 |
+| SWE-rebench 的未完成下载和空快照 | 2.68 | 完整 parquet 在 `research-data/agentpile-cache`，摘要已核对 |
+| `~/Library/pnpm/store/v11` | 2.53 | pnpm 重新拉取 |
+
+删除脚本按 manifest 摘要绑定，逐项复核后才删，并沿祖先目录用 `O_NOFOLLOW` 固定父目录。三轮复核后，Codex、Agy、Grok 在各自列出的条件下同意删除全部 8 项。最终总评为 Codex、Agy 要求修改，Grok 通过；两项修改意见针对不在删除流程中的沙箱测试脚本，该脚本修复后已在临时目录实测通过。Codex 另要求执行期间没有进程写入目标，执行前已用 `lsof` 和进程检查确认。
+
+执行时间为 11 月 27 日 15:30 至 15:33：998 项删除，0 跳过，0 部分失败。Data 卷可用空间从 332.0 GB 升到 385.4 GB，增加 53.4 GB；按分配块统计为 60.52 GB，多出的 7.1 GB 原因未确认。本机没有本地快照，pack cache 中也没有硬链接，APFS 写时复制共享的块是一种可能。执行后已逐项核对保留项。各 repo 的锁定 pack 槽、ml-qem 旁的 `upstream/qlear`、pip 的 `wheels/` 和 VM 的 `sessiondata.img` 均完好。Hugging Face 的 token、共享 tokenizer blob、Qwen3-0.6B 和 Qwen3-14B，以及 agentpile 的 `~/.cache/agentpile` 链接、`hf-home` 和 SWE parquet 也均完好。
+
+脚本、manifest、执行日志和三轮复核在会话 scratchpad `/private/tmp/claude-501/-Users-yzhao062-PycharmProjects-agent-config/b2fe6cf1-851d-493f-99bf-1d804d5f5440/scratchpad/deadwood-batch1/`，临时目录可能随系统清理而消失；本节是保留下来的记录。
+
+第二批尚未执行。先把开头表中三组评测的唯一原始文件保存到持久目录，再处理 Agy brain。其他待处理项需要先核验恢复路径并保存唯一副本，再决定是否删除：Codex worktree（用 `git worktree remove`）、figure1 JSON、github.io scratch 中的证据、agent-insurance 的 PDF、旧 Claude workflow 记录，以及 Grok 审查会话（用 `grok sessions delete`）。让存储保持稳态、不再依赖这类清理的机制见[存储稳态计划](followups/2026-11-27-storage-steady-state.md)。

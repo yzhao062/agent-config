@@ -8,6 +8,9 @@ track what changed between runs.
 
 ### Added
 
+- `docs/followups/2026-11-27-storage-steady-state.md`: the storage plan pairs automatic eviction of stale pack slots (in the anywhere-agents composer) with a weekly growth audit. A separate trial will assess isolated Agy and Grok stores. Codex `exec` keeps its session files, because the usage snapshot reads Codex rate limits from them. `docs/mac-storage-handoff-2026-11-27.md` records the reviewed one-time cleanup that freed 53.4 GB.
+- The private `reference-skills/mac-storage-audit` gains `scripts/growth_watch.py`, a watcher that compares readable roots even when their parents scan partially. It flags growth over 5 GB, new large roots, and budget overruns. Authorized weekly runs keep eight captures in `~/.local/state/mac-storage-audit/`. Tests are in `tests/test_mac_growth_watch.py`.
+
 - `skills/prun/references/agy-quota-and-models.md` describes the machine-local `autoMode.allow` entry for `dispatch-task-agy.py` and `dispatch-task.sh`, beside the Grok one, and the `prun` Reference Index sends a coordinator there when auto mode refuses a dispatch. In two sessions the classifier refused the Agy and Codex dispatchers and let the Grok one through, so a route the user had named for three agents ran on one.
 - `docs/followups/2026-11-26-consumer-harness-audit.md` records an audit of real consumer sessions since 2026-11-15 against the harness and its skills: nine Agy units read the session logs and a five-agent Claude Workflow verified their claims. Its Disposition section lists what v0.11.0 fixes and what is recorded but not fixed.
 - `programmatic-figure` builds scientific plots from data and code and ships in the default core skill pack.
