@@ -10,6 +10,11 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+if os.name == "nt":
+    # The collector stamps captures with ZoneInfo("America/Los_Angeles"), which
+    # needs the tzdata package on Windows, and the audit runs only on a Mac.
+    raise unittest.SkipTest("the Mac storage audit does not run on Windows")
+
 SCRIPT = Path(__file__).resolve().parents[1] / "reference-skills" / "mac-storage-audit" / "scripts" / "growth_watch.py"
 spec = importlib.util.spec_from_file_location("growth_watch", SCRIPT)
 gw = importlib.util.module_from_spec(spec)
